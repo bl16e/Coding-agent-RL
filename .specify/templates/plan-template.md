@@ -40,7 +40,15 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+- Clarification gate: All unclear user intent, scope, acceptance criteria,
+  external dependencies, and tradeoffs are either resolved with the user or
+  recorded as `NEEDS CLARIFICATION`.
+- Cohesion/coupling gate: Module boundaries are named, each planned file has a
+  focused responsibility, and any oversized file or broad coupling risk is
+  justified in Complexity Tracking.
+- Official behavior gate: Library, API, CLI, framework, and configuration usage
+  matches official documentation or existing project contracts, with sources
+  named in the plan.
 
 ## Project Structure
 
@@ -111,3 +119,4 @@ directories captured above]
 |-----------|------------|-------------------------------------|
 | [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
 | [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
+| [e.g., oversized module] | [specific responsibility conflict] | [why splitting now would increase risk] |

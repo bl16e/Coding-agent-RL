@@ -166,6 +166,7 @@ class TrajectoryStep:
     next_intent: str | None = None
     tool_selection_reason: str | None = None
     tool_call: ToolCall | None = None
+    tool_result: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.step_index < 0:
@@ -202,6 +203,7 @@ class RunSummary:
     changed_files: list[str] = field(default_factory=list)
     test_summary: dict[str, int] = field(default_factory=dict)
     error: str | None = None
+    last_successful_tool_call: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -216,4 +218,3 @@ class Prediction:
 
     def to_dict(self) -> dict[str, Any]:
         return _json_value(self)
-

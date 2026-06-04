@@ -97,22 +97,22 @@
 
 ### Tests for User Story 2
 
-- [ ] T042 [P] [US2] Add read_file tool tests for success, missing file, and outside-workspace rejection in tests/unit/test_tool_read_file.py
-- [ ] T043 [P] [US2] Add write_file tool tests for complete-file writes and outside-workspace rejection in tests/unit/test_tool_write_file.py
-- [ ] T044 [P] [US2] Add search_code tool tests for bounded matches, no matches, and max result behavior in tests/unit/test_tool_search_code.py
-- [ ] T045 [P] [US2] Add run_tests tool tests for allowed command execution, undeclared command rejection, and timeout in tests/unit/test_tool_run_tests.py
-- [ ] T046 [P] [US2] Add integration test proving all repository interactions are recorded as one of four tool types in tests/integration/test_tool_constraints.py
+- [X] T042 [P] [US2] Add read_file tool tests for success, missing file, and outside-workspace rejection in tests/unit/test_tool_read_file.py
+- [X] T043 [P] [US2] Add write_file tool tests for complete-file writes and outside-workspace rejection in tests/unit/test_tool_write_file.py
+- [X] T044 [P] [US2] Add search_code tool tests for bounded matches, no matches, and max result behavior in tests/unit/test_tool_search_code.py
+- [X] T045 [P] [US2] Add run_tests tool tests for allowed command execution, undeclared command rejection, and timeout in tests/unit/test_tool_run_tests.py
+- [X] T046 [P] [US2] Add integration test proving all repository interactions are recorded as one of four tool types in tests/integration/test_tool_constraints.py
 
 ### Implementation for User Story 2
 
-- [ ] T047 [US2] Implement read_file tool in src/coding_agent/tools/read_file.py
-- [ ] T048 [US2] Implement write_file complete-content tool and modification tracking in src/coding_agent/tools/write_file.py
-- [ ] T049 [US2] Implement search_code bounded text search in src/coding_agent/tools/search_code.py
-- [ ] T050 [US2] Implement run_tests allowed-command enforcement and subprocess timeout in src/coding_agent/tools/run_tests.py
-- [ ] T051 [US2] Add tool registry and dispatch validation in src/coding_agent/tools/__init__.py
-- [ ] T052 [US2] Connect tool dispatch results to trajectory recording in src/coding_agent/agent.py
-- [ ] T053 [US2] Record rejected undeclared run_tests commands in src/coding_agent/trajectory/writer.py
-- [ ] T054 [US2] Review cohesion of src/coding_agent/tools/read_file.py, src/coding_agent/tools/write_file.py, src/coding_agent/tools/search_code.py, and src/coding_agent/tools/run_tests.py and keep each tool isolated from model backend concerns
+- [X] T047 [US2] Implement read_file tool in src/coding_agent/tools/read_file.py
+- [X] T048 [US2] Implement write_file complete-content tool and modification tracking in src/coding_agent/tools/write_file.py
+- [X] T049 [US2] Implement search_code bounded text search in src/coding_agent/tools/search_code.py
+- [X] T050 [US2] Implement run_tests allowed-command enforcement and subprocess timeout in src/coding_agent/tools/run_tests.py
+- [X] T051 [US2] Add tool registry and dispatch validation in src/coding_agent/tools/__init__.py
+- [X] T052 [US2] Connect tool dispatch results to trajectory recording in src/coding_agent/agent.py
+- [X] T053 [US2] Record rejected undeclared run_tests commands in src/coding_agent/trajectory/writer.py
+- [X] T054 [US2] Review cohesion of src/coding_agent/tools/read_file.py, src/coding_agent/tools/write_file.py, src/coding_agent/tools/search_code.py, and src/coding_agent/tools/run_tests.py and keep each tool isolated from model backend concerns
 
 **Checkpoint**: User Story 2 validates the constrained tool interface independently.
 
@@ -126,20 +126,20 @@
 
 ### Tests for User Story 3
 
-- [ ] T055 [P] [US3] Add trajectory content tests for reasoning summary, next intent, and tool selection reason in tests/unit/test_trajectory_content.py
-- [ ] T056 [P] [US3] Add inspect CLI contract tests for missing run dir and report output in tests/contract/test_cli_inspect_contract.py
-- [ ] T057 [P] [US3] Add export-prediction CLI contract tests for JSONL output schema in tests/contract/test_cli_export_prediction_contract.py
-- [ ] T058 [P] [US3] Add integration test for errored run trajectory and summary diagnostics in tests/integration/test_errored_run_diagnostics.py
+- [X] T055 [P] [US3] Add trajectory content tests for reasoning summary, next intent, and tool selection reason in tests/unit/test_trajectory_content.py
+- [X] T056 [P] [US3] Add inspect CLI contract tests for missing run dir and report output in tests/contract/test_cli_inspect_contract.py
+- [X] T057 [P] [US3] Add export-prediction CLI contract tests for JSONL output schema in tests/contract/test_cli_export_prediction_contract.py
+- [X] T058 [P] [US3] Add integration test for errored run trajectory and summary diagnostics in tests/integration/test_errored_run_diagnostics.py
 
 ### Implementation for User Story 3
 
-- [ ] T059 [US3] Persist reasoning summary, next-step intent, and tool selection reason for every agent decision step in src/coding_agent/trajectory/writer.py
-- [ ] T060 [US3] Implement `coding-agent inspect` command in src/coding_agent/cli.py
-- [ ] T061 [US3] Implement inspect report rendering from summary and trajectory in src/coding_agent/trajectory/summary.py
-- [ ] T062 [US3] Implement `coding-agent export-prediction` command in src/coding_agent/cli.py
-- [ ] T063 [US3] Implement export-prediction file loading and writing in src/coding_agent/swebench/prediction.py
-- [ ] T064 [US3] Ensure trajectory persistence failures are surfaced with exit status 3 in src/coding_agent/agent.py
-- [ ] T065 [US3] Review cohesion of src/coding_agent/trajectory/writer.py, src/coding_agent/trajectory/patch.py, and src/coding_agent/trajectory/summary.py and keep inspect, summary, patch, and writer responsibilities separate
+- [X] T059 [US3] Persist reasoning summary, next-step intent, and tool selection reason for every agent decision step in src/coding_agent/trajectory/writer.py
+- [X] T060 [US3] Implement `coding-agent inspect` command in src/coding_agent/cli.py
+- [X] T061 [US3] Implement inspect report rendering from summary and trajectory in src/coding_agent/trajectory/summary.py
+- [X] T062 [US3] Implement `coding-agent export-prediction` command in src/coding_agent/cli.py
+- [X] T063 [US3] Implement export-prediction file loading and writing in src/coding_agent/swebench/prediction.py
+- [X] T064 [US3] Ensure trajectory persistence failures are surfaced with exit status 3 in src/coding_agent/agent.py
+- [X] T065 [US3] Review cohesion of src/coding_agent/trajectory/writer.py, src/coding_agent/trajectory/patch.py, and src/coding_agent/trajectory/summary.py and keep inspect, summary, patch, and writer responsibilities separate
 
 **Checkpoint**: All user stories are independently functional.
 
@@ -149,13 +149,13 @@
 
 **Purpose**: Documentation, quickstart validation, and maintainability checks across all stories.
 
-- [ ] T066 [P] Create or update README usage overview and MVP scope in README.md
-- [ ] T067 [P] Add quickstart command validation notes to specs/001-swebench-agent/quickstart.md
-- [ ] T068 Run full unit test suite with `python -m pytest tests/unit` and record result in specs/001-swebench-agent/quickstart.md
-- [ ] T069 Run contract test suite with `python -m pytest tests/contract` and record result in specs/001-swebench-agent/quickstart.md
-- [ ] T070 Run integration test suite with `python -m pytest tests/integration` and record result in specs/001-swebench-agent/quickstart.md
-- [ ] T071 Audit source files for oversized responsibilities and document any split in specs/001-swebench-agent/plan.md
-- [ ] T072 Verify generated prediction JSONL compatibility against contracts/cli-contract.md and update tests/contract/test_cli_export_prediction_contract.py if needed
+- [X] T066 [P] Create or update README usage overview and MVP scope in README.md
+- [X] T067 [P] Add quickstart command validation notes to specs/001-swebench-agent/quickstart.md
+- [X] T068 Run full unit test suite with `python -m pytest tests/unit` and record result in specs/001-swebench-agent/quickstart.md
+- [X] T069 Run contract test suite with `python -m pytest tests/contract` and record result in specs/001-swebench-agent/quickstart.md
+- [X] T070 Run integration test suite with `python -m pytest tests/integration` and record result in specs/001-swebench-agent/quickstart.md
+- [X] T071 Audit source files for oversized responsibilities and document any split in specs/001-swebench-agent/plan.md
+- [X] T072 Verify generated prediction JSONL compatibility against contracts/cli-contract.md and update tests/contract/test_cli_export_prediction_contract.py if needed
 
 ---
 

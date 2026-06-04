@@ -141,3 +141,20 @@ and [quickstart.md](./quickstart.md).
 ## Complexity Tracking
 
 No constitution violations require justification.
+
+## Responsibility Audit
+
+Source file audit on 2026-06-04 found the largest files are
+`src/coding_agent/agent.py` at 222 lines and `src/coding_agent/models.py` at 220
+lines. `agent.py` remains focused on AgentRun orchestration, tool dispatch, and
+artifact finalization; concrete tool behavior stays in `src/coding_agent/tools/`.
+`models.py` remains a shared data contract module with no service behavior.
+
+No split is required now. Split triggers for future work:
+
+- Move prompt/message construction out of `agent.py` if multi-turn model context
+  grows beyond the current minimal request.
+- Split `models.py` by domain if new mutable service behavior or provider-
+  specific fields are added.
+- Keep trajectory persistence in `trajectory/writer.py`, report rendering in
+  `trajectory/summary.py`, and patch generation in `trajectory/patch.py`.

@@ -91,3 +91,15 @@ coding-agent export-prediction `
 
 Expected outcome: `predictions.jsonl` contains one SWE-Bench-compatible
 prediction object.
+
+## Validation Notes
+
+Validated on 2026-06-04 from the repository root:
+
+- `python -m pytest tests/unit`: 35 passed.
+- `python -m pytest tests/contract`: 8 passed.
+- `python -m pytest tests/integration`: 5 passed.
+
+The export-prediction contract test verifies the SWE-Bench prediction JSONL
+contains exactly the official fields `instance_id`, `model_name_or_path`, and
+`model_patch`.

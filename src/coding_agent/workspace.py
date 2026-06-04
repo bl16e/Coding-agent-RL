@@ -4,6 +4,8 @@ from pathlib import Path
 
 
 class WorkspacePathError(ValueError):
+    """Raised when a requested tool path violates workspace boundaries."""
+
     pass
 
 
@@ -15,6 +17,8 @@ def ensure_workspace_dir(workspace: str | Path) -> Path:
 
 
 def _assert_inside(workspace: Path, candidate: Path) -> Path:
+    """Resolve symlinks/relative segments and reject workspace escapes."""
+
     root = ensure_workspace_dir(workspace)
     resolved = candidate.resolve()
     try:
@@ -25,6 +29,8 @@ def _assert_inside(workspace: Path, candidate: Path) -> Path:
 
 
 def resolve_workspace_path(workspace: str | Path, requested_path: str | Path) -> Path:
+    """Resolve a model-supplied path into a validated absolute path."""
+
     root = ensure_workspace_dir(workspace)
     requested = Path(requested_path)
     candidate = requested if requested.is_absolute() else root / requested
@@ -32,7 +38,8 @@ def resolve_workspace_path(workspace: str | Path, requested_path: str | Path) ->
 
 
 def to_workspace_relative(workspace: str | Path, path: str | Path) -> str:
+    """Convert a validated path to the POSIX form stored in artifacts."""
+
     root = ensure_workspace_dir(workspace)
     resolved = _assert_inside(root, Path(path))
     return resolved.relative_to(root).as_posix()
-

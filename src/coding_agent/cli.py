@@ -13,6 +13,8 @@ from coding_agent.model_backends.openai_compatible import (
     load_model_config,
 )
 from coding_agent.models import RunBudget
+from coding_agent.swebench.prediction import export_prediction_from_run
+from coding_agent.trajectory.summary import load_summary, load_trajectory, render_inspect_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,8 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--output-dir", required=True)
     run_parser.add_argument("--model")
     run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
-    subparsers.add_parser("inspect", help="inspect a completed run directory")
-    subparsers.add_parser("export-prediction", help="export prediction JSONL")
+    inspect_parser = subparsers.add_parser("inspect", help="inspect a completed run directory")
+    inspect_parser.add_argument("--run-dir", required=True)
+    export_parser = subparsers.add_parser("export-prediction", help="export prediction JSONL")
+    export_parser.add_argument("--run-dir", required=True)
+    export_parser.add_argument("--model-name", required=True)
+    export_parser.add_argument("--output", required=True)
     return parser
 
 
@@ -70,6 +76,32 @@ def _run_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inspect_command(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    summary_path = run_dir / "summary.json"
+    trajectory_path = run_dir / "trajectory.jsonl"
+    if not run_dir.is_dir():
+        print("run directory does not exist", file=sys.stderr)
+        return 2
+    if not summary_path.is_file() or not trajectory_path.is_file():
+        print("summary.json and trajectory.jsonl are required", file=sys.stderr)
+        return 2
+    print(render_inspect_report(load_summary(summary_path), load_trajectory(trajectory_path)))
+    return 0
+
+
+def _export_prediction_command(args: argparse.Namespace) -> int:
+    try:
+        export_prediction_from_run(args.run_dir, args.model_name, args.output)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -81,5 +113,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.command == "run":
         return _run_command(args)
+    if args.command == "inspect":
+        return _inspect_command(args)
+    if args.command == "export-prediction":
+        return _export_prediction_command(args)
     parser.error(f"command {args.command!r} is not implemented yet")
     return 2

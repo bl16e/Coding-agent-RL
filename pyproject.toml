@@ -7,7 +7,7 @@ name = "coding-agent"
 version = "0.1.0"
 description = "SWE-Bench Lite coding agent CLI and library"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["pyarrow>=16.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
@@ -21,4 +21,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-

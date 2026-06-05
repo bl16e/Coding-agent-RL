@@ -18,15 +18,15 @@
 
 **Purpose**: Add package/development scaffolding needed by all sandbox work.
 
-- [ ] T001 Add `pyarrow` runtime dependency and keep pytest dev dependency in `pyproject.toml`
-- [ ] T002 [P] Create sandbox package marker in `src/coding_agent/sandbox/__init__.py`
-- [ ] T003 [P] Create Docker CLI wrapper module skeleton in `src/coding_agent/sandbox/docker_cli.py`
-- [ ] T004 [P] Create sandbox registry module skeleton in `src/coding_agent/sandbox/registry.py`
-- [ ] T005 [P] Create sandbox manager module skeleton in `src/coding_agent/sandbox/manager.py`
-- [ ] T006 [P] Create container tools module skeleton in `src/coding_agent/sandbox/tools.py`
-- [ ] T007 [P] Create SWE-Bench dataset module skeleton in `src/coding_agent/swebench/dataset.py`
-- [ ] T008 [P] Create SWE-Bench validation module skeleton in `src/coding_agent/swebench/validation.py`
-- [ ] T009 [P] Create sandboxed run orchestration module skeleton in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T001 Add `pyarrow` runtime dependency and keep pytest dev dependency in `pyproject.toml`
+- [X] T002 [P] Create sandbox package marker in `src/coding_agent/sandbox/__init__.py`
+- [X] T003 [P] Create Docker CLI wrapper module skeleton in `src/coding_agent/sandbox/docker_cli.py`
+- [X] T004 [P] Create sandbox registry module skeleton in `src/coding_agent/sandbox/registry.py`
+- [X] T005 [P] Create sandbox manager module skeleton in `src/coding_agent/sandbox/manager.py`
+- [X] T006 [P] Create container tools module skeleton in `src/coding_agent/sandbox/tools.py`
+- [X] T007 [P] Create SWE-Bench dataset module skeleton in `src/coding_agent/swebench/dataset.py`
+- [X] T008 [P] Create SWE-Bench validation module skeleton in `src/coding_agent/swebench/validation.py`
+- [X] T009 [P] Create sandboxed run orchestration module skeleton in `src/coding_agent/swebench/sandbox_run.py`
 
 ---
 
@@ -36,15 +36,15 @@
 
 **CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T010 [P] Add sandbox-related dataclasses to `src/coding_agent/models.py`
-- [ ] T011 [P] Add `ToolExecutor` protocol and `LocalToolExecutor` in `src/coding_agent/tools/executor.py`
-- [ ] T012 Refactor `run_task` to accept a `ToolExecutor` while preserving local behavior in `src/coding_agent/agent.py`
-- [ ] T013 Update local tool dispatch wiring to use `LocalToolExecutor` in `src/coding_agent/tools/__init__.py`
-- [ ] T014 Add sandbox metadata fields to run summary serialization in `src/coding_agent/models.py`
-- [ ] T015 [P] Add unit tests for `ToolExecutor` local compatibility in `tests/unit/test_tool_executor.py`
-- [ ] T016 [P] Add regression integration test that existing `coding-agent run` still works in `tests/integration/test_prepared_workspace_compatibility.py`
-- [ ] T017 [P] Add Docker CLI fake helpers for unit tests in `tests/unit/fakes/docker_cli.py`
-- [ ] T018 [P] Add repository file responsibility notes for new sandbox modules in `specs/002-swebench-docker-sandbox/plan.md`
+- [X] T010 [P] Add sandbox-related dataclasses to `src/coding_agent/models.py`
+- [X] T011 [P] Add `ToolExecutor` protocol and `LocalToolExecutor` in `src/coding_agent/tools/executor.py`
+- [X] T012 Refactor `run_task` to accept a `ToolExecutor` while preserving local behavior in `src/coding_agent/agent.py`
+- [X] T013 Update local tool dispatch wiring to use `LocalToolExecutor` in `src/coding_agent/tools/__init__.py`
+- [X] T014 Add sandbox metadata fields to run summary serialization in `src/coding_agent/models.py`
+- [X] T015 [P] Add unit tests for `ToolExecutor` local compatibility in `tests/unit/test_tool_executor.py`
+- [X] T016 [P] Add regression integration test that existing `coding-agent run` still works in `tests/integration/test_prepared_workspace_compatibility.py`
+- [X] T017 [P] Add Docker CLI fake helpers for unit tests in `tests/unit/fakes/docker_cli.py`
+- [X] T018 [P] Add repository file responsibility notes for new sandbox modules in `specs/002-swebench-docker-sandbox/plan.md`
 
 **Checkpoint**: Foundation ready. Existing prepared-workspace run still passes and user story work can begin.
 
@@ -54,37 +54,37 @@
 
 **Goal**: A developer can run one selected SWE-Bench Lite task in a configured Docker sandbox and receive standard artifacts plus sandbox metadata.
 
-**Independent Test**: Select one dataset instance with a registered sandbox image, run `coding-agent swebench run`, and verify workspace reset, container tool execution, trajectory, final patch, summary, prediction, and `sandbox.json`.
+**Independent Test**: Select one dataset instance with a registered repository base image, run `coding-agent swebench run`, and verify `git checkout`, container tool execution, trajectory, final patch, summary, prediction, and `sandbox.json`.
 
 ### Tests for User Story 1
 
-- [ ] T019 [P] [US1] Add CLI contract test for `coding-agent swebench run` required arguments in `tests/contract/test_cli_swebench_run_contract.py`
-- [ ] T020 [P] [US1] Add CLI contract test for missing dataset and missing instance failures in `tests/contract/test_cli_swebench_run_contract.py`
-- [ ] T021 [P] [US1] Add unit tests for parquet task loading and required field validation in `tests/unit/test_swebench_dataset.py`
-- [ ] T022 [P] [US1] Add unit tests for Docker command wrapper success, failure, and timeout mapping in `tests/unit/test_docker_cli.py`
-- [ ] T023 [P] [US1] Add unit tests for task sandbox reset to base commit in `tests/unit/test_sandbox_manager.py`
-- [ ] T024 [P] [US1] Add unit tests for container-backed read/write/search tools in `tests/unit/test_container_tools.py`
-- [ ] T025 [P] [US1] Add integration test with fake Docker for sandboxed run artifacts in `tests/integration/test_swebench_sandbox_run.py`
+- [X] T019 [P] [US1] Add CLI contract test for `coding-agent swebench run` required arguments in `tests/contract/test_cli_swebench_run_contract.py`
+- [X] T020 [P] [US1] Add CLI contract test for missing dataset and missing instance failures in `tests/contract/test_cli_swebench_run_contract.py`
+- [X] T021 [P] [US1] Add unit tests for parquet task loading and required field validation in `tests/unit/test_swebench_dataset.py`
+- [X] T022 [P] [US1] Add unit tests for Docker command wrapper success, failure, and timeout mapping in `tests/unit/test_docker_cli.py`
+- [X] T023 [P] [US1] Add unit tests for task container `git checkout <base_commit>` in `tests/unit/test_sandbox_manager.py`
+- [X] T024 [P] [US1] Add unit tests for container-backed read/write/search tools in `tests/unit/test_container_tools.py`
+- [X] T025 [P] [US1] Add integration test with fake Docker for sandboxed run artifacts and post-start runtime failure partial artifacts in `tests/integration/test_swebench_sandbox_run.py`
 
 ### Implementation for User Story 1
 
-- [ ] T026 [US1] Implement local parquet row lookup by `instance_id` in `src/coding_agent/swebench/dataset.py`
-- [ ] T027 [US1] Implement `SwebenchTaskRecord` validation helpers in `src/coding_agent/swebench/dataset.py`
-- [ ] T028 [US1] Implement bounded Docker CLI command execution in `src/coding_agent/sandbox/docker_cli.py`
-- [ ] T029 [US1] Implement Docker image/container inspect helpers in `src/coding_agent/sandbox/docker_cli.py`
-- [ ] T030 [US1] Implement task container creation/start/stop lifecycle in `src/coding_agent/sandbox/manager.py`
-- [ ] T031 [US1] Implement workspace reset to task `base_commit` before agent execution in `src/coding_agent/sandbox/manager.py`
-- [ ] T032 [US1] Implement container-backed `read_file` in `src/coding_agent/sandbox/tools.py`
-- [ ] T033 [US1] Implement container-backed `write_file` with complete-file semantics in `src/coding_agent/sandbox/tools.py`
-- [ ] T034 [US1] Implement container-backed `search_code` with bounded result output in `src/coding_agent/sandbox/tools.py`
-- [ ] T035 [US1] Implement container-backed `run_tests` with allowed-command enforcement in `src/coding_agent/sandbox/tools.py`
-- [ ] T036 [US1] Implement `ContainerToolExecutor` that adapts container tools to `ToolExecutor` in `src/coding_agent/sandbox/tools.py`
-- [ ] T037 [US1] Implement sandboxed single-task orchestration in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T038 [US1] Write `sandbox.json` artifact with task, repo, base commit, image, repo path, and validation mode in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T039 [US1] Add `coding-agent swebench run` parser and command handler in `src/coding_agent/cli.py`
-- [ ] T040 [US1] Map invalid sandboxed run inputs to exit status 2 and runtime failures to exit status 4 in `src/coding_agent/cli.py`
-- [ ] T041 [US1] Ensure `summary.json` includes sandbox metadata for sandboxed runs in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T042 [US1] Review cohesion of `src/coding_agent/agent.py` after executor injection and split if responsibilities grow in `specs/002-swebench-docker-sandbox/plan.md`
+- [X] T026 [US1] Implement local parquet row lookup by `instance_id` in `src/coding_agent/swebench/dataset.py`
+- [X] T027 [US1] Implement `SwebenchTaskRecord` validation helpers in `src/coding_agent/swebench/dataset.py`
+- [X] T028 [US1] Implement bounded Docker CLI command execution in `src/coding_agent/sandbox/docker_cli.py`
+- [X] T029 [US1] Implement Docker image/container inspect helpers in `src/coding_agent/sandbox/docker_cli.py`
+- [X] T030 [US1] Implement task container creation/start/stop lifecycle from a registered repository base image in `src/coding_agent/sandbox/manager.py`
+- [X] T031 [US1] Implement `git checkout <base_commit>` inside the task container before agent execution in `src/coding_agent/sandbox/manager.py`
+- [X] T032 [US1] Implement container-backed `read_file` in `src/coding_agent/sandbox/tools.py`
+- [X] T033 [US1] Implement container-backed `write_file` with complete-file semantics in `src/coding_agent/sandbox/tools.py`
+- [X] T034 [US1] Implement container-backed `search_code` with bounded result output in `src/coding_agent/sandbox/tools.py`
+- [X] T035 [US1] Implement container-backed `run_tests` with allowed-command enforcement in `src/coding_agent/sandbox/tools.py`
+- [X] T036 [US1] Implement `ContainerToolExecutor` that adapts container tools to `ToolExecutor` in `src/coding_agent/sandbox/tools.py`
+- [X] T037 [US1] Implement sandboxed single-task orchestration in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T038 [US1] Write `sandbox.json` artifact with task, repo, base commit, base image, official-compatible marker, validation command source, repo path, and validation mode in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T039 [US1] Add `coding-agent swebench run` parser and command handler in `src/coding_agent/cli.py`
+- [X] T040 [US1] Map invalid sandboxed run inputs to exit status 2 and runtime failures after agent execution begins to exit status 4 while preserving partial trajectory and diagnostic artifacts in `src/coding_agent/cli.py`
+- [X] T041 [US1] Ensure `summary.json` includes sandbox metadata, official-compatible marker, validation command source, and post-start runtime failure diagnostics for sandboxed runs in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T042 [US1] Review cohesion of `src/coding_agent/agent.py` after executor injection and split if responsibilities grow in `specs/002-swebench-docker-sandbox/plan.md`
 
 **Checkpoint**: User Story 1 is independently runnable with fake Docker and produces all sandbox artifacts.
 
@@ -92,31 +92,31 @@
 
 ## Phase 4: User Story 2 - Reuse Prepared Base Sandboxes (Priority: P2)
 
-**Goal**: A developer can register prepared base sandbox images, list them, and run multiple tasks from the same repository while each run resets to its selected base commit.
+**Goal**: A developer can register prepared repository base images, list them, and run multiple tasks from the same repository while each run checks out its selected base commit.
 
-**Independent Test**: Register one image for a repository, run two different task records from that repository with fake Docker, and verify both use the registered image while resetting to their own base commits.
+**Independent Test**: Register one base image for a repository, run two different task records from that repository with fake Docker, and verify both use the registered image while checking out their own base commits.
 
 ### Tests for User Story 2
 
-- [ ] T043 [P] [US2] Add CLI contract tests for `coding-agent sandbox register` in `tests/contract/test_cli_sandbox_contract.py`
-- [ ] T044 [P] [US2] Add CLI contract tests for `coding-agent sandbox list` in `tests/contract/test_cli_sandbox_contract.py`
-- [ ] T045 [P] [US2] Add unit tests for registry save/load/update behavior in `tests/unit/test_sandbox_registry.py`
-- [ ] T046 [P] [US2] Add unit tests for missing image and missing registry errors in `tests/unit/test_sandbox_registry.py`
-- [ ] T047 [P] [US2] Add integration test that missing base sandbox fails before model execution in `tests/integration/test_sandbox_registry_integration.py`
-- [ ] T048 [P] [US2] Add integration test that reusable sandbox resets between two task runs in `tests/integration/test_sandbox_reuse.py`
+- [X] T043 [P] [US2] Add CLI contract tests for `coding-agent sandbox register` in `tests/contract/test_cli_sandbox_contract.py`
+- [X] T044 [P] [US2] Add CLI contract tests for `coding-agent sandbox list` in `tests/contract/test_cli_sandbox_contract.py`
+- [X] T045 [P] [US2] Add unit tests for registry save/load/update behavior in `tests/unit/test_sandbox_registry.py`
+- [X] T046 [P] [US2] Add unit tests for missing image, missing registry, unmarked official-compatible image, and missing validation template errors in `tests/unit/test_sandbox_registry.py`
+- [X] T047 [P] [US2] Add integration test that missing repository base image and unmarked official-compatible image fail before model execution in `tests/integration/test_sandbox_registry_integration.py`
+- [X] T048 [P] [US2] Add integration test that one repository base image supports two task runs with different git checkouts in `tests/integration/test_sandbox_reuse.py`
 
 ### Implementation for User Story 2
 
-- [ ] T049 [US2] Implement `BaseSandbox` registry JSON load and save in `src/coding_agent/sandbox/registry.py`
-- [ ] T050 [US2] Implement Docker image existence validation during registration in `src/coding_agent/sandbox/registry.py`
-- [ ] T051 [US2] Implement lookup by repository and missing-base-sandbox error in `src/coding_agent/sandbox/registry.py`
-- [ ] T052 [US2] Implement `coding-agent sandbox register` parser and command handler in `src/coding_agent/cli.py`
-- [ ] T053 [US2] Implement `coding-agent sandbox list` parser and command handler in `src/coding_agent/cli.py`
-- [ ] T054 [US2] Connect `coding-agent swebench run` to registry lookup and pre-model missing sandbox failure in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T055 [US2] Persist prior run artifacts outside sandbox workspace reset paths in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T056 [US2] Document reusable sandbox registration workflow in `specs/002-swebench-docker-sandbox/quickstart.md`
+- [X] T049 [US2] Implement repository `BaseImage` registry JSON load and save with `official_compatible`, `compatibility_source`, and `validation_command_template` fields in `src/coding_agent/sandbox/registry.py`
+- [X] T050 [US2] Implement Docker image existence validation plus official-compatible marker validation during registration/runtime in `src/coding_agent/sandbox/registry.py`
+- [X] T051 [US2] Implement lookup by repository and missing-base-image error in `src/coding_agent/sandbox/registry.py`
+- [X] T052 [US2] Implement `coding-agent sandbox register` parser and command handler in `src/coding_agent/cli.py`
+- [X] T053 [US2] Implement `coding-agent sandbox list` parser and command handler in `src/coding_agent/cli.py`
+- [X] T054 [US2] Connect `coding-agent swebench run` to registry lookup plus pre-model missing base image and unmarked official-compatible image failures in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T055 [US2] Persist prior run artifacts outside task container checkout paths in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T056 [US2] Document one-base-image-per-repository registration workflow in `specs/002-swebench-docker-sandbox/quickstart.md`
 
-**Checkpoint**: User Stories 1 and 2 work independently; missing base sandbox never starts the agent.
+**Checkpoint**: User Stories 1 and 2 work independently; missing repository base image never starts the agent.
 
 ---
 
@@ -128,20 +128,20 @@
 
 ### Tests for User Story 3
 
-- [ ] T057 [P] [US3] Add unit tests for parsing `FAIL_TO_PASS` and `PASS_TO_PASS` metadata in `tests/unit/test_swebench_validation.py`
+- [ ] T057 [P] [US3] Add unit tests for parsing `FAIL_TO_PASS`, `PASS_TO_PASS`, and official TestSpec/eval script validation metadata in `tests/unit/test_swebench_validation.py`
 - [ ] T058 [P] [US3] Add unit tests for default validation excluding `PASS_TO_PASS` in `tests/unit/test_swebench_validation.py`
 - [ ] T059 [P] [US3] Add unit tests for `--include-pass-to-pass` including regression tests in `tests/unit/test_swebench_validation.py`
 - [ ] T060 [P] [US3] Add contract test for `--include-pass-to-pass` CLI behavior in `tests/contract/test_cli_swebench_run_contract.py`
-- [ ] T061 [P] [US3] Add integration test for rejecting container test commands outside the allowed set in `tests/integration/test_swebench_validation_integration.py`
+- [ ] T061 [P] [US3] Add integration test for rejecting container test commands outside the allowed set and failing before model execution when no validation command source exists in `tests/integration/test_swebench_validation_integration.py`
 
 ### Implementation for User Story 3
 
-- [ ] T062 [US3] Implement JSON/list normalization for `FAIL_TO_PASS` and `PASS_TO_PASS` in `src/coding_agent/swebench/validation.py`
+- [ ] T062 [US3] Implement JSON/list normalization for `FAIL_TO_PASS`, `PASS_TO_PASS`, and official TestSpec/eval script metadata in `src/coding_agent/swebench/validation.py`
 - [ ] T063 [US3] Implement default `ValidationTestSet` construction from `FAIL_TO_PASS` in `src/coding_agent/swebench/validation.py`
 - [ ] T064 [US3] Implement opt-in `PASS_TO_PASS` inclusion in `src/coding_agent/swebench/validation.py`
-- [ ] T065 [US3] Convert validation test identifiers into exact allowed test commands in `src/coding_agent/swebench/validation.py`
+- [ ] T065 [US3] Convert validation test identifiers into exact allowed test commands using official TestSpec/eval script behavior first and explicit registered fallback templates only when official data is unavailable in `src/coding_agent/swebench/validation.py`
 - [ ] T066 [US3] Wire `--include-pass-to-pass` into `coding-agent swebench run` in `src/coding_agent/cli.py`
-- [ ] T067 [US3] Record validation mode and allowed test counts in `sandbox.json` and `summary.json` in `src/coding_agent/swebench/sandbox_run.py`
+- [ ] T067 [US3] Record validation mode, validation command source, and allowed test counts in `sandbox.json` and `summary.json` in `src/coding_agent/swebench/sandbox_run.py`
 - [ ] T068 [US3] Ensure rejected undeclared container test commands are recorded in trajectory in `src/coding_agent/sandbox/tools.py`
 
 **Checkpoint**: All user stories are independently functional and validation metadata controls test execution.
@@ -160,7 +160,7 @@
 - [ ] T074 Run full test suite with `python -m pytest tests` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
 - [ ] T075 Audit `src/coding_agent/cli.py`, `src/coding_agent/agent.py`, `src/coding_agent/models.py`, `src/coding_agent/sandbox/`, and `src/coding_agent/swebench/` for oversized responsibilities and document split decisions in `specs/002-swebench-docker-sandbox/plan.md`
 - [ ] T076 Verify CLI contracts against `specs/002-swebench-docker-sandbox/contracts/cli-contract.md`
-- [ ] T077 Verify official SWE-Bench and Docker source assumptions remain documented in `specs/002-swebench-docker-sandbox/research.md`
+- [ ] T077 Verify official SWE-Bench and Docker source assumptions, official-compatible marker enforcement, validation command source behavior, and post-start runtime failure artifact policy remain documented in `specs/002-swebench-docker-sandbox/research.md`
 
 ---
 

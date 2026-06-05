@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,8 +13,17 @@ from coding_agent.model_backends.openai_compatible import (
     OpenAICompatibleBackend,
     load_model_config,
 )
-from coding_agent.models import RunBudget
+from coding_agent.models import RunBudget, RunStatus
+from coding_agent.sandbox.docker_cli import DockerCli
+from coding_agent.sandbox.registry import SandboxRegistry, SandboxRegistryError, register_base_image
+from coding_agent.swebench.dataset import SwebenchDatasetError, load_task_record
 from coding_agent.swebench.prediction import export_prediction_from_run
+from coding_agent.swebench.sandbox_run import (
+    SandboxedRunInputError,
+    SandboxedRunRuntimeError,
+    load_base_image_from_registry,
+    run_swebench_task,
+)
 from coding_agent.trajectory.summary import load_summary, load_trajectory, render_inspect_report
 
 
@@ -38,6 +48,31 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--run-dir", required=True)
     export_parser.add_argument("--model-name", required=True)
     export_parser.add_argument("--output", required=True)
+    sandbox_parser = subparsers.add_parser("sandbox", help="Docker sandbox registry commands")
+    sandbox_subparsers = sandbox_parser.add_subparsers(dest="sandbox_command")
+    sandbox_register_parser = sandbox_subparsers.add_parser("register", help="register a prepared base image")
+    sandbox_register_parser.add_argument("--repo", required=True)
+    sandbox_register_parser.add_argument("--image", required=True)
+    sandbox_register_parser.add_argument("--repo-path", required=True)
+    sandbox_register_parser.add_argument("--registry", default=".coding-agent/sandboxes.json")
+    sandbox_register_parser.add_argument("--official-compatible", action="store_true")
+    sandbox_register_parser.add_argument("--compatibility-source")
+    sandbox_register_parser.add_argument("--validation-command-template")
+    sandbox_list_parser = sandbox_subparsers.add_parser("list", help="list registered base images")
+    sandbox_list_parser.add_argument("--registry", default=".coding-agent/sandboxes.json")
+    swebench_parser = subparsers.add_parser("swebench", help="SWE-Bench commands")
+    swebench_subparsers = swebench_parser.add_subparsers(dest="swebench_command")
+    swebench_run_parser = swebench_subparsers.add_parser("run", help="run one SWE-Bench task in Docker")
+    swebench_run_parser.add_argument("--dataset", required=True)
+    swebench_run_parser.add_argument("--instance-id", required=True)
+    swebench_run_parser.add_argument("--registry", required=True)
+    swebench_run_parser.add_argument("--max-steps", type=int, required=True)
+    swebench_run_parser.add_argument("--timeout-seconds", type=int, required=True)
+    swebench_run_parser.add_argument("--test-timeout-seconds", type=int, required=True)
+    swebench_run_parser.add_argument("--output-dir", required=True)
+    swebench_run_parser.add_argument("--include-pass-to-pass", action="store_true")
+    swebench_run_parser.add_argument("--model")
+    swebench_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
     return parser
 
 
@@ -102,6 +137,76 @@ def _export_prediction_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sandbox_register_command(args: argparse.Namespace) -> int:
+    try:
+        register_base_image(
+            args.registry,
+            docker=DockerCli(),
+            repo=args.repo,
+            image=args.image,
+            repo_path=args.repo_path,
+            official_compatible=args.official_compatible,
+            compatibility_source=args.compatibility_source,
+            validation_command_template=args.validation_command_template,
+        )
+    except SandboxRegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    return 0
+
+
+def _sandbox_list_command(args: argparse.Namespace) -> int:
+    try:
+        registry = SandboxRegistry.load(args.registry)
+    except SandboxRegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(registry.to_dict(), indent=2))
+    return 0
+
+
+def _swebench_run_command(args: argparse.Namespace) -> int:
+    try:
+        budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
+        task_record = load_task_record(args.dataset, args.instance_id)
+        base_image = load_base_image_from_registry(args.registry, task_record.repo)
+        if args.backend == "mock":
+            backend = MockBackend()
+            model_name = args.model or "mock-model"
+        else:
+            config = load_model_config(model_override=args.model)
+            backend = OpenAICompatibleBackend(config)
+            model_name = config.model
+        summary = run_swebench_task(
+            task_record=task_record,
+            base_image=base_image,
+            docker=DockerCli(),
+            backend=backend,
+            budget=budget,
+            model_name=model_name,
+            output_dir=Path(args.output_dir),
+        )
+        if summary.status is RunStatus.ERRORED:
+            print(summary.error or "sandboxed run failed", file=sys.stderr)
+            return 4
+    except (ValueError, SwebenchDatasetError, SandboxedRunInputError, MissingModelConfigError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ArtifactPersistenceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except SandboxedRunRuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -117,5 +222,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _inspect_command(args)
     if args.command == "export-prediction":
         return _export_prediction_command(args)
+    if args.command == "sandbox":
+        if getattr(args, "sandbox_command", None) == "register":
+            return _sandbox_register_command(args)
+        if getattr(args, "sandbox_command", None) == "list":
+            return _sandbox_list_command(args)
+        parser.error("sandbox subcommand is required")
+        return 2
+    if args.command == "swebench":
+        if getattr(args, "swebench_command", None) == "run":
+            return _swebench_run_command(args)
+        parser.error("swebench subcommand is required")
+        return 2
     parser.error(f"command {args.command!r} is not implemented yet")
     return 2

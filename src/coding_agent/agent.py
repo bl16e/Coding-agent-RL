@@ -20,7 +20,7 @@ from coding_agent.models import (
     utc_now,
 )
 from coding_agent.swebench.prediction import write_prediction_jsonl
-from coding_agent.tools import ToolExecutionResult, dispatch_tool
+from coding_agent.tools import LocalToolExecutor, ToolExecutionResult, ToolExecutor
 from coding_agent.trajectory.patch import generate_unified_patch, snapshot_workspace
 from coding_agent.trajectory.summary import write_summary
 from coding_agent.trajectory.writer import TrajectoryWriter
@@ -153,6 +153,7 @@ def run_task(
     model_name: str,
     output_dir: str | Path,
     run_id: str | None = None,
+    tool_executor: ToolExecutor | None = None,
 ) -> RunSummary:
     """Run one SWE-Bench Lite-style attempt against a prepared workspace.
 
@@ -171,6 +172,11 @@ def run_task(
     before = snapshot_workspace(task.workspace)
     writer = TrajectoryWriter(output_path / "trajectory.jsonl")
     tracker = BudgetTracker(budget)
+    executor = tool_executor or LocalToolExecutor(
+        workspace=task.workspace,
+        allowed_test_commands=task.allowed_test_commands,
+        test_timeout_seconds=budget.test_timeout_seconds,
+    )
     agent_run = AgentRun(
         run_id=run_id or str(uuid.uuid4()),
         task=task,
@@ -210,13 +216,7 @@ def run_task(
             final_error = action.final_message
             break
         tool_name = ACTION_TOOL_MAP[action.action]
-        result = dispatch_tool(
-            tool_name=tool_name,
-            workspace=task.workspace,
-            tool_input=action.tool_input,
-            allowed_test_commands=task.allowed_test_commands,
-            test_timeout_seconds=budget.test_timeout_seconds,
-        )
+        result = executor.execute(tool_name, action.tool_input)
         if result.status is Outcome.OK:
             last_successful_tool_call = result.tool_name.value
         if result.test_result is not None:

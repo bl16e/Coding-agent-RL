@@ -3,7 +3,7 @@
 ## Decision: Target official SWE-Bench-compatible environments
 
 Use official SWE-Bench-compatible task environments as the required behavior for
-registered base sandboxes. Local `data/Dockerfile.*` files may inform cache or
+registered repository base images. Local `data/Dockerfile.*` files may inform cache or
 development experiments, but they do not define benchmark behavior.
 
 **Rationale**: SWE-Bench documentation describes Docker-based evaluation as the
@@ -15,7 +15,7 @@ scripts, `FAIL_TO_PASS`, and `PASS_TO_PASS`.
 - Use only local lightweight Dockerfiles: rejected because they may not match
   official dependency setup or test behavior.
 - Build official images automatically during task execution: rejected by
-  clarification; missing base sandboxes are pre-run configuration errors.
+  clarification; missing repository base images are pre-run configuration errors.
 
 **Sources**:
 - https://www.swebench.com/SWE-bench/guides/docker_setup/
@@ -41,21 +41,40 @@ and stop/remove through the CLI.
 - https://docs.docker.com/reference/cli/docker/container/
 - https://docs.docker.com/reference/cli/docker/container/run/
 
-## Decision: Register existing base sandboxes before task execution
+## Decision: Register existing repository base images before task execution
 
-Add a registry of prepared base sandbox images keyed by repository. Task runs
-look up a compatible image, reset the workspace to the selected instance base
-commit, and fail before model execution if no image is registered.
+Add a registry of prepared repository base images keyed by repository. Task
+runs look up a compatible image, create a task container from it, run
+`git checkout <base_commit>` inside the repository path, and fail before model
+execution if no image is registered or if the registered image is not marked
+`official_compatible`.
 
 **Rationale**: This matches the clarified workflow: configure a few reusable
-base sandboxes first, then run tasks inside them. It keeps environment
+repository base images first, then run tasks inside task containers created from them. It keeps environment
 preparation separate from agent problem solving and makes missing setup errors
 easy to diagnose.
 
 **Alternatives considered**:
 - Auto-build missing images during `swebench run`: rejected by clarification.
 - Require one image per instance: rejected because the user wants reusable base
-  sandboxes and the dataset contains many tasks per repository.
+  images and the dataset contains many tasks per repository.
+
+## Decision: Enforce explicit official-compatible image markers
+
+Treat `official_compatible=true` as a runtime gate for sandboxed SWE-Bench
+runs. The marker is stored in the registry and copied into `sandbox.json` and
+`summary.json`.
+
+**Rationale**: This prevents a locally convenient image from being silently used
+as a benchmark environment when it has not been reviewed as official-compatible.
+It also makes artifact review able to distinguish official-targeted runs from
+local experiments.
+
+**Alternatives considered**:
+- Infer compatibility from image names: rejected because tags are not reliable
+  evidence.
+- Allow unmarked images with a warning: rejected because it can produce local
+  runs that appear successful but are incompatible with official evaluation.
 
 ## Decision: Read local parquet task data with pyarrow
 
@@ -92,3 +111,24 @@ developer chooses broader checks.
 
 **Sources**:
 - https://www.swebench.com/SWE-bench/guides/datasets/
+
+## Decision: Prefer official TestSpec/eval script for validation commands
+
+Convert `FAIL_TO_PASS` and optional `PASS_TO_PASS` identifiers into executable
+commands through official SWE-Bench TestSpec/eval script behavior when that
+source is available. If it is unavailable, require a registered
+`validation_command_template`; otherwise fail before model execution.
+
+**Rationale**: Test identifiers are not always shell commands. Guessing local
+commands can create an agent that passes local tests but does not match the
+official harness. An explicit template is acceptable only as a documented
+fallback tied to the registered base image.
+
+**Alternatives considered**:
+- Always run `pytest <identifier>`: rejected because repository-specific test
+  formats and official harness behavior may differ.
+- Let the agent choose arbitrary tests: rejected because allowed validation must
+  be tied to SWE-Bench metadata.
+
+**Sources**:
+- https://www.swebench.com/SWE-bench/api/harness/

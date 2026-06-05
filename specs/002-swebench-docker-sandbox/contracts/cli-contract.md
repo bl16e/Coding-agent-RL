@@ -2,7 +2,7 @@
 
 ## Command: `coding-agent sandbox register`
 
-Registers or updates one prepared base sandbox image for a repository.
+Registers or updates one prepared repository base image.
 
 Required arguments:
 - `--repo <owner/name>`
@@ -11,8 +11,13 @@ Required arguments:
 
 Optional arguments:
 - `--registry <path>` defaults to `.coding-agent/sandboxes.json`.
-- `--official-compatible` marks the registration as targeting official
+- `--official-compatible` marks the base image as targeting official
   SWE-Bench-compatible behavior.
+- `--compatibility-source <text>` records how the official-compatible marker
+  was established.
+- `--validation-command-template <template>` registers an explicit fallback
+  command template for converting validation identifiers into commands when
+  official SWE-Bench TestSpec/eval script data is unavailable.
 
 Exit statuses:
 - `0`: registration saved.
@@ -22,10 +27,14 @@ Exit statuses:
 Rules:
 - Registration validates that the Docker image exists.
 - Registration does not start an agent run.
+- Registration may save an image without `--official-compatible`, but
+  `coding-agent swebench run` rejects that image before model execution.
+- `--validation-command-template` is a fallback source only; official
+  SWE-Bench TestSpec/eval script behavior takes precedence when available.
 
 ## Command: `coding-agent sandbox list`
 
-Lists registered base sandboxes.
+Lists registered repository base images.
 
 Optional arguments:
 - `--registry <path>` defaults to `.coding-agent/sandboxes.json`.
@@ -36,7 +45,8 @@ Exit statuses:
 
 ## Command: `coding-agent swebench run`
 
-Runs one selected SWE-Bench Lite task in a registered Docker sandbox.
+Runs one selected SWE-Bench Lite task in a task container created from the
+registered base image for that task's repository.
 
 Required arguments:
 - `--dataset <path>` local parquet file.
@@ -68,15 +78,28 @@ Outputs:
 
 Exit statuses:
 - `0`: run reached artifact completion, regardless of benchmark outcome.
-- `2`: invalid dataset, missing task, missing base sandbox, missing model
-  config, missing validation metadata, or invalid budget.
+- `2`: invalid dataset, missing task, missing repository base image,
+  repository base image not marked official-compatible, missing model config,
+  missing validation metadata, missing validation command source, or invalid
+  budget.
 - `3`: artifact or registry persistence failed.
 - `4`: unexpected runtime error after agent execution begins.
 
 Rules:
-- Missing base sandboxes fail before model execution.
-- The task workspace is reset to `base_commit` before the first agent action.
+- Missing repository base images fail before model execution.
+- Repository base images not marked `official_compatible` fail before model
+  execution.
+- The task container runs `git checkout <base_commit>` before the first agent action.
 - Default allowed validation uses `FAIL_TO_PASS` only.
 - `PASS_TO_PASS` is included only when `--include-pass-to-pass` is present.
-- All repository tools execute against the selected container.
+- Accepted validation commands are generated from official SWE-Bench
+  TestSpec/eval script behavior when available.
+- If official TestSpec/eval script data is unavailable, accepted validation
+  commands require an explicit registered validation command template.
+- `sandbox.json` and `summary.json` record the base image compatibility marker
+  and validation command source.
+- All repository tools execute against the selected task container.
+- Runtime failures after agent execution begins write partial trajectory,
+  summary error details, sandbox metadata with failure state, and final
+  patch/prediction artifacts when derivable.
 - Existing `coding-agent run` for prepared local workspaces remains unchanged.

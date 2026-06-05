@@ -17,6 +17,10 @@
 - Q: How should task sandboxes be handled between runs? -> A: Preserve run artifacts; reusable sandboxes may be reused for later tasks, but each new run must reset to the selected task's correct base commit before agent actions begin.
 - Q: What should happen when a required base sandbox is missing? -> A: The task run fails before agent execution and prompts the developer to configure the required base sandbox; it does not auto-create the sandbox.
 - Q: Should PASS_TO_PASS regression tests be included in the default allowed validation set? -> A: Default validation includes only FAIL_TO_PASS; PASS_TO_PASS is included only when explicitly requested by the developer.
+- Q: What exactly is reused across tasks in the sandbox design? -> A: Build one base Docker image per repository represented in SWE-Bench Lite, about 18 images for 323 tasks; tasks from the same repository reuse that image and switch to the selected task commit with `git checkout` before agent actions.
+- Q: How is the official-compatible base image claim enforced? -> A: Sandboxed SWE-Bench runs require the registered repository base image to be marked `official_compatible`; unmarked images are rejected before model execution, and the compatibility marker is recorded in sandbox artifacts.
+- Q: How are SWE-Bench validation identifiers converted into executable test commands? -> A: Prefer the official SWE-Bench TestSpec/eval script when available; if it is unavailable, the run must use an explicit registered validation command template and must not guess commands.
+- Q: What artifacts are required when the sandbox fails after agent execution begins? -> A: Preserve the partial trajectory, write a summary with the runtime error, write sandbox metadata with failure state, and write final patch/prediction artifacts when a patch can be derived.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -39,19 +43,19 @@ A developer selects a SWE-Bench Lite task from the local dataset and starts an a
 
 ### User Story 2 - Reuse Prepared Base Sandboxes (Priority: P2)
 
-A developer configures a small set of reusable base sandboxes for repositories represented in SWE-Bench Lite so repeated task runs can start from those bases instead of rebuilding a full environment for every task.
+A developer configures one reusable base image for each repository represented in SWE-Bench Lite so repeated task runs can start from those images instead of rebuilding a full environment for every task.
 
-**Why this priority**: SWE-Bench Lite contains many tasks across a smaller number of repositories. Reusing base environments reduces setup time and makes repeated evaluation practical.
+**Why this priority**: SWE-Bench Lite contains 323 tasks across about 18 repositories. Reusing one base image per repository reduces setup time and makes repeated evaluation practical.
 
-**Independent Test**: Can be tested by preparing a base sandbox for one repository, running two different tasks from that repository, and verifying that each task starts from its own base revision while sharing the prepared base environment.
+**Independent Test**: Can be tested by preparing one base image for one repository, running two different tasks from that repository, and verifying that both tasks reuse the image while each task checks out its own base revision before agent actions.
 
 **Acceptance Scenarios**:
 
-1. **Given** a repository appears in the SWE-Bench Lite dataset, **When** the developer requests a reusable base sandbox for that repository, **Then** the system records that the base sandbox is available for compatible tasks.
-2. **Given** a compatible base sandbox exists, **When** the developer starts a task from the same repository, **Then** the task run uses the existing base sandbox and resets to the selected task's base revision before agent actions begin.
-3. **Given** a base sandbox is missing or unusable, **When** the developer starts a task requiring it, **Then** the system reports the missing or unusable sandbox before starting the agent.
-4. **Given** a reusable sandbox previously ran another task, **When** a new task starts, **Then** the system preserves prior run artifacts outside the task workspace and resets the task workspace to the new task's base revision.
-5. **Given** no compatible base sandbox exists for a selected task, **When** the developer starts that task, **Then** the system fails before agent execution and tells the developer which base sandbox must be configured.
+1. **Given** a repository appears in the SWE-Bench Lite dataset, **When** the developer registers a reusable base image for that repository, **Then** the system records that the base image is available for compatible tasks.
+2. **Given** a compatible base image exists, **When** the developer starts a task from the same repository, **Then** the task run uses that image to create a task container and checks out the selected task's base revision before agent actions begin.
+3. **Given** a base image is missing or unusable, **When** the developer starts a task requiring it, **Then** the system reports the missing or unusable base image before starting the agent.
+4. **Given** a base image previously supported another task, **When** a new task starts, **Then** the system preserves prior run artifacts outside the task workspace and checks out the new task's base revision in the task container.
+5. **Given** no compatible base image exists for a selected task, **When** the developer starts that task, **Then** the system fails before agent execution and tells the developer which repository base image must be configured.
 
 ---
 
@@ -73,13 +77,14 @@ A developer wants test execution for sandboxed tasks to follow the validation co
 
 - The local SWE-Bench Lite dataset file is missing, unreadable, or lacks required task fields.
 - A selected task references a repository or base revision that cannot be prepared.
-- A reusable base sandbox exists but is stale, corrupted, or incompatible with the selected task.
-- A selected task requires a base sandbox that has not been configured.
+- A reusable base image exists but is stale, corrupted, or incompatible with the selected task.
+- A reusable base image exists but is not marked official-compatible for SWE-Bench sandboxed runs.
+- A selected task requires a repository base image that has not been configured.
 - A task run starts from a dirty sandbox state left by a previous run.
-- Prior run artifacts exist while the reusable sandbox is reset for a new task.
+- Prior run artifacts exist while a new task container checks out a different commit from the same repository base image.
 - Sandbox setup completes but the repository dependency setup fails.
 - The agent attempts to read, write, search, or test outside the selected task environment.
-- The selected task has no validation test metadata or the metadata cannot be translated into allowed test commands.
+- The selected task has no validation test metadata, no official TestSpec/eval script, or no explicit registered validation command template.
 - Tests fail, time out, or cannot be executed inside the sandbox.
 - Final patch extraction fails after the agent has modified files.
 - Trajectory persistence fails during a sandboxed run.
@@ -90,11 +95,13 @@ A developer wants test execution for sandboxed tasks to follow the validation co
 
 - **FR-001**: The system MUST allow a developer to select a SWE-Bench Lite task from the local dataset by task identity.
 - **FR-002**: The system MUST validate that a selected task includes the repository identity, base revision, problem statement, and validation context required for a sandboxed run.
-- **FR-003**: The system MUST allow a developer to prepare reusable base sandboxes for repositories represented in the SWE-Bench Lite dataset.
-- **FR-003a**: The system MUST treat official SWE-Bench-compatible environment behavior as the target for base sandbox preparation and task validation.
-- **FR-004**: The system MUST allow a sandboxed task run to reuse a compatible prepared base sandbox for the task's repository.
-- **FR-004a**: The system MUST NOT automatically create a missing base sandbox during task execution.
-- **FR-005**: The system MUST reset each task run to the selected task's base revision before the agent performs any code operation.
+- **FR-003**: The system MUST allow a developer to prepare reusable base Docker images for repositories represented in the SWE-Bench Lite dataset.
+- **FR-003a**: The system MUST treat official SWE-Bench-compatible environment behavior as the target for repository base image preparation and task validation.
+- **FR-003b**: The system MUST support one reusable base image per repository and must not require one image per task.
+- **FR-003c**: The system MUST require a registered repository base image to be marked `official_compatible` before it can be used for a sandboxed SWE-Bench run.
+- **FR-004**: The system MUST allow a sandboxed task run to reuse a compatible prepared base image for the task's repository.
+- **FR-004a**: The system MUST NOT automatically create a missing base image during task execution.
+- **FR-005**: The system MUST check out each task run to the selected task's base revision before the agent performs any code operation.
 - **FR-005a**: The system MUST preserve completed run artifacts independently from sandbox workspace reset or reuse.
 - **FR-006**: The system MUST keep every agent file operation and test operation confined to the selected task's sandboxed environment.
 - **FR-007**: The system MUST expose the existing agent tools to sandboxed task runs: read_file, write_file, search_code, and run_tests.
@@ -103,23 +110,27 @@ A developer wants test execution for sandboxed tasks to follow the validation co
 - **FR-009**: The system MUST ensure run_tests executes only test commands allowed for the selected sandboxed task.
 - **FR-010**: The system MUST derive default allowed validation tests from the selected SWE-Bench Lite task's fix-verification metadata.
 - **FR-010a**: The system MUST NOT include regression test metadata in the default allowed validation set.
+- **FR-010b**: The system MUST derive executable validation commands from the official SWE-Bench TestSpec/eval script when that source is available.
+- **FR-010c**: The system MUST require an explicit registered validation command template when official TestSpec/eval script data is unavailable, and MUST fail before model execution if neither source exists.
 - **FR-011**: The system MUST allow regression test metadata from the selected task to be included in the allowed validation set when explicitly requested by the developer.
 - **FR-012**: The system MUST reject and record any agent request that attempts to execute a test outside the allowed validation set.
 - **FR-013**: The system MUST preserve the complete trajectory, final patch, summary, and prediction record for every sandboxed run that reaches agent execution.
 - **FR-014**: The system MUST report sandbox preparation failures before agent execution begins.
-- **FR-014a**: The system MUST identify the required base sandbox when a selected task cannot run because that base sandbox is missing.
+- **FR-014a**: The system MUST identify the required repository base image when a selected task cannot run because that base image is missing.
 - **FR-015**: The system MUST report sandbox runtime failures in the run summary and trajectory when they occur after agent execution begins.
+- **FR-015a**: The system MUST preserve partial run artifacts after sandbox runtime failures that occur after agent execution begins, including trajectory, summary error, sandbox metadata, and final patch/prediction artifacts when derivable.
 - **FR-016**: The system MUST prevent one task run from inheriting file changes made by a previous task run.
 - **FR-016a**: The system MUST clean or reset reusable sandbox workspaces before a later task starts while keeping previous run artifacts available for inspection.
-- **FR-017**: The system MUST let a developer inspect which base sandbox and task revision were used for a completed sandboxed run.
+- **FR-017**: The system MUST let a developer inspect which repository base image and task revision were used for a completed sandboxed run.
+- **FR-017a**: The system MUST let a developer inspect the base image official-compatible marker and validation command source used for a completed or post-start failed sandboxed run.
 - **FR-018**: The system MUST keep the existing single-task run behavior available for prepared local workspaces.
 
 ### Key Entities *(include if feature involves data)*
 
 - **SWE-Bench Task Record**: A local dataset entry containing task identity, repository identity, base revision, problem statement, validation tests, and optional regression tests.
-- **Base Sandbox**: A reusable prepared repository environment that can be used as the starting point for multiple task runs from the same repository.
-- **Task Sandbox**: An isolated per-run task environment reset to a selected task's base revision before agent actions begin.
-- **Sandboxed Agent Run**: One attempt to solve a selected task inside a task sandbox, including selected task metadata, base sandbox identity, run limits, final outcome, and artifacts.
+- **Base Image**: A reusable prepared Docker image for one repository that can be used as the starting point for multiple task runs from that repository.
+- **Task Sandbox**: An isolated per-run task container created from a Base Image and checked out to a selected task's base revision before agent actions begin.
+- **Sandboxed Agent Run**: One attempt to solve a selected task inside a task sandbox, including selected task metadata, base image identity, run limits, final outcome, and artifacts.
 - **Host Agent Controller**: The agent control process that manages model access, trajectory persistence, and tool requests while directing repository operations to a selected task sandbox.
 - **Validation Test Set**: The allowed tests derived from the selected task's validation metadata and any developer-selected regression tests.
 - **Sandbox Artifact Set**: The trajectory, final patch, summary, prediction record, and sandbox metadata produced by a sandboxed run.
@@ -133,11 +144,14 @@ A developer wants test execution for sandboxed tasks to follow the validation co
 - **SC-003**: For every sandboxed run that modifies code, 100% of final patch content is derived from changes made in that run's task environment.
 - **SC-004**: For every sandboxed run with validation tests, 100% of accepted test attempts are part of the selected task's allowed validation set.
 - **SC-004a**: For every sandboxed run using default validation, 100% of accepted validation tests come from the selected task's fix-verification metadata.
-- **SC-005**: A developer can prepare a reusable base sandbox for a repository and use it for at least two different tasks from that repository without rebuilding the base environment.
-- **SC-005a**: When a reusable sandbox is used for consecutive tasks, 100% of later runs start from the selected task's base revision rather than prior run modifications.
-- **SC-006**: A reviewer can identify the selected task, repository, base revision, base sandbox, final outcome, and validation test results from run artifacts in under 3 minutes.
-- **SC-007**: Missing dataset metadata, missing base sandbox, sandbox setup failure, and sandbox runtime failure are reported with actionable messages in 100% of affected attempts.
-- **SC-007a**: 100% of attempts with missing base sandboxes stop before agent execution and identify the sandbox that must be configured.
+- **SC-004b**: 100% of sandboxed runs without an official TestSpec/eval script or explicit validation command template fail before model execution.
+- **SC-005**: A developer can prepare a reusable base image for a repository and use it for at least two different tasks from that repository without rebuilding the base image.
+- **SC-005a**: When a repository base image is used for consecutive tasks, 100% of later runs check out the selected task's base revision rather than prior run modifications.
+- **SC-006**: A reviewer can identify the selected task, repository, base revision, base image, final outcome, and validation test results from run artifacts in under 3 minutes.
+- **SC-007**: Missing dataset metadata, missing base image, sandbox setup failure, and sandbox runtime failure are reported with actionable messages in 100% of affected attempts.
+- **SC-007a**: 100% of attempts with missing base images stop before agent execution and identify the image that must be configured.
+- **SC-007b**: 100% of attempts using unmarked repository base images stop before agent execution and identify that `official_compatible` is required.
+- **SC-007c**: 100% of sandbox runtime failures after agent execution begins leave partial diagnostic artifacts for inspection.
 - **SC-008**: Existing prepared-workspace single-task runs continue to work with no additional sandbox configuration.
 
 ## Clarifications & Explicit Defaults
@@ -147,11 +161,15 @@ A developer wants test execution for sandboxed tasks to follow the validation co
 - Base sandbox behavior targets official SWE-Bench-compatible task environments; local Dockerfile examples may inform caching or setup but do not define the required benchmark behavior.
 - The agent control process runs on the host; task containers are responsible for repository state and test execution only.
 - The initial scope covers one selected SWE-Bench Lite task per agent run; full benchmark batch orchestration remains out of scope unless specified separately.
-- Reusable base sandboxes are prepared per repository, and each task run starts from the selected task's base revision.
-- Missing base sandboxes are treated as pre-run configuration errors rather than automatically created during task execution.
+- Reusable base images are prepared per repository, and each task container starts by checking out the selected task's base revision.
+- SWE-Bench Lite has 323 tasks across about 18 repositories, so the intended reuse model is approximately one base image per repository, not one image per task.
+- Missing base images are treated as pre-run configuration errors rather than automatically created during task execution.
+- Registered base images must be explicitly marked official-compatible before `coding-agent swebench run` can use them.
 - The existing four-tool agent contract remains unchanged: read_file, write_file, search_code, and run_tests.
 - Default validation includes FAIL_TO_PASS test metadata only; PASS_TO_PASS regression metadata is opt-in.
+- Validation command construction follows official SWE-Bench TestSpec/eval script behavior when available; otherwise an explicit registered validation command template is required.
 - The existing trajectory, final patch, summary, and prediction artifact expectations remain unchanged for sandboxed runs.
-- A sandboxed run must not mutate the reusable base sandbox in a way that affects later task runs.
-- Completed run artifacts are retained outside the reusable sandbox workspace so later workspace resets do not remove inspection data.
+- Runtime failures after the first model or tool action preserve partial artifacts rather than being treated as pre-run failures.
+- A sandboxed run must not mutate the reusable base image in a way that affects later task runs.
+- Completed run artifacts are retained outside the task container workspace so later checkouts or resets do not remove inspection data.
 - The existing prepared-local-workspace flow remains supported.

@@ -194,6 +194,68 @@ class TestResult:
 
 
 @dataclass(frozen=True)
+class BaseImage:
+    repo: str
+    image: str
+    repo_path: str
+    official_compatible: bool = False
+    compatibility_source: str | None = None
+    validation_command_template: str | None = None
+    registered_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("repo", "image", "repo_path"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} is required")
+
+
+@dataclass(frozen=True)
+class ValidationTestSet:
+    fail_to_pass: tuple[str, ...]
+    pass_to_pass: tuple[str, ...] = ()
+    command_source: str | None = None
+    eval_script: str | None = None
+    allowed_commands: tuple[str, ...] = ()
+    include_pass_to_pass: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fail_to_pass", tuple(self.fail_to_pass))
+        object.__setattr__(self, "pass_to_pass", tuple(self.pass_to_pass))
+        object.__setattr__(self, "allowed_commands", tuple(self.allowed_commands))
+        if not self.fail_to_pass:
+            raise ValueError("fail_to_pass must not be empty")
+        if not self.allowed_commands:
+            raise ValueError("allowed_commands must not be empty")
+        if self.command_source not in {"official_testspec", "registered_template"}:
+            raise ValueError("command_source must be official_testspec or registered_template")
+
+
+@dataclass(frozen=True)
+class TaskSandbox:
+    container_name: str
+    base_image: BaseImage
+    instance_id: str
+    repo: str
+    base_commit: str
+    repo_path: str
+    status: str = "pending"
+
+    def __post_init__(self) -> None:
+        for field_name in ("container_name", "instance_id", "repo", "base_commit", "repo_path"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} is required")
+        if self.status not in {"pending", "ready", "running", "stopped", "error"}:
+            raise ValueError("status must be pending, ready, running, stopped, or error")
+
+
+@dataclass(frozen=True)
+class SandboxMetadata:
+    task_sandbox: TaskSandbox
+    validation_test_set: ValidationTestSet
+    failure_state: str | None = None
+
+
+@dataclass(frozen=True)
 class RunSummary:
     run_id: str
     instance_id: str
@@ -205,6 +267,7 @@ class RunSummary:
     error: str | None = None
     last_successful_tool_call: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
+    sandbox: SandboxMetadata | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _json_value(self)

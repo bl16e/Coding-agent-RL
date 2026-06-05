@@ -17,24 +17,31 @@ Validation:
 - `PASS_TO_PASS` may be empty and is used only when regression validation is
   explicitly enabled.
 
-## BaseSandbox
+## BaseImage
 
-- `repo`: repository identifier the sandbox supports.
+- `repo`: repository identifier the image supports.
 - `image`: configured Docker image name or tag.
 - `repo_path`: absolute path inside the container where the repository lives.
 - `official_compatible`: boolean marker that the image targets official
   SWE-Bench-compatible behavior.
+- `compatibility_source`: optional human-readable note or source explaining how
+  the official-compatible marker was established.
+- `validation_command_template`: optional explicit fallback command template
+  used only when official SWE-Bench TestSpec/eval script data is unavailable.
 - `created_at` or `registered_at`: timestamp for registry inspection.
 
 Validation:
-- Each repository may have one active base sandbox registration.
+- Each repository may have one active base image registration.
 - The image must exist before a task run starts.
-- Missing base sandbox registration is a pre-run configuration error.
+- Sandboxed SWE-Bench runs require `official_compatible` to be true.
+- If official TestSpec/eval script data is unavailable, the registration must
+  provide `validation_command_template` before model execution can begin.
+- Missing base image registration is a pre-run configuration error.
 
 ## SandboxRegistry
 
 - `path`: registry file path.
-- `sandboxes`: mapping from repository id to BaseSandbox.
+- `sandboxes`: mapping from repository id to BaseImage.
 
 Validation:
 - Registry JSON must be readable before sandboxed runs.
@@ -45,17 +52,25 @@ Validation:
 
 - `fail_to_pass`: tests derived from task `FAIL_TO_PASS`.
 - `pass_to_pass`: tests derived from task `PASS_TO_PASS` when enabled.
+- `command_source`: `official_testspec` or `registered_template`.
+- `eval_script`: official SWE-Bench eval script content or reference when available.
 - `allowed_commands`: exact commands the agent may request through `run_tests`.
 - `include_pass_to_pass`: boolean option.
 
 Validation:
 - Default validation includes only `FAIL_TO_PASS`.
+- Official SWE-Bench TestSpec/eval script behavior is preferred for converting
+  identifiers into allowed commands.
+- Registered fallback templates may be used only when official TestSpec/eval
+  script data is unavailable.
+- Missing official data and missing fallback template is a pre-run configuration
+  error.
 - Every accepted `run_tests` command must be present in `allowed_commands`.
 
 ## TaskSandbox
 
 - `container_name`: deterministic container name for the selected run.
-- `base_sandbox`: BaseSandbox used to create or reuse the task environment.
+- `base_image`: BaseImage used to create the task container.
 - `instance_id`: task identity.
 - `repo`: repository identity.
 - `base_commit`: commit to reset before agent actions begin.
@@ -63,12 +78,14 @@ Validation:
 - `status`: `pending`, `ready`, `running`, `stopped`, or `error`.
 
 State transitions:
-- `pending -> ready` after image lookup and workspace reset succeed.
+- `pending -> ready` after image lookup and `git checkout` to the task base
+  commit succeed.
 - `ready -> running` when the agent starts tool execution.
 - `running -> stopped | error` when the run ends or the container fails.
 
 Validation:
-- A new task must reset to `base_commit` before the first model action.
+- A new task container must run `git checkout <base_commit>` before the first
+  model action.
 - Prior run artifacts are stored outside the task workspace and survive reset.
 
 ## SandboxedAgentRun
@@ -85,8 +102,11 @@ Validation:
 
 Validation:
 - Existing AgentRun state transitions still apply.
-- The summary must include sandbox image, repo path, base commit, and validation
-  mode for inspection.
+- The summary must include base image, official-compatible marker, validation
+  command source, repo path, base commit, and validation mode for inspection.
+- If the sandbox fails after agent execution begins, partial trajectory,
+  summary error, sandbox metadata, and any derivable patch/prediction artifacts
+  are required.
 
 ## ContainerToolResult
 

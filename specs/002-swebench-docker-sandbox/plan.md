@@ -9,11 +9,11 @@
 Extend the existing single-task coding agent with a SWE-Bench Lite Docker
 sandbox workflow. The host agent controller keeps model access and artifacts on
 the host, while repository tools execute against a selected task container.
-Developers first register official SWE-Bench-compatible base sandbox images,
-then run one selected dataset instance by reusing a compatible image, resetting
-the task workspace to the instance base commit, deriving default validation
-from `FAIL_TO_PASS`, and preserving the existing trajectory, final patch,
-summary, and prediction artifacts.
+Developers first register official SWE-Bench-compatible repository base images,
+then run one selected dataset instance by reusing the image for that task's
+repository, checking out the instance base commit inside the task container,
+deriving default validation from `FAIL_TO_PASS`, and preserving the existing
+trajectory, final patch, summary, and prediction artifacts.
 
 ## Technical Context
 
@@ -27,8 +27,9 @@ installed; pytest for tests
 
 **Storage**: Local filesystem artifacts under caller-provided output
 directories; sandbox registry JSON file mapping repositories to configured base
-sandbox images and metadata; existing run artifacts `trajectory.jsonl`,
-`final.patch`, `summary.json`, and `prediction.jsonl`
+image names, official compatibility markers, and validation command source
+metadata; existing run artifacts `trajectory.jsonl`, `final.patch`,
+`summary.json`, and `prediction.jsonl`
 
 **Testing**: pytest unit, contract, and integration tests; Docker interactions
 covered with fakes/mocks for unit and contract tests, with optional manual
@@ -40,20 +41,25 @@ Linux SWE-Bench-compatible environments
 
 **Project Type**: Single Python CLI/library project
 
-**Performance Goals**: Reusing a registered base sandbox avoids rebuilding the
-base environment during task execution; a sandboxed run must fail before model
-execution when a required image is missing; artifact inspection must identify
-task id, repository, base commit, sandbox image, validation set, and outcome in
+**Performance Goals**: Reusing a registered repository base image avoids
+rebuilding the base environment during task execution; a sandboxed run must fail
+before model execution when a required image is missing; artifact inspection
+must identify task id, repository, base commit, base image, validation set, and outcome in
 under 3 minutes
 
-**Constraints**: Task execution must not auto-create missing base sandboxes;
-agent process runs on host; repository operations execute only inside the
-selected task container; every new task run resets to the selected base commit;
-default validation includes `FAIL_TO_PASS` only; `PASS_TO_PASS` is opt-in;
-prepared-local-workspace `coding-agent run` remains supported
+**Constraints**: Task execution must not auto-create missing repository base
+images; agent process runs on host; repository operations execute only inside
+the selected task container; every new task run performs `git checkout` to the
+selected base commit before agent actions; sandboxed SWE-Bench runs reject
+registered images that are not marked `official_compatible`; default validation
+includes `FAIL_TO_PASS` only; validation commands come from official
+SWE-Bench TestSpec/eval script behavior or an explicit registered fallback
+template; `PASS_TO_PASS` is opt-in; prepared-local-workspace `coding-agent run`
+remains supported
 
-**Scale/Scope**: One SWE-Bench Lite task per sandboxed run; base sandbox
-registration per repository; full benchmark batch orchestration and automatic
+**Scale/Scope**: One SWE-Bench Lite task per sandboxed run; base image
+registration per repository; SWE-Bench Lite's 323 tasks map to about 18
+repository base images; full benchmark batch orchestration and automatic
 official image construction are out of scope for this feature
 
 ## Constitution Check
@@ -64,7 +70,7 @@ official image construction are out of scope for this feature
   sandbox target, host/controller placement, sandbox reuse semantics, missing
   sandbox handling, and `PASS_TO_PASS` default behavior.
 - Cohesion/coupling gate: PASS. Planned modules separate dataset loading,
-  sandbox registry, Docker command execution, container-backed tools, and
+  base image registry, Docker command execution, container-backed tools, and
   sandboxed run orchestration. Existing `agent.py` receives a small tool
   executor seam instead of Docker-specific behavior.
 - Official behavior gate: PASS. Research names official SWE-Bench docs for
@@ -102,13 +108,13 @@ src/
     |-- sandbox/
     |   |-- __init__.py
     |   |-- docker_cli.py              # Focused Docker CLI wrapper
-    |   |-- registry.py                # Base sandbox registry load/save/validation
-    |   |-- manager.py                 # Task container lifecycle and reset checks
+    |   |-- registry.py                # Base image registry plus official compatibility metadata
+    |   |-- manager.py                 # Task container lifecycle and git checkout checks
     |   `-- tools.py                   # Container-backed read/write/search/run_tests
     `-- swebench/
         |-- __init__.py
         |-- dataset.py                 # Local parquet task loading and validation
-        |-- validation.py              # FAIL_TO_PASS/PASS_TO_PASS allowed tests
+        |-- validation.py              # TestSpec/eval-script and fallback-template allowed commands
         |-- sandbox_run.py             # Host orchestration for one sandboxed task
         `-- prediction.py              # Existing prediction export remains
 
@@ -123,6 +129,22 @@ Docker support behind focused sandbox modules. The agent loop should depend on
 an executor protocol for repository tools; Docker container behavior stays in
 `sandbox/`, and SWE-Bench dataset/test metadata stays in `swebench/`.
 
+**Phase 2 Responsibility Notes**: `tools/executor.py` owns only the tool
+execution boundary and the prepared-workspace implementation. `agent.py`
+receives a `ToolExecutor` but remains responsible for model/budget/trajectory
+orchestration. Sandbox modules are currently package skeletons only; Docker
+subprocess details must stay in `sandbox/docker_cli.py`, task container state in
+`sandbox/manager.py`, registry persistence in `sandbox/registry.py`, and
+container-backed tool semantics in `sandbox/tools.py`.
+
+**Phase 3 Cohesion Review**: `agent.py` remains within its original
+orchestration responsibility after executor injection; it does not import Docker
+or SWE-Bench sandbox modules. The sandboxed workflow is split across
+`swebench/sandbox_run.py` for host orchestration, `sandbox/manager.py` for
+container lifecycle and checkout, `sandbox/tools.py` for container-backed tool
+semantics, and `sandbox/docker_cli.py` for Docker subprocess mapping. No Phase 3
+file currently needs to be split for responsibility size.
+
 ## Phase 0 Research
 
 See [research.md](./research.md). All planning unknowns are resolved.
@@ -136,13 +158,14 @@ and [quickstart.md](./quickstart.md).
 
 - Clarification gate: PASS. Design artifacts encode every accepted
   clarification and introduce no new `NEEDS CLARIFICATION` items.
-- Cohesion/coupling gate: PASS. Dataset parsing, registry persistence, Docker
-  command execution, container tool behavior, and sandbox run orchestration are
+- Cohesion/coupling gate: PASS. Dataset parsing, base image registry
+  persistence, Docker command execution, container tool behavior, and sandbox run orchestration are
   split by responsibility. `agent.py` remains an orchestration module and does
   not gain Docker subprocess details.
 - Official behavior gate: PASS. Contracts and quickstart explicitly target
-  official SWE-Bench-compatible environments and cite Docker CLI behavior used
-  for container lifecycle and file/test operations.
+  official SWE-Bench-compatible environments, enforce official-compatible
+  registry markers for sandboxed runs, and cite Docker CLI behavior used for
+  container lifecycle and file/test operations.
 
 ## Complexity Tracking
 

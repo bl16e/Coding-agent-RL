@@ -151,3 +151,17 @@ validation mode.
 For runtime failures after agent execution begins, the run directory still
 contains partial trajectory data, a summary error, sandbox metadata with failure
 state, and patch/prediction files when the patch can be derived.
+
+## 8. Validation Notes
+
+Automated validation on 2026-06-05:
+
+- `python -m pytest tests/unit`: 59 passed in 1.58s.
+- `python -m pytest tests/contract`: 16 passed in 1.36s.
+- `python -m pytest tests/integration`: 13 passed in 1.67s.
+- `python -m pytest tests`: 88 passed in 2.08s.
+
+The automated tests use fake Docker command runners for sandbox behavior. A
+manual real-image check still requires Docker to be running and at least one
+prepared official-compatible repository base image registered with
+`coding-agent sandbox register`.

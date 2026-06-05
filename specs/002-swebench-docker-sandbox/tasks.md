@@ -128,21 +128,21 @@
 
 ### Tests for User Story 3
 
-- [ ] T057 [P] [US3] Add unit tests for parsing `FAIL_TO_PASS`, `PASS_TO_PASS`, and official TestSpec/eval script validation metadata in `tests/unit/test_swebench_validation.py`
-- [ ] T058 [P] [US3] Add unit tests for default validation excluding `PASS_TO_PASS` in `tests/unit/test_swebench_validation.py`
-- [ ] T059 [P] [US3] Add unit tests for `--include-pass-to-pass` including regression tests in `tests/unit/test_swebench_validation.py`
-- [ ] T060 [P] [US3] Add contract test for `--include-pass-to-pass` CLI behavior in `tests/contract/test_cli_swebench_run_contract.py`
-- [ ] T061 [P] [US3] Add integration test for rejecting container test commands outside the allowed set and failing before model execution when no validation command source exists in `tests/integration/test_swebench_validation_integration.py`
+- [X] T057 [P] [US3] Add unit tests for parsing `FAIL_TO_PASS`, `PASS_TO_PASS`, and official TestSpec/eval script validation metadata in `tests/unit/test_swebench_validation.py`
+- [X] T058 [P] [US3] Add unit tests for default validation excluding `PASS_TO_PASS` in `tests/unit/test_swebench_validation.py`
+- [X] T059 [P] [US3] Add unit tests for `--include-pass-to-pass` including regression tests in `tests/unit/test_swebench_validation.py`
+- [X] T060 [P] [US3] Add contract test for `--include-pass-to-pass` CLI behavior in `tests/contract/test_cli_swebench_run_contract.py`
+- [X] T061 [P] [US3] Add integration test for rejecting container test commands outside the allowed set and failing before model execution when no validation command source exists in `tests/integration/test_swebench_validation_integration.py`
 
 ### Implementation for User Story 3
 
-- [ ] T062 [US3] Implement JSON/list normalization for `FAIL_TO_PASS`, `PASS_TO_PASS`, and official TestSpec/eval script metadata in `src/coding_agent/swebench/validation.py`
-- [ ] T063 [US3] Implement default `ValidationTestSet` construction from `FAIL_TO_PASS` in `src/coding_agent/swebench/validation.py`
-- [ ] T064 [US3] Implement opt-in `PASS_TO_PASS` inclusion in `src/coding_agent/swebench/validation.py`
-- [ ] T065 [US3] Convert validation test identifiers into exact allowed test commands using official TestSpec/eval script behavior first and explicit registered fallback templates only when official data is unavailable in `src/coding_agent/swebench/validation.py`
-- [ ] T066 [US3] Wire `--include-pass-to-pass` into `coding-agent swebench run` in `src/coding_agent/cli.py`
-- [ ] T067 [US3] Record validation mode, validation command source, and allowed test counts in `sandbox.json` and `summary.json` in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T068 [US3] Ensure rejected undeclared container test commands are recorded in trajectory in `src/coding_agent/sandbox/tools.py`
+- [X] T062 [US3] Implement JSON/list normalization for `FAIL_TO_PASS`, `PASS_TO_PASS`, and official TestSpec/eval script metadata in `src/coding_agent/swebench/validation.py`
+- [X] T063 [US3] Implement default `ValidationTestSet` construction from `FAIL_TO_PASS` in `src/coding_agent/swebench/validation.py`
+- [X] T064 [US3] Implement opt-in `PASS_TO_PASS` inclusion in `src/coding_agent/swebench/validation.py`
+- [X] T065 [US3] Convert validation test identifiers into exact allowed test commands using official TestSpec/eval script behavior first and explicit registered fallback templates only when official data is unavailable in `src/coding_agent/swebench/validation.py`
+- [X] T066 [US3] Wire `--include-pass-to-pass` into `coding-agent swebench run` in `src/coding_agent/cli.py`
+- [X] T067 [US3] Record validation mode, validation command source, and allowed test counts in `sandbox.json` and `summary.json` in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T068 [US3] Ensure rejected undeclared container test commands are recorded in trajectory in `src/coding_agent/sandbox/tools.py`
 
 **Checkpoint**: All user stories are independently functional and validation metadata controls test execution.
 
@@ -152,15 +152,15 @@
 
 **Purpose**: Documentation, verification, and responsibility review across the completed feature.
 
-- [ ] T069 [P] Update root `README.md` with sandbox command summary and prepared-workspace compatibility note
-- [ ] T070 [P] Add sandbox quickstart validation notes to `specs/002-swebench-docker-sandbox/quickstart.md`
-- [ ] T071 Run unit tests with `python -m pytest tests/unit` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
-- [ ] T072 Run contract tests with `python -m pytest tests/contract` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
-- [ ] T073 Run integration tests with `python -m pytest tests/integration` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
-- [ ] T074 Run full test suite with `python -m pytest tests` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
-- [ ] T075 Audit `src/coding_agent/cli.py`, `src/coding_agent/agent.py`, `src/coding_agent/models.py`, `src/coding_agent/sandbox/`, and `src/coding_agent/swebench/` for oversized responsibilities and document split decisions in `specs/002-swebench-docker-sandbox/plan.md`
-- [ ] T076 Verify CLI contracts against `specs/002-swebench-docker-sandbox/contracts/cli-contract.md`
-- [ ] T077 Verify official SWE-Bench and Docker source assumptions, official-compatible marker enforcement, validation command source behavior, and post-start runtime failure artifact policy remain documented in `specs/002-swebench-docker-sandbox/research.md`
+- [X] T069 [P] Update root `README.md` with sandbox command summary and prepared-workspace compatibility note
+- [X] T070 [P] Add sandbox quickstart validation notes to `specs/002-swebench-docker-sandbox/quickstart.md`
+- [X] T071 Run unit tests with `python -m pytest tests/unit` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
+- [X] T072 Run contract tests with `python -m pytest tests/contract` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
+- [X] T073 Run integration tests with `python -m pytest tests/integration` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
+- [X] T074 Run full test suite with `python -m pytest tests` and record results in `specs/002-swebench-docker-sandbox/quickstart.md`
+- [X] T075 Audit `src/coding_agent/cli.py`, `src/coding_agent/agent.py`, `src/coding_agent/models.py`, `src/coding_agent/sandbox/`, and `src/coding_agent/swebench/` for oversized responsibilities and document split decisions in `specs/002-swebench-docker-sandbox/plan.md`
+- [X] T076 Verify CLI contracts against `specs/002-swebench-docker-sandbox/contracts/cli-contract.md`
+- [X] T077 Verify official SWE-Bench and Docker source assumptions, official-compatible marker enforcement, validation command source behavior, and post-start runtime failure artifact policy remain documented in `specs/002-swebench-docker-sandbox/research.md`
 
 ---
 

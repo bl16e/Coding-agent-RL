@@ -24,6 +24,7 @@ from coding_agent.sandbox.registry import SandboxRegistryError, load_base_image_
 from coding_agent.sandbox.tools import ContainerToolExecutor
 from coding_agent.swebench.dataset import SwebenchTaskRecord
 from coding_agent.swebench.prediction import write_prediction_jsonl
+from coding_agent.swebench.validation import ValidationMetadataError, build_validation_test_set
 from coding_agent.trajectory.summary import write_summary
 
 
@@ -39,18 +40,16 @@ class SandboxedRunRuntimeError(RuntimeError):
         super().__init__(summary.error or "sandboxed run failed")
 
 
-def validation_from_task(task_record: SwebenchTaskRecord, base_image: BaseImage) -> ValidationTestSet:
-    if not base_image.validation_command_template:
-        raise SandboxedRunInputError("validation command source is required")
-    tests = task_record.fail_to_pass
-    command = base_image.validation_command_template.replace("{tests}", " ".join(tests))
-    return ValidationTestSet(
-        fail_to_pass=tests,
-        pass_to_pass=(),
-        command_source="registered_template",
-        allowed_commands=(command,),
-        include_pass_to_pass=False,
-    )
+def validation_from_task(
+    task_record: SwebenchTaskRecord,
+    base_image: BaseImage,
+    *,
+    include_pass_to_pass: bool = False,
+) -> ValidationTestSet:
+    try:
+        return build_validation_test_set(task_record, base_image, include_pass_to_pass=include_pass_to_pass)
+    except ValidationMetadataError as exc:
+        raise SandboxedRunInputError(str(exc)) from exc
 
 
 def _sandbox_payload(sandbox: TaskSandbox, validation: ValidationTestSet, *, status: str) -> dict[str, Any]:
@@ -137,6 +136,7 @@ def run_swebench_task(
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,
+    include_pass_to_pass: bool = False,
 ) -> RunSummary:
     if not base_image.official_compatible:
         raise SandboxedRunInputError("base image must be marked official_compatible")
@@ -144,7 +144,7 @@ def run_swebench_task(
     output_path.mkdir(parents=True, exist_ok=True)
     host_workspace = output_path / "_workspace_snapshot"
     host_workspace.mkdir(parents=True, exist_ok=True)
-    validation = validation_from_task(task_record, base_image)
+    validation = validation_from_task(task_record, base_image, include_pass_to_pass=include_pass_to_pass)
     manager = TaskSandboxManager(docker=docker)
     sandbox = manager.prepare(base_image=base_image, instance_id=task_record.instance_id, base_commit=task_record.base_commit)
     _write_sandbox_json(output_path / "sandbox.json", sandbox, validation, status="running")
@@ -207,6 +207,9 @@ def run_swebench_task(
 
 def load_base_image_from_registry(path: str | Path, repo: str) -> BaseImage:
     try:
-        return registry_load_base_image(path, repo, require_runnable=True)
+        base_image = registry_load_base_image(path, repo, require_runnable=False)
+        if not base_image.official_compatible:
+            raise SandboxedRunInputError("base image must be marked official_compatible")
+        return base_image
     except SandboxRegistryError as exc:
         raise SandboxedRunInputError(str(exc)) from exc

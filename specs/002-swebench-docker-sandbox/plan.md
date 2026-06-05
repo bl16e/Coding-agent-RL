@@ -170,3 +170,26 @@ and [quickstart.md](./quickstart.md).
 ## Complexity Tracking
 
 No constitution violations require justification.
+
+## Final Responsibility Audit
+
+Reviewed on 2026-06-05 after implementing all user stories:
+
+- `src/coding_agent/cli.py` owns argument parsing and exit-code mapping only.
+  It delegates Docker registry work to `sandbox/registry.py`, dataset loading to
+  `swebench/dataset.py`, validation construction to `swebench/validation.py`,
+  and sandboxed run orchestration to `swebench/sandbox_run.py`.
+- `src/coding_agent/agent.py` remains independent of Docker and SWE-Bench
+  dataset details. It depends only on the `ToolExecutor` protocol for tool
+  execution location.
+- `src/coding_agent/models.py` contains shared dataclasses and serialization.
+  It is the largest shared model file but still has one responsibility:
+  persisted/runtime data contracts. A future split is appropriate only if
+  sandbox-specific model contracts continue to grow.
+- `src/coding_agent/sandbox/` is split by boundary: Docker CLI execution,
+  registry persistence, container lifecycle, and container-backed tools.
+- `src/coding_agent/swebench/` is split by dataset parsing, validation metadata,
+  prediction export, and sandboxed task orchestration.
+
+No file currently mixes Docker subprocess details with the agent loop, model
+transport, or local prepared-workspace tool implementations.

@@ -188,6 +188,7 @@ def _swebench_run_command(args: argparse.Namespace) -> int:
             budget=budget,
             model_name=model_name,
             output_dir=Path(args.output_dir),
+            include_pass_to_pass=args.include_pass_to_pass,
         )
         if summary.status is RunStatus.ERRORED:
             print(summary.error or "sandboxed run failed", file=sys.stderr)

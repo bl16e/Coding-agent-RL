@@ -37,6 +37,7 @@ class SwebenchTaskRecord:
     pass_to_pass: tuple[str, ...] = ()
     version: str | None = None
     environment_setup_commit: str | None = None
+    eval_script: str | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "SwebenchTaskRecord":
@@ -53,6 +54,7 @@ class SwebenchTaskRecord:
             pass_to_pass=_normalize_list(row.get("PASS_TO_PASS", ()), "PASS_TO_PASS") if row.get("PASS_TO_PASS") is not None else (),
             version=str(row["version"]) if row.get("version") else None,
             environment_setup_commit=str(row["environment_setup_commit"]) if row.get("environment_setup_commit") else None,
+            eval_script=str(row["eval_script"]) if row.get("eval_script") else None,
         )
 
 

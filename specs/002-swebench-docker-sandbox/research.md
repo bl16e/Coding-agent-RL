@@ -132,3 +132,20 @@ fallback tied to the registered base image.
 
 **Sources**:
 - https://www.swebench.com/SWE-bench/api/harness/
+
+## Final Source Verification
+
+Verified on 2026-06-05:
+
+- The SWE-Bench Docker setup guide continues to describe Docker-based
+  evaluation as the reproducible task-environment mechanism and documents
+  Docker resource requirements.
+- The SWE-Bench harness API documentation continues to expose repository/test
+  specification concepts used by this feature, including eval-script-style test
+  command behavior and `FAIL_TO_PASS` / `PASS_TO_PASS` validation metadata.
+- Docker CLI documentation continues to cover the container command family used
+  by this feature for create/start/exec/inspect-style lifecycle operations.
+- The implementation continues to enforce explicit `official_compatible`
+  registry markers, rejects missing validation command sources before model
+  execution, and preserves partial artifacts for runtime failures after agent
+  execution begins.

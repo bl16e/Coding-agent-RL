@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -48,6 +49,69 @@ ACTION_TOOL_MAP = {
     AgentActionType.SEARCH_CODE: ToolName.SEARCH_CODE,
     AgentActionType.RUN_TESTS: ToolName.RUN_TESTS,
 }
+
+
+def _system_prompt(task: BenchmarkTask) -> str:
+    allowed_tests = "\n".join(f"- {command}" for command in task.allowed_test_commands) or "- none"
+    return (
+        "You are a coding agent. Return exactly one JSON object and no Markdown or prose.\n"
+        'The JSON object must contain "action" and may contain "tool_input", '
+        '"reasoning_summary", "next_intent", "tool_selection_reason", '
+        '"final_status", and "final_message".\n'
+        'Allowed "action" values: "read_file", "write_file", "search_code", '
+        '"run_tests", "final".\n'
+        'Use "read_file" with {"path":"relative/path"}.\n'
+        'Use "write_file" with {"path":"relative/path","content":"complete file content"}.\n'
+        'Use "search_code" with {"query":"text","max_results":20}.\n'
+        'Use "run_tests" only with one of these exact commands in {"command":"..."}:\n'
+        f"{allowed_tests}\n"
+        'Use "final" with "final_status" set to one of "solved", "failed", '
+        '"incomplete", or "errored".'
+    )
+
+
+def _action_message(action: AgentAction) -> dict[str, str]:
+    if action.raw_message is not None:
+        return action.raw_message
+    payload = {
+        "action": action.action.value,
+        "tool_input": action.tool_input,
+        "reasoning_summary": action.reasoning_summary,
+        "next_intent": action.next_intent,
+        "tool_selection_reason": action.tool_selection_reason,
+        "final_status": action.final_status,
+        "final_message": action.final_message,
+    }
+    return {"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)}
+
+
+def _tool_observation_message(result: ToolExecutionResult) -> dict[str, str]:
+    payload = {
+        "tool_name": result.tool_name.value,
+        "status": result.status.value,
+        "output_summary": result.output_summary,
+        "output": result.output,
+        "modifications": result.modifications,
+    }
+    return {"role": "user", "content": "Tool observation: " + json.dumps(payload, ensure_ascii=False, default=str)}
+
+
+def _tool_history_message(action: AgentAction, result: ToolExecutionResult) -> dict[str, object]:
+    payload = {
+        "tool_name": result.tool_name.value,
+        "status": result.status.value,
+        "output_summary": result.output_summary,
+        "output": result.output,
+        "modifications": result.modifications,
+        "test_result": result.test_result,
+    }
+    if action.tool_call_id:
+        return {
+            "role": "tool",
+            "tool_call_id": action.tool_call_id,
+            "content": json.dumps(payload, ensure_ascii=False, default=str),
+        }
+    return _tool_observation_message(result)
 
 
 def create_task_from_paths(
@@ -189,6 +253,10 @@ def run_task(
     test_summary: dict[str, int] = {}
     last_successful_tool_call: str | None = None
     trajectory_index = 0
+    messages: list[dict[str, object]] = [
+        {"role": "system", "content": _system_prompt(task)},
+        {"role": "user", "content": task.problem_statement},
+    ]
 
     while not tracker.max_steps_reached:
         if tracker.total_timeout_reached():
@@ -198,12 +266,7 @@ def run_task(
         # any, gets its own trajectory entry but does not consume another model
         # step. This keeps max_steps aligned with agent thinking turns.
         tracker.consume_step()
-        action = backend.next_action(
-            [
-                {"role": "system", "content": "Return the next AgentAction as JSON."},
-                {"role": "user", "content": task.problem_statement},
-            ]
-        )
+        action = backend.next_action([dict(message) for message in messages])
         try:
             # Persist the decision before executing tools so a crash during a
             # filesystem write or test run still leaves an inspectable trail.
@@ -211,6 +274,7 @@ def run_task(
         except OSError as exc:
             raise ArtifactPersistenceError(str(exc)) from exc
         trajectory_index += 1
+        messages.append(_action_message(action))
         if action.action is AgentActionType.FINAL:
             agent_run.finish(_terminal_status(action))
             final_error = action.final_message
@@ -229,6 +293,7 @@ def run_task(
         except OSError as exc:
             raise ArtifactPersistenceError(str(exc)) from exc
         trajectory_index += 1
+        messages.append(_tool_history_message(action, result))
     else:
         final_error = "max steps budget reached"
 

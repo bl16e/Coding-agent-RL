@@ -26,6 +26,10 @@ class FakeDocker:
         self.calls.append(("stop", name))
         return DockerResult("", "", 0)
 
+    def remove_container(self, name: str) -> DockerResult:
+        self.calls.append(("remove", name))
+        return DockerResult("", "", 0)
+
     def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None) -> DockerResult:
         self.calls.append(("exec", container, tuple(command)))
         if command[:3] == ["git", "-C", "/workspace/repo"]:
@@ -61,10 +65,11 @@ def _base_image() -> BaseImage:
 
 
 def test_sandboxed_run_writes_standard_artifacts_and_sandbox_metadata(tmp_path: Path):
+    docker = FakeDocker()
     summary = run_swebench_task(
         task_record=_task_record(),
         base_image=_base_image(),
-        docker=FakeDocker(),
+        docker=docker,
         backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="incomplete")]),
         budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
@@ -82,6 +87,10 @@ def test_sandboxed_run_writes_standard_artifacts_and_sandbox_metadata(tmp_path: 
     assert sandbox["base_image"]["official_compatible"] is True
     assert sandbox["validation"]["command_source"] == "registered_template"
     assert summary_json["sandbox"]["task_sandbox"]["base_commit"] == "abc123"
+    assert docker.calls[-2:] == [
+        ("stop", "coding-agent-django__django-11099"),
+        ("remove", "coding-agent-django__django-11099"),
+    ]
 
 
 def test_sandboxed_run_preserves_partial_artifacts_after_post_start_runtime_failure(tmp_path: Path):

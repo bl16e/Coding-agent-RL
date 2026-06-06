@@ -11,6 +11,12 @@ from coding_agent.model_backends.base import AgentAction, AgentActionType, Model
 from coding_agent.models import ModelConfig
 
 REQUIRED_ENV_KEYS = ("PROVIDER", "MODEL", "API_KEY", "BASE_URL")
+ERROR_PREVIEW_CHARS = 160
+COMMON_CONTEXT_PROPERTIES = {
+    "reasoning_summary": {"type": "string", "description": "Brief reason for this tool choice."},
+    "next_intent": {"type": "string", "description": "What you plan to do after this result."},
+    "tool_selection_reason": {"type": "string", "description": "Why this tool is appropriate now."},
+}
 
 
 class MissingModelConfigError(ValueError):
@@ -74,6 +80,152 @@ def load_model_config(
     )
 
 
+def _preview_response_text(value: str) -> str:
+    return " ".join(value.strip().split())[:ERROR_PREVIEW_CHARS]
+
+
+def _parse_json_object_from_text(value: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(value):
+        if character != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(value[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def tool_definitions() -> list[dict[str, Any]]:
+    """Return OpenAI Chat Completions function-tool schemas for the agent tools."""
+
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a UTF-8 text file from the repository. Use line windows for large files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Repository-relative file path."},
+                        "line": {"type": "integer", "minimum": 1, "description": "Optional 1-based start line."},
+                        "end_line": {"type": "integer", "minimum": 1, "description": "Optional inclusive end line."},
+                        "offset": {"type": "integer", "minimum": 1, "description": "Alias for 1-based start line."},
+                        "limit": {"type": "integer", "minimum": 1, "description": "Number of lines to read with offset."},
+                        **COMMON_CONTEXT_PROPERTIES,
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Replace one repository file with complete UTF-8 text content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Repository-relative file path."},
+                        "content": {"type": "string", "description": "Complete replacement file content."},
+                        **COMMON_CONTEXT_PROPERTIES,
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_code",
+                "description": "Search repository text files for an exact text query.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Exact text to search for."},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum matches."},
+                        **COMMON_CONTEXT_PROPERTIES,
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_tests",
+                "description": "Run one exact validation command from the allowed command list in the system prompt.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Exact allowed test command to run."},
+                        **COMMON_CONTEXT_PROPERTIES,
+                    },
+                    "required": ["command"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "final",
+                "description": "Finish the run after solving, failing, or exhausting useful work.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "final_status": {
+                            "type": "string",
+                            "enum": ["solved", "failed", "incomplete", "errored"],
+                        },
+                        "final_message": {"type": "string"},
+                        **COMMON_CONTEXT_PROPERTIES,
+                    },
+                    "required": ["final_status"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    ]
+
+
+def _parse_tool_call_message(message: dict[str, Any]) -> AgentAction | None:
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return None
+    tool_call = tool_calls[0]
+    function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+    name = function.get("name")
+    arguments_text = function.get("arguments") or "{}"
+    try:
+        arguments = json.loads(arguments_text)
+    except json.JSONDecodeError as exc:
+        raise ModelBackendError(f"tool call arguments are not valid JSON for {name}") from exc
+    if not isinstance(arguments, dict):
+        raise ModelBackendError(f"tool call arguments must be a JSON object for {name}")
+    try:
+        action = AgentActionType(name)
+    except ValueError as exc:
+        raise ModelBackendError(f"Unsupported agent action: {name}") from exc
+    return AgentAction(
+        action=action,
+        tool_input={} if action is AgentActionType.FINAL else arguments,
+        reasoning_summary=arguments.get("reasoning_summary") or "",
+        next_intent=arguments.get("next_intent") or "",
+        tool_selection_reason=arguments.get("tool_selection_reason") or "",
+        final_status=arguments.get("final_status") if action is AgentActionType.FINAL else None,
+        final_message=arguments.get("final_message") if action is AgentActionType.FINAL else None,
+        tool_call_id=tool_call.get("id"),
+        raw_message=message,
+    )
+
+
 def _payload_to_action_dict(payload: dict[str, Any] | str) -> dict[str, Any]:
     """Extract the AgentAction JSON object from OpenAI-compatible responses.
 
@@ -86,7 +238,10 @@ def _payload_to_action_dict(payload: dict[str, Any] | str) -> dict[str, Any]:
         try:
             parsed = json.loads(payload)
         except json.JSONDecodeError as exc:
-            raise ModelBackendError("model response content is not valid JSON") from exc
+            parsed = _parse_json_object_from_text(payload)
+            if parsed is None:
+                preview = _preview_response_text(payload)
+                raise ModelBackendError(f"model response content is not valid JSON; preview: {preview}") from exc
         if not isinstance(parsed, dict):
             raise ModelBackendError("model response JSON must be an object")
         return parsed
@@ -94,6 +249,9 @@ def _payload_to_action_dict(payload: dict[str, Any] | str) -> dict[str, Any]:
     choices = payload.get("choices")
     if isinstance(choices, list) and choices:
         message = choices[0].get("message", {})
+        tool_action = _parse_tool_call_message(message)
+        if tool_action is not None:
+            return {"__agent_action__": tool_action}
         content = message.get("content")
         if isinstance(content, str):
             return _payload_to_action_dict(content)
@@ -104,6 +262,8 @@ def parse_agent_action(payload: dict[str, Any] | str) -> AgentAction:
     """Validate provider output and convert it into an executable action."""
 
     action_dict = _payload_to_action_dict(payload)
+    if "__agent_action__" in action_dict:
+        return action_dict["__agent_action__"]
     action_value = action_dict.get("action")
     try:
         action = AgentActionType(action_value)
@@ -132,11 +292,18 @@ class OpenAICompatibleBackend:
         self.config = config
         self.timeout_seconds = timeout_seconds
 
-    def build_request(self, messages: list[dict[str, str]]) -> Request:
+    def build_request(self, messages: list[dict[str, Any]]) -> Request:
         """Build a /chat/completions request using the official-style shape."""
 
         url = self.config.base_url.rstrip("/") + "/chat/completions"
-        data = json.dumps({"model": self.config.model, "messages": messages}).encode("utf-8")
+        data = json.dumps(
+            {
+                "model": self.config.model,
+                "messages": messages,
+                "tools": tool_definitions(),
+                "tool_choice": "auto",
+            }
+        ).encode("utf-8")
         return Request(
             url,
             data=data,
@@ -147,7 +314,7 @@ class OpenAICompatibleBackend:
             method="POST",
         )
 
-    def next_action(self, messages: list[dict[str, str]]) -> AgentAction:
+    def next_action(self, messages: list[dict[str, Any]]) -> AgentAction:
         """Request the next tool/final action from the configured model."""
 
         request = self.build_request(messages)

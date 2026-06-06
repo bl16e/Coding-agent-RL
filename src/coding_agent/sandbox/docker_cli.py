@@ -73,6 +73,9 @@ class DockerCli:
     def stop_container(self, name: str) -> DockerResult:
         return self.run(["stop", name], check=False)
 
+    def remove_container(self, name: str) -> DockerResult:
+        return self.run(["rm", "-f", name], check=False)
+
     def exec(
         self,
         container: str,

@@ -14,6 +14,8 @@ class FakeDocker:
         joined = " ".join(command)
         if "json.dumps" in joined:
             return DockerResult(json.dumps({"matches": [{"path": "app.py", "line": 1, "text": "hello"}], "truncated": False}), "", 0)
+        if "splitlines" in joined:
+            return DockerResult("two\nthree\n", "", 0)
         if "read_text" in joined:
             return DockerResult("hello\n", "", 0)
         if "write_text" in joined:
@@ -36,6 +38,40 @@ def test_container_executor_reads_file_from_repo_path():
     assert result.status is Outcome.OK
     assert result.output["content"] == "hello\n"
     assert "/workspace/repo/README.md" in docker.calls[0][1]
+
+
+def test_container_executor_reads_requested_line_range():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task-1",
+        repo_path="/workspace/repo",
+        allowed_test_commands=("python -m pytest tests/test_issue.py",),
+        test_timeout_seconds=30,
+    )
+
+    result = executor.execute(ToolName.READ_FILE, {"path": "README.md", "line": 2, "end_line": 3})
+
+    assert result.status is Outcome.OK
+    assert result.output["content"] == "two\nthree\n"
+    assert "lines 2-3" in result.output_summary
+
+
+def test_container_executor_treats_offset_limit_as_line_window():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task-1",
+        repo_path="/workspace/repo",
+        allowed_test_commands=("python -m pytest tests/test_issue.py",),
+        test_timeout_seconds=30,
+    )
+
+    result = executor.execute(ToolName.READ_FILE, {"path": "README.md", "offset": 2, "limit": 2})
+
+    assert result.status is Outcome.OK
+    assert result.output["content"] == "two\nthree\n"
+    assert "lines 2-3" in result.output_summary
 
 
 def test_container_executor_writes_complete_file_content():

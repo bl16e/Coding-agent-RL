@@ -22,6 +22,8 @@ class AgentAction:
     tool_selection_reason: str = ""
     final_status: str | None = None
     final_message: str | None = None
+    tool_call_id: str | None = None
+    raw_message: dict[str, Any] | None = None
 
 
 class ModelBackendError(RuntimeError):
@@ -29,6 +31,5 @@ class ModelBackendError(RuntimeError):
 
 
 class ModelBackend(Protocol):
-    def next_action(self, messages: list[dict[str, str]]) -> AgentAction:
+    def next_action(self, messages: list[dict[str, Any]]) -> AgentAction:
         ...
-

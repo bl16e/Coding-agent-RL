@@ -23,6 +23,9 @@ class RecordingDocker:
     def stop_container(self, name: str) -> DockerResult:
         return DockerResult("", "", 0)
 
+    def remove_container(self, name: str) -> DockerResult:
+        return DockerResult("", "", 0)
+
     def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None) -> DockerResult:
         if command[:3] == ["git", "-C", "/workspace/repo"]:
             self.checkouts.append(command[-1])

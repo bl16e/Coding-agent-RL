@@ -177,7 +177,7 @@ def run_swebench_task(
     except ArtifactPersistenceError:
         raise
     except Exception as exc:
-        return _write_runtime_failure_artifacts(
+        failure_summary = _write_runtime_failure_artifacts(
             output_dir=output_path,
             run_id=run_id,
             task_record=task_record,
@@ -187,6 +187,9 @@ def run_swebench_task(
             model_name=model_name,
             error=exc,
         )
+        manager.stop(sandbox)
+        return failure_summary
+    manager.stop(sandbox)
     summary = RunSummary(
         run_id=summary.run_id,
         instance_id=summary.instance_id,

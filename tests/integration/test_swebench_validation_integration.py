@@ -22,6 +22,9 @@ class RecordingDocker:
     def stop_container(self, name: str) -> DockerResult:
         return DockerResult("", "", 0)
 
+    def remove_container(self, name: str) -> DockerResult:
+        return DockerResult("", "", 0)
+
     def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None) -> DockerResult:
         self.commands.append(tuple(command))
         return DockerResult("ok", "", 0)

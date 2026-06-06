@@ -25,6 +25,22 @@ def _docker_error(tool_name: ToolName, exc: Exception) -> ToolExecutionResult:
     return ToolExecutionResult(tool_name, Outcome.ERROR, str(exc))
 
 
+def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
+    if "offset" in tool_input or "limit" in tool_input:
+        start = int(tool_input.get("offset", 1))
+        limit = int(tool_input.get("limit", 1))
+        if start < 1 or limit < 1:
+            raise ValueError("offset and limit must be 1-based positive integers")
+        return start, start + limit - 1
+    if "line" not in tool_input and "end_line" not in tool_input:
+        return None
+    start = int(tool_input.get("line", 1))
+    end = int(tool_input.get("end_line", start))
+    if start < 1 or end < start:
+        raise ValueError("line range must be 1-based and end_line must be >= line")
+    return start, end
+
+
 class ContainerToolExecutor:
     """Execute the agent repository tools inside a prepared task container."""
 
@@ -57,16 +73,28 @@ class ContainerToolExecutor:
     def read_file(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
         try:
             path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
-            script = "from pathlib import Path; import sys; print(Path(sys.argv[1]).read_text(encoding='utf-8'), end='')"
-            result = self._docker.exec(self._container_name, ["python", "-c", script, path])
-        except ValueError as exc:
+            bounds = _line_bounds(tool_input)
+            if bounds is None:
+                script = "from pathlib import Path; import sys; print(Path(sys.argv[1]).read_text(encoding='utf-8'), end='')"
+                result = self._docker.exec(self._container_name, ["python", "-c", script, path])
+                output_summary = f"read {len(result.stdout)} characters"
+            else:
+                script = (
+                    "from pathlib import Path; import sys; "
+                    "lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(keepends=True); "
+                    "start=int(sys.argv[2]); end=int(sys.argv[3]); "
+                    "print(''.join(lines[start-1:end]), end='')"
+                )
+                result = self._docker.exec(self._container_name, ["python", "-c", script, path, str(bounds[0]), str(bounds[1])])
+                output_summary = f"read lines {bounds[0]}-{bounds[1]} ({len(result.stdout)} characters)"
+        except (TypeError, ValueError) as exc:
             return ToolExecutionResult(ToolName.READ_FILE, Outcome.REJECTED, str(exc))
         except (DockerCommandError, DockerCommandTimeout) as exc:
             return _docker_error(ToolName.READ_FILE, exc)
         return ToolExecutionResult(
             ToolName.READ_FILE,
             Outcome.OK,
-            f"read {len(result.stdout)} characters",
+            output_summary,
             output={"content": result.stdout},
         )
 

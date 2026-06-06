@@ -34,3 +34,4 @@ class TaskSandboxManager:
 
     def stop(self, sandbox: TaskSandbox) -> None:
         self._docker.stop_container(sandbox.container_name)
+        self._docker.remove_container(sandbox.container_name)

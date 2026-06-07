@@ -22,6 +22,8 @@ from coding_agent.models import (
 )
 from coding_agent.swebench.prediction import write_prediction_jsonl
 from coding_agent.tools import LocalToolExecutor, ToolExecutionResult, ToolExecutor
+from coding_agent.tools.schemas import FINAL_ACTION_SCHEMA, TOOL_SCHEMAS
+from coding_agent.trajectory.converter import convert_trajectory_to_summary_format
 from coding_agent.trajectory.patch import generate_unified_patch, snapshot_workspace
 from coding_agent.trajectory.summary import write_summary
 from coding_agent.trajectory.writer import TrajectoryWriter
@@ -45,28 +47,23 @@ FINAL_STATUS_MAP = {
 
 ACTION_TOOL_MAP = {
     AgentActionType.READ_FILE: ToolName.READ_FILE,
-    AgentActionType.WRITE_FILE: ToolName.WRITE_FILE,
+    AgentActionType.APPLY_PATCH: ToolName.APPLY_PATCH,
     AgentActionType.SEARCH_CODE: ToolName.SEARCH_CODE,
     AgentActionType.RUN_TESTS: ToolName.RUN_TESTS,
 }
 
 
 def _system_prompt(task: BenchmarkTask) -> str:
-    allowed_tests = "\n".join(f"- {command}" for command in task.allowed_test_commands) or "- none"
+    """Generate a task-focused system prompt that relies on native function calling."""
+    allowed_tests = "\n".join(f"  {command}" for command in task.allowed_test_commands)
     return (
-        "You are a coding agent. Return exactly one JSON object and no Markdown or prose.\n"
-        'The JSON object must contain "action" and may contain "tool_input", '
-        '"reasoning_summary", "next_intent", "tool_selection_reason", '
-        '"final_status", and "final_message".\n'
-        'Allowed "action" values: "read_file", "write_file", "search_code", '
-        '"run_tests", "final".\n'
-        'Use "read_file" with {"path":"relative/path"}.\n'
-        'Use "write_file" with {"path":"relative/path","content":"complete file content"}.\n'
-        'Use "search_code" with {"query":"text","max_results":20}.\n'
-        'Use "run_tests" only with one of these exact commands in {"command":"..."}:\n'
-        f"{allowed_tests}\n"
-        'Use "final" with "final_status" set to one of "solved", "failed", '
-        '"incomplete", or "errored".'
+        "You are a coding agent that solves repository issues by using the provided tools.\n\n"
+        "Your task:\n"
+        f"{task.problem_statement}\n\n"
+        "Allowed test commands (use these exact strings with run_tests):\n"
+        f"{allowed_tests}\n\n"
+        "Work systematically: read relevant files, understand the issue, make changes, and verify with tests. "
+        "Call the 'final' tool when you have solved the issue or determined it cannot be solved."
     )
 
 
@@ -192,6 +189,7 @@ def _write_artifacts(
     summary: RunSummary,
     prediction: Prediction,
     final_patch: str,
+    task: BenchmarkTask,
 ) -> None:
     """Write all terminal artifacts as one persistence boundary.
 
@@ -205,6 +203,16 @@ def _write_artifacts(
         (output_dir / "final.patch").write_text(final_patch, encoding="utf-8")
         write_summary(output_dir / "summary.json", summary)
         write_prediction_jsonl(output_dir / "prediction.jsonl", prediction)
+
+        # Generate simplified trajectory format
+        convert_trajectory_to_summary_format(
+            trajectory_jsonl=output_dir / "trajectory.jsonl",
+            task_id=task.instance_id,
+            issue=task.problem_statement,
+            final_diff=final_patch,
+            resolved=summary.status == RunStatus.SOLVED,
+            output_path=output_dir / "trajectory.json",
+        )
     except OSError as exc:
         raise ArtifactPersistenceError(str(exc)) from exc
 
@@ -320,5 +328,5 @@ def run_task(
         artifacts=artifacts,
     )
     prediction = Prediction(task.instance_id, model_name, final_patch)
-    _write_artifacts(output_dir=output_path, summary=summary, prediction=prediction, final_patch=final_patch)
+    _write_artifacts(output_dir=output_path, summary=summary, prediction=prediction, final_patch=final_patch, task=task)
     return summary

@@ -62,8 +62,8 @@ class ContainerToolExecutor:
     def execute(self, tool_name: ToolName, tool_input: dict[str, Any]) -> ToolExecutionResult:
         if tool_name is ToolName.READ_FILE:
             return self.read_file(tool_input)
-        if tool_name is ToolName.WRITE_FILE:
-            return self.write_file(tool_input)
+        if tool_name is ToolName.APPLY_PATCH:
+            return self.apply_patch(tool_input)
         if tool_name is ToolName.SEARCH_CODE:
             return self.search_code(tool_input)
         if tool_name is ToolName.RUN_TESTS:
@@ -98,27 +98,97 @@ class ContainerToolExecutor:
             output={"content": result.stdout},
         )
 
-    def write_file(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        if "content" not in tool_input or not isinstance(tool_input.get("content"), str):
-            return ToolExecutionResult(ToolName.WRITE_FILE, Outcome.REJECTED, "write_file requires complete file content")
+    def apply_patch(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
+        patch_type = tool_input.get("type", "")
+        if patch_type not in ("add_file", "update", "move"):
+            return ToolExecutionResult(
+                ToolName.APPLY_PATCH, Outcome.REJECTED,
+                f"patch type must be add_file, update, or move, got: {patch_type}",
+            )
+
+        if patch_type == "add_file":
+            content = tool_input.get("content", "")
+            if not isinstance(content, str):
+                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "add_file requires string content")
+            try:
+                path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
+                relative_path = posixpath.relpath(path, self._repo_path)
+                script = (
+                    "from pathlib import Path; import sys; "
+                    "p=Path(sys.argv[1]); "
+                    "if p.exists(): print('file exists'); sys.exit(1)\n"
+                    "p.parent.mkdir(parents=True, exist_ok=True); "
+                    "p.write_text(sys.stdin.read(), encoding='utf-8')"
+                )
+                self._docker.exec(self._container_name, ["python", "-c", script, path], stdin=content)
+            except ValueError as exc:
+                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
+            except (DockerCommandError, DockerCommandTimeout) as exc:
+                return _docker_error(ToolName.APPLY_PATCH, exc)
+            return ToolExecutionResult(
+                ToolName.APPLY_PATCH, Outcome.OK, f"created {relative_path}",
+                modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
+            )
+
+        if patch_type == "update":
+            old_string = tool_input.get("old_string", "")
+            new_string = tool_input.get("new_string", "")
+            if not old_string:
+                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires non-empty old_string")
+            if not isinstance(new_string, str):
+                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires new_string")
+            try:
+                path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
+                relative_path = posixpath.relpath(path, self._repo_path)
+                script = (
+                    "from pathlib import Path; import sys, json; "
+                    "p=Path(sys.argv[1]); old=sys.argv[2]; new=sys.argv[3]; "
+                    "content=p.read_text(encoding='utf-8'); count=content.count(old); "
+                    "if count==0: print(json.dumps({'error':'not found'})); sys.exit(1)\n"
+                    "if count>1: print(json.dumps({'error':f'appears {count} times'})); sys.exit(1)\n"
+                    "new_content=content.replace(old,new,1); p.write_text(new_content,encoding='utf-8'); "
+                    "print(json.dumps({'status':'ok'}))"
+                )
+                escaped_old = old_string.replace("'", "'\\''")
+                escaped_new = new_string.replace("'", "'\\''")
+                self._docker.exec(self._container_name, ["python", "-c", script, path, escaped_old, escaped_new])
+            except ValueError as exc:
+                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
+            except (DockerCommandError, DockerCommandTimeout) as exc:
+                return _docker_error(ToolName.APPLY_PATCH, exc)
+            return ToolExecutionResult(
+                ToolName.APPLY_PATCH, Outcome.OK, f"applied edit to {relative_path}",
+                modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
+            )
+
+        # move
+        old_path_str = tool_input.get("old_path", "")
+        new_path_str = tool_input.get("new_path", "")
+        if not old_path_str or not new_path_str:
+            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "move requires old_path and new_path")
         try:
-            path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
+            old_path = _repo_file_path(self._repo_path, old_path_str)
+            new_path = _repo_file_path(self._repo_path, new_path_str)
+            old_relative = posixpath.relpath(old_path, self._repo_path)
+            new_relative = posixpath.relpath(new_path, self._repo_path)
             script = (
                 "from pathlib import Path; import sys; "
-                "p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); "
-                "p.write_text(sys.stdin.read(), encoding='utf-8')"
+                "old=Path(sys.argv[1]); new=Path(sys.argv[2]); "
+                "if not old.exists(): print('src missing'); sys.exit(1)\n"
+                "if new.exists(): print('dst exists'); sys.exit(1)\n"
+                "new.parent.mkdir(parents=True, exist_ok=True); old.rename(new)"
             )
-            self._docker.exec(self._container_name, ["python", "-c", script, path], stdin=tool_input["content"])
+            self._docker.exec(self._container_name, ["python", "-c", script, old_path, new_path])
         except ValueError as exc:
-            return ToolExecutionResult(ToolName.WRITE_FILE, Outcome.REJECTED, str(exc))
+            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
         except (DockerCommandError, DockerCommandTimeout) as exc:
-            return _docker_error(ToolName.WRITE_FILE, exc)
-        relative_path = posixpath.relpath(path, self._repo_path)
+            return _docker_error(ToolName.APPLY_PATCH, exc)
         return ToolExecutionResult(
-            ToolName.WRITE_FILE,
-            Outcome.OK,
-            f"wrote {relative_path}",
-            modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
+            ToolName.APPLY_PATCH, Outcome.OK, f"moved {old_relative} -> {new_relative}",
+            modifications=[
+                FileModification(path=old_relative, write_status=Outcome.OK),
+                FileModification(path=new_relative, write_status=Outcome.OK),
+            ],
         )
 
     def search_code(self, tool_input: dict[str, Any]) -> ToolExecutionResult:

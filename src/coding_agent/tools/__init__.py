@@ -9,7 +9,7 @@ from coding_agent.tools.read_file import read_file
 from coding_agent.tools.result import ToolExecutionResult
 from coding_agent.tools.run_tests import run_tests
 from coding_agent.tools.search_code import search_code
-from coding_agent.tools.write_file import write_file
+from coding_agent.tools.apply_patch import apply_patch
 
 
 def dispatch_tool(
@@ -41,7 +41,7 @@ __all__ = [
     "ToolExecutor",
     "dispatch_tool",
     "read_file",
-    "write_file",
+    "apply_patch",
     "search_code",
     "run_tests",
 ]

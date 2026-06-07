@@ -8,7 +8,7 @@ from coding_agent.tools.result import ToolExecutionResult
 from coding_agent.tools.run_tests import run_tests
 from coding_agent.tools.read_file import read_file
 from coding_agent.tools.search_code import search_code
-from coding_agent.tools.write_file import write_file
+from coding_agent.tools.apply_patch import apply_patch
 
 
 class ToolExecutor(Protocol):
@@ -35,8 +35,8 @@ class LocalToolExecutor:
     def execute(self, tool_name: ToolName, tool_input: dict) -> ToolExecutionResult:
         if tool_name is ToolName.READ_FILE:
             return read_file(self.workspace, tool_input)
-        if tool_name is ToolName.WRITE_FILE:
-            return write_file(self.workspace, tool_input)
+        if tool_name is ToolName.APPLY_PATCH:
+            return apply_patch(self.workspace, tool_input)
         if tool_name is ToolName.SEARCH_CODE:
             return search_code(self.workspace, tool_input)
         if tool_name is ToolName.RUN_TESTS:

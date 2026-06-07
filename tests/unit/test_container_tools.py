@@ -74,7 +74,7 @@ def test_container_executor_treats_offset_limit_as_line_window():
     assert "lines 2-3" in result.output_summary
 
 
-def test_container_executor_writes_complete_file_content():
+def test_container_executor_applies_add_file():
     docker = FakeDocker()
     executor = ContainerToolExecutor(
         docker=docker,
@@ -84,7 +84,7 @@ def test_container_executor_writes_complete_file_content():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.WRITE_FILE, {"path": "app.py", "content": "print('fixed')\n"})
+    result = executor.execute(ToolName.APPLY_PATCH, {"type": "add_file", "path": "app.py", "content": "print('fixed')\n"})
 
     assert result.status is Outcome.OK
     assert docker.calls[0][2] == "print('fixed')\n"

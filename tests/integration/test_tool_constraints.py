@@ -23,7 +23,7 @@ def test_agent_records_only_allowed_tool_types(tmp_path: Path):
     backend = MockBackend(
         [
             AgentAction(action=AgentActionType.READ_FILE, tool_input={"path": "app.py"}),
-            AgentAction(action=AgentActionType.WRITE_FILE, tool_input={"path": "app.py", "content": "new\n"}),
+            AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={"type": "update", "path": "app.py", "old_string": "old", "new_string": "new"}),
             AgentAction(action=AgentActionType.SEARCH_CODE, tool_input={"query": "new"}),
             AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": allowed}),
             AgentAction(action=AgentActionType.FINAL, final_status="solved"),
@@ -44,5 +44,5 @@ def test_agent_records_only_allowed_tool_types(tmp_path: Path):
         if row["action_type"] == "tool_result":
             tool_names.append(row["tool_call"]["tool_name"])
 
-    assert tool_names == ["read_file", "write_file", "search_code", "run_tests"]
+    assert tool_names == ["read_file", "apply_patch", "search_code", "run_tests"]
 

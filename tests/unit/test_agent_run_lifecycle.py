@@ -114,11 +114,9 @@ def test_agent_prompt_describes_action_json_schema_and_allowed_tests(tmp_path: P
     )
 
     system_prompt = backend.messages[0]["content"]
-    assert '"action"' in system_prompt
-    assert "read_file" in system_prompt
-    assert "write_file" in system_prompt
-    assert "search_code" in system_prompt
-    assert "run_tests" in system_prompt
+    # System prompt is task-focused; tool schemas are sent via API's tools parameter
+    assert "coding agent" in system_prompt.lower()
+    assert "solve" in system_prompt.lower() or "issue" in system_prompt.lower()
     assert "python -m pytest tests/test_issue.py::test_fix" in system_prompt
 
 

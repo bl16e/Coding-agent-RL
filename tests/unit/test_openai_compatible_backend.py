@@ -160,4 +160,4 @@ def test_backend_builds_openai_chat_completion_request():
     assert "response_format" not in payload
     assert payload["tool_choice"] == "auto"
     tool_names = {tool["function"]["name"] for tool in payload["tools"]}
-    assert tool_names == {"read_file", "write_file", "search_code", "run_tests", "final"}
+    assert tool_names == {"read_file", "apply_patch", "search_code", "run_tests", "final"}

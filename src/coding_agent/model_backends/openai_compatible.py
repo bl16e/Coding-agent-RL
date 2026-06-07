@@ -8,15 +8,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackendError
-from coding_agent.models import ModelConfig
+from coding_agent.models import ModelConfig, ToolName
+from coding_agent.tools.schemas import COMMON_PROPERTIES, FINAL_ACTION_SCHEMA, TOOL_SCHEMAS
 
 REQUIRED_ENV_KEYS = ("PROVIDER", "MODEL", "API_KEY", "BASE_URL")
 ERROR_PREVIEW_CHARS = 160
-COMMON_CONTEXT_PROPERTIES = {
-    "reasoning_summary": {"type": "string", "description": "Brief reason for this tool choice."},
-    "next_intent": {"type": "string", "description": "What you plan to do after this result."},
-    "tool_selection_reason": {"type": "string", "description": "Why this tool is appropriate now."},
-}
 
 
 class MissingModelConfigError(ValueError):
@@ -98,101 +94,65 @@ def _parse_json_object_from_text(value: str) -> dict[str, Any] | None:
     return None
 
 
+def _schema_to_openai_properties(params: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Convert internal schema format to OpenAI function parameters format."""
+    properties = {}
+    required = []
+
+    for name, spec in params.items():
+        prop = {"type": spec["type"]}
+        if "description" in spec:
+            prop["description"] = spec["description"]
+        if "minimum" in spec:
+            prop["minimum"] = spec["minimum"]
+        if "maximum" in spec:
+            prop["maximum"] = spec["maximum"]
+        if "enum" in spec:
+            prop["enum"] = spec["enum"]
+        properties[name] = prop
+        if spec.get("required"):
+            required.append(name)
+
+    return properties, required
+
+
 def tool_definitions() -> list[dict[str, Any]]:
     """Return OpenAI Chat Completions function-tool schemas for the agent tools."""
+    tools = []
 
-    return [
-        {
+    for tool_name, schema in TOOL_SCHEMAS.items():
+        props, req = _schema_to_openai_properties(schema["parameters"])
+        tools.append({
             "type": "function",
             "function": {
-                "name": "read_file",
-                "description": "Read a UTF-8 text file from the repository. Use line windows for large files.",
+                "name": tool_name.value,
+                "description": schema["description"],
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Repository-relative file path."},
-                        "line": {"type": "integer", "minimum": 1, "description": "Optional 1-based start line."},
-                        "end_line": {"type": "integer", "minimum": 1, "description": "Optional inclusive end line."},
-                        "offset": {"type": "integer", "minimum": 1, "description": "Alias for 1-based start line."},
-                        "limit": {"type": "integer", "minimum": 1, "description": "Number of lines to read with offset."},
-                        **COMMON_CONTEXT_PROPERTIES,
-                    },
-                    "required": ["path"],
+                    "properties": {**props, **COMMON_PROPERTIES},
+                    "required": req,
                     "additionalProperties": False,
                 },
             },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "description": "Replace one repository file with complete UTF-8 text content.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Repository-relative file path."},
-                        "content": {"type": "string", "description": "Complete replacement file content."},
-                        **COMMON_CONTEXT_PROPERTIES,
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
+        })
+
+    # Add final action
+    props, req = _schema_to_openai_properties(FINAL_ACTION_SCHEMA["parameters"])
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "final",
+            "description": FINAL_ACTION_SCHEMA["description"],
+            "parameters": {
+                "type": "object",
+                "properties": {**props, **COMMON_PROPERTIES},
+                "required": req,
+                "additionalProperties": False,
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_code",
-                "description": "Search repository text files for an exact text query.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Exact text to search for."},
-                        "max_results": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum matches."},
-                        **COMMON_CONTEXT_PROPERTIES,
-                    },
-                    "required": ["query"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "run_tests",
-                "description": "Run one exact validation command from the allowed command list in the system prompt.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string", "description": "Exact allowed test command to run."},
-                        **COMMON_CONTEXT_PROPERTIES,
-                    },
-                    "required": ["command"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "final",
-                "description": "Finish the run after solving, failing, or exhausting useful work.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "final_status": {
-                            "type": "string",
-                            "enum": ["solved", "failed", "incomplete", "errored"],
-                        },
-                        "final_message": {"type": "string"},
-                        **COMMON_CONTEXT_PROPERTIES,
-                    },
-                    "required": ["final_status"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-    ]
+    })
+
+    return tools
 
 
 def _parse_tool_call_message(message: dict[str, Any]) -> AgentAction | None:
@@ -213,7 +173,7 @@ def _parse_tool_call_message(message: dict[str, Any]) -> AgentAction | None:
         action = AgentActionType(name)
     except ValueError as exc:
         raise ModelBackendError(f"Unsupported agent action: {name}") from exc
-    return AgentAction(
+    return AgentAction( 
         action=action,
         tool_input={} if action is AgentActionType.FINAL else arguments,
         reasoning_summary=arguments.get("reasoning_summary") or "",

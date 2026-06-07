@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 class AgentActionType(str, Enum):
     READ_FILE = "read_file"
-    WRITE_FILE = "write_file"
+    APPLY_PATCH = "apply_patch"
     SEARCH_CODE = "search_code"
     RUN_TESTS = "run_tests"
     FINAL = "final"

@@ -18,3 +18,20 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude
+.claude/
+
+# Local agent data
+.coding-agent/
+
+# Python
+.venv_linux/
+__pycache__/
+*.pyc
+
+# Agent runs
+runs/
+
+# IDE
+.vscode/
+.idea/

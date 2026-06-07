@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import difflib
+from pathlib import Path
+from typing import Any
+
+from coding_agent.models import FileModification, Outcome, ToolName
+from coding_agent.tools.result import ToolExecutionResult
+from coding_agent.workspace import WorkspacePathError, resolve_workspace_path, to_workspace_relative
+
+
+PATCH_TYPES = ("add_file", "update", "move")
+
+
+def _generate_diff(path: str, old_text: str, new_text: str) -> str:
+    old_lines = old_text.splitlines(keepends=True)
+    new_lines = new_text.splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{path}", tofile=f"b/{path}",
+    )
+    return "".join(diff)
+
+
+def _apply_add_file(workspace: str | Path, path: Path, relative_path: str, tool_input: dict[str, Any]) -> ToolExecutionResult:
+    if "content" not in tool_input or not isinstance(tool_input.get("content"), str):
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "add_file requires string content")
+    if path.exists():
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, f"file already exists: {relative_path}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(tool_input["content"], encoding="utf-8")
+    except OSError as exc:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.ERROR, str(exc))
+    return ToolExecutionResult(
+        ToolName.APPLY_PATCH, Outcome.OK, f"created {relative_path}",
+        modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
+    )
+
+
+def _apply_update(workspace: str | Path, path: Path, relative_path: str, tool_input: dict[str, Any]) -> ToolExecutionResult:
+    old_string = tool_input.get("old_string", "")
+    new_string = tool_input.get("new_string", "")
+    if not old_string:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires non-empty old_string")
+    if not isinstance(new_string, str):
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires new_string")
+    if not path.is_file():
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"file not found: {relative_path}")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"file is not UTF-8 text: {exc}")
+    count = content.count(old_string)
+    if count == 0:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"old_string not found in {relative_path}")
+    if count > 1:
+        return ToolExecutionResult(
+            ToolName.APPLY_PATCH, Outcome.FAILED,
+            f"old_string appears {count} times in {relative_path}. Include more surrounding context.",
+        )
+    new_content = content.replace(old_string, new_string, 1)
+    diff = _generate_diff(relative_path, content, new_content)
+    try:
+        path.write_text(new_content, encoding="utf-8")
+    except OSError as exc:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.ERROR, str(exc))
+    return ToolExecutionResult(
+        ToolName.APPLY_PATCH, Outcome.OK, f"applied edit to {relative_path}",
+        output={"patch": diff},
+        modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
+    )
+
+
+def _apply_move(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecutionResult:
+    old_path_str = tool_input.get("old_path", "")
+    new_path_str = tool_input.get("new_path", "")
+    if not old_path_str or not new_path_str:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "move requires old_path and new_path")
+    try:
+        old_path = resolve_workspace_path(workspace, old_path_str)
+        old_relative = to_workspace_relative(workspace, old_path)
+        new_path = resolve_workspace_path(workspace, new_path_str)
+        new_relative = to_workspace_relative(workspace, new_path)
+    except WorkspacePathError as exc:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
+    if not old_path.exists():
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"source not found: {old_relative}")
+    if new_path.exists():
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"destination exists: {new_relative}")
+    try:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        old_path.rename(new_path)
+    except OSError as exc:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.ERROR, str(exc))
+    return ToolExecutionResult(
+        ToolName.APPLY_PATCH, Outcome.OK, f"moved {old_relative} -> {new_relative}",
+        modifications=[
+            FileModification(path=old_relative, write_status=Outcome.OK),
+            FileModification(path=new_relative, write_status=Outcome.OK),
+        ],
+    )
+
+
+def apply_patch(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecutionResult:
+    """Unified file modification tool supporting add, edit, and move operations.
+
+    Dispatch is based on the ``type`` parameter:
+
+    - ``add_file``: create a new file at ``path`` with ``content``.
+    - ``update``: replace the exact ``old_string`` with ``new_string`` in an existing file at ``path``.
+    - ``move``: rename ``old_path`` to ``new_path``.
+    """
+
+    patch_type = tool_input.get("type", "")
+    if patch_type not in PATCH_TYPES:
+        return ToolExecutionResult(
+            ToolName.APPLY_PATCH, Outcome.REJECTED,
+            f"patch type must be one of {', '.join(PATCH_TYPES)}, got: {patch_type}",
+        )
+
+    if patch_type == "add_file":
+        try:
+            path = resolve_workspace_path(workspace, tool_input.get("path", ""))
+            relative_path = to_workspace_relative(workspace, path)
+        except WorkspacePathError as exc:
+            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
+        return _apply_add_file(workspace, path, relative_path, tool_input)
+
+    if patch_type == "update":
+        try:
+            path = resolve_workspace_path(workspace, tool_input.get("path", ""))
+            relative_path = to_workspace_relative(workspace, path)
+        except WorkspacePathError as exc:
+            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
+        return _apply_update(workspace, path, relative_path, tool_input)
+
+    # move
+    return _apply_move(workspace, tool_input)

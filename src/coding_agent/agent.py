@@ -30,7 +30,12 @@ from coding_agent.trajectory.writer import TrajectoryWriter
 
 
 class ArtifactPersistenceError(RuntimeError):
-    """Raised when required run artifacts cannot be written durably."""
+    """必需运行产物无法可靠写入时抛出。
+
+    这里单独定义错误类型，是为了让 CLI 能把“任务运行失败”和“产物落盘失败”
+    映射成不同退出码。后者通常需要调用方优先处理，因为没有完整产物就无法审计
+    代理到底做了什么。
+    """
 
     pass
 
@@ -54,7 +59,11 @@ ACTION_TOOL_MAP = {
 
 
 def _system_prompt(task: BenchmarkTask) -> str:
-    """Generate a task-focused system prompt that relies on native function calling."""
+    """生成面向单个 SWE-Bench 任务的系统提示词。
+
+    提示词只暴露允许的测试命令，不鼓励模型发明额外命令。真正的强制校验仍在
+    run_tests 工具里完成，提示词只是让模型更容易走上正确路径。
+    """
     allowed_tests = "\n".join(f"  {command}" for command in task.allowed_test_commands)
     return (
         "You are a coding agent that solves repository issues by using the provided tools.\n\n"
@@ -68,6 +77,11 @@ def _system_prompt(task: BenchmarkTask) -> str:
 
 
 def _action_message(action: AgentAction) -> dict[str, str]:
+    """把模型动作重新压回对话历史。
+
+    OpenAI-compatible 后端可能返回原生 tool-call 消息，也可能返回规范化后的动作。
+    这里保留 raw_message 优先级，避免丢失供应商返回的 tool_call_id 等协议细节。
+    """
     if action.raw_message is not None:
         return action.raw_message
     payload = {
@@ -83,6 +97,7 @@ def _action_message(action: AgentAction) -> dict[str, str]:
 
 
 def _tool_observation_message(result: ToolExecutionResult) -> dict[str, str]:
+    """为不支持原生 tool role 的后端构造普通用户观察消息。"""
     payload = {
         "tool_name": result.tool_name.value,
         "status": result.status.value,
@@ -94,6 +109,11 @@ def _tool_observation_message(result: ToolExecutionResult) -> dict[str, str]:
 
 
 def _tool_history_message(action: AgentAction, result: ToolExecutionResult) -> dict[str, object]:
+    """把工具结果加入模型上下文。
+
+    如果模型动作带有 tool_call_id，就按原生 tool 消息回复；否则退化为普通 user
+    消息。这样同一条 agent loop 能同时服务真实 function calling 后端和 mock 后端。
+    """
     payload = {
         "tool_name": result.tool_name.value,
         "status": result.status.value,
@@ -118,6 +138,11 @@ def create_task_from_paths(
     problem_statement_file: str | Path,
     allowed_test_commands: tuple[str, ...],
 ) -> BenchmarkTask:
+    """从 CLI 路径参数创建任务对象。
+
+    CLI 层只负责把字符串参数转换成领域对象；路径存在性和测试命令非空等约束由
+    BenchmarkTask 继续校验，保证库调用和 CLI 调用得到一致行为。
+    """
     problem_path = Path(problem_statement_file)
     if not problem_path.is_file():
         raise ValueError("problem_statement_file must exist")
@@ -130,6 +155,7 @@ def create_task_from_paths(
 
 
 def _terminal_status(action: AgentAction) -> RunStatus:
+    """把模型 final 动作里的字符串状态转换为持久化枚举。"""
     status = action.final_status or "incomplete"
     try:
         return FINAL_STATUS_MAP[status]
@@ -204,7 +230,7 @@ def _write_artifacts(
         write_summary(output_dir / "summary.json", summary)
         write_prediction_jsonl(output_dir / "prediction.jsonl", prediction)
 
-        # Generate simplified trajectory format
+        # 额外生成汇总版轨迹，方便对接只需要 task/issue/diff/resolved 的消费方。
         convert_trajectory_to_summary_format(
             trajectory_jsonl=output_dir / "trajectory.jsonl",
             task_id=task.instance_id,
@@ -238,9 +264,8 @@ def run_task(
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    # Snapshots are text-only by design. SWE-Bench predictions are patches, and
-    # binary files cannot be represented faithfully by the simple unified diff
-    # format used by this MVP.
+    # 快照只记录文本文件。SWE-Bench 最终提交的是 patch，而当前 MVP 的 unified diff
+    # 无法忠实表达二进制内容，因此二进制文件不会参与 changed_files/final.patch 计算。
     before = snapshot_workspace(task.workspace)
     writer = TrajectoryWriter(output_path / "trajectory.jsonl")
     tracker = BudgetTracker(budget)
@@ -266,18 +291,18 @@ def run_task(
         {"role": "user", "content": task.problem_statement},
     ]
 
+    # 主循环的最小单位是“一次模型决策”。工具调用结果会写入轨迹并反馈给模型，
+    # 但不额外消耗 max_steps，避免一次合理的读文件/改文件动作被重复计费。
     while not tracker.max_steps_reached:
         if tracker.total_timeout_reached():
             final_error = "total runtime budget reached"
             break
-        # One budget step is one model decision. The following tool result, if
-        # any, gets its own trajectory entry but does not consume another model
-        # step. This keeps max_steps aligned with agent thinking turns.
+        # 预算检查通过后才请求模型，确保超时场景不会再产生额外工具副作用。
         tracker.consume_step()
         action = backend.next_action([dict(message) for message in messages])
         try:
-            # Persist the decision before executing tools so a crash during a
-            # filesystem write or test run still leaves an inspectable trail.
+            # 先写模型决策，再执行工具。这样即使工具执行时崩溃，也能从轨迹中看到
+            # 最后一次模型打算做什么，方便复盘和调试。
             writer.write_step(_decision_step(trajectory_index, action))
         except OSError as exc:
             raise ArtifactPersistenceError(str(exc)) from exc
@@ -292,8 +317,8 @@ def run_task(
         if result.status is Outcome.OK:
             last_successful_tool_call = result.tool_name.value
         if result.test_result is not None:
-            # Keep summary aggregation small; the full command output remains
-            # attached to the individual trajectory tool_result step.
+            # summary 只保留测试状态计数；完整输出保存在对应的 trajectory tool_result，
+            # 避免 summary.json 变成大日志文件。
             key = result.test_result.status.value
             test_summary[key] = test_summary.get(key, 0) + 1
         try:
@@ -309,6 +334,8 @@ def run_task(
         agent_run.finish(RunStatus.INCOMPLETE)
 
     after = snapshot_workspace(task.workspace)
+    # final.patch 基于运行前后快照生成。Docker 沙箱模式下，传入的 workspace 是宿主侧
+    # 占位目录，真正的容器变更由容器工具和后续扩展负责导出。
     final_patch = generate_unified_patch(before, after)
     artifacts = {
         "trajectory": str(output_path / "trajectory.jsonl"),

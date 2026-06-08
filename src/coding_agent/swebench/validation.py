@@ -12,6 +12,11 @@ class ValidationMetadataError(ValueError):
 
 
 def normalize_test_identifiers(value: Any, field_name: str) -> tuple[str, ...]:
+    """规范化测试标识符列表。
+
+    validation 层再次做规范化，是为了支持测试直接构造 SwebenchTaskRecord 或传入
+    字符串字段，而不必依赖 dataset.py 的加载路径。
+    """
     if value is None:
         return ()
     if isinstance(value, str):
@@ -25,6 +30,11 @@ def normalize_test_identifiers(value: Any, field_name: str) -> tuple[str, ...]:
 
 
 def _command_from_template(template: str, tests: tuple[str, ...]) -> str:
+    """把测试标识符填入命令模板。
+
+    模板必须显式包含 {tests}，避免注册表里误填了固定命令却悄悄忽略数据集中的
+    FAIL_TO_PASS。
+    """
     if not tests:
         raise ValidationMetadataError("validation tests must not be empty")
     if "{tests}" not in template:
@@ -38,6 +48,11 @@ def build_validation_test_set(
     *,
     include_pass_to_pass: bool = False,
 ) -> ValidationTestSet:
+    """为一次任务构造允许执行的验证命令集合。
+
+    优先使用任务记录中的 eval_script，因为它最接近官方 SWE-Bench TestSpec 行为；
+    没有 eval_script 时才回退到注册基础镜像时提供的命令模板。
+    """
     fail_to_pass = normalize_test_identifiers(task_record.fail_to_pass, "FAIL_TO_PASS")
     if not fail_to_pass:
         raise ValidationMetadataError("FAIL_TO_PASS must not be empty")
@@ -45,10 +60,12 @@ def build_validation_test_set(
     selected_tests = fail_to_pass + pass_to_pass
 
     if task_record.eval_script:
+        # 官方 eval_script 可以表达仓库特定测试入口，优先级高于注册表模板。
         command_source = "official_testspec"
         command = _command_from_template(task_record.eval_script, selected_tests)
         eval_script = task_record.eval_script
     elif base_image.validation_command_template:
+        # 注册表模板是显式 fallback，用于本地数据不携带 eval_script 的场景。
         command_source = "registered_template"
         command = _command_from_template(base_image.validation_command_template, selected_tests)
         eval_script = None

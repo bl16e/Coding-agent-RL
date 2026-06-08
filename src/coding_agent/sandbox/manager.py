@@ -7,17 +7,23 @@ from coding_agent.sandbox.docker_cli import DockerCli
 
 
 def _container_name(instance_id: str) -> str:
+    """把 SWE-Bench instance_id 转成 Docker 容器名安全字符串。"""
     safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", instance_id).strip("-").lower()
     return f"coding-agent-{safe}"
 
 
 class TaskSandboxManager:
-    """Create a task container and reset it to the SWE-Bench base commit."""
+    """创建任务容器，并把仓库重置到 SWE-Bench base commit。"""
 
     def __init__(self, *, docker: DockerCli) -> None:
         self._docker = docker
 
     def prepare(self, *, base_image: BaseImage, instance_id: str, base_commit: str) -> TaskSandbox:
+        """准备一个可执行任务的容器。
+
+        每次任务运行都重新 checkout base_commit，保证模型看到的是数据集声明的起点，
+        而不是镜像里可能残留的分支或上一次实验状态。
+        """
         name = _container_name(instance_id)
         self._docker.create_container(name=name, image=base_image.image)
         self._docker.start_container(name)
@@ -33,5 +39,10 @@ class TaskSandboxManager:
         )
 
     def stop(self, sandbox: TaskSandbox) -> None:
+        """停止并删除任务容器。
+
+        stop/rm 在 DockerCli 中使用 check=False，清理阶段即使容器已退出也不会覆盖
+        原始运行结果。
+        """
         self._docker.stop_container(sandbox.container_name)
         self._docker.remove_container(sandbox.container_name)

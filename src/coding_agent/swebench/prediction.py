@@ -7,7 +7,11 @@ from coding_agent.models import Prediction
 
 
 def prediction_to_dict(prediction: Prediction) -> dict[str, str]:
-    """Return the official SWE-Bench prediction JSONL field set."""
+    """返回官方 SWE-Bench prediction JSONL 字段集合。
+
+    字段名必须保持 instance_id/model_name_or_path/model_patch，方便直接提交给
+    SWE-Bench harness 或后续评估脚本。
+    """
 
     return {
         "instance_id": prediction.instance_id,
@@ -17,7 +21,10 @@ def prediction_to_dict(prediction: Prediction) -> dict[str, str]:
 
 
 def write_prediction_jsonl(path: str | Path, prediction: Prediction) -> None:
-    """Write one prediction record, matching one task attempt per run."""
+    """写入单行 prediction。
+
+    当前项目一次只运行一个任务，所以 prediction.jsonl 只包含一条记录。
+    """
 
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -26,10 +33,10 @@ def write_prediction_jsonl(path: str | Path, prediction: Prediction) -> None:
 
 
 def export_prediction_from_run(run_dir: str | Path, model_name: str, output: str | Path) -> None:
-    """Rebuild a prediction JSONL from persisted run artifacts.
+    """从已有运行产物重建 prediction JSONL。
 
-    This command path lets users change the reported model name without rerunning
-    the agent, while the patch itself remains the exact final.patch artifact.
+    这个命令允许用户在不重跑 agent 的情况下更换上报模型名；patch 内容仍然严格来自
+    final.patch，避免导出阶段引入新的代码差异。
     """
 
     run_path = Path(run_dir)

@@ -11,6 +11,11 @@ class SwebenchDatasetError(ValueError):
 
 
 def _normalize_list(value: Any, field_name: str) -> tuple[str, ...]:
+    """把 SWE-Bench parquet 中的测试列表字段规范化为 tuple[str, ...]。
+
+    不同来源的数据可能把 FAIL_TO_PASS/PASS_TO_PASS 存成真实列表，也可能存成 JSON
+    字符串。这里统一转换，后续 validation 模块就不需要关心原始存储形态。
+    """
     if value is None:
         raise SwebenchDatasetError(f"{field_name} is required")
     if isinstance(value, str):
@@ -29,6 +34,12 @@ def _normalize_list(value: Any, field_name: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class SwebenchTaskRecord:
+    """从 SWE-Bench 数据集中抽取出的单任务记录。
+
+    字段名保留官方数据集语义：base_commit 是修复前起点，FAIL_TO_PASS 是默认需要
+    变绿的失败测试，PASS_TO_PASS 是可选回归测试。
+    """
+
     instance_id: str
     repo: str
     base_commit: str
@@ -41,6 +52,7 @@ class SwebenchTaskRecord:
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "SwebenchTaskRecord":
+        """从 parquet 行构造任务记录并校验必需字段。"""
         required = ("instance_id", "repo", "base_commit", "problem_statement", "FAIL_TO_PASS")
         for field_name in required:
             if field_name not in row or row[field_name] in (None, ""):
@@ -59,6 +71,11 @@ class SwebenchTaskRecord:
 
 
 def load_task_record(dataset_path: str | Path, instance_id: str) -> SwebenchTaskRecord:
+    """从本地 parquet 数据集中加载一个 instance_id。
+
+    当前设计一次只跑一个任务，因此这里线性扫描 to_pylist 足够简单直接；未来如果要
+    批量 benchmark，再考虑索引或流式读取。
+    """
     path = Path(dataset_path)
     if not path.is_file():
         raise SwebenchDatasetError(f"dataset does not exist: {path}")

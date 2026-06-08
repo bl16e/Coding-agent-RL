@@ -29,11 +29,11 @@ from coding_agent.trajectory.summary import write_summary
 
 
 class SandboxedRunInputError(ValueError):
-    """Raised for invalid sandboxed run inputs before model execution."""
+    """模型执行前发现沙箱输入无效时抛出。"""
 
 
 class SandboxedRunRuntimeError(RuntimeError):
-    """Raised after agent execution begins and partial artifacts are preserved."""
+    """模型执行已经开始，且已尽量保留部分产物后抛出。"""
 
     def __init__(self, summary: RunSummary) -> None:
         self.summary = summary
@@ -46,6 +46,7 @@ def validation_from_task(
     *,
     include_pass_to_pass: bool = False,
 ) -> ValidationTestSet:
+    """从任务记录和基础镜像生成验证集合，并统一转换错误类型。"""
     try:
         return build_validation_test_set(task_record, base_image, include_pass_to_pass=include_pass_to_pass)
     except ValidationMetadataError as exc:
@@ -53,6 +54,11 @@ def validation_from_task(
 
 
 def _sandbox_payload(sandbox: TaskSandbox, validation: ValidationTestSet, *, status: str) -> dict[str, Any]:
+    """构造 sandbox.json 内容。
+
+    sandbox.json 是 Docker 模式的审计补充文件，用来回答“这次任务跑在哪个容器、哪个
+    镜像、哪个 base commit、使用了哪些验证来源”。
+    """
     return {
         "instance_id": sandbox.instance_id,
         "repo": sandbox.repo,
@@ -79,6 +85,7 @@ def _sandbox_payload(sandbox: TaskSandbox, validation: ValidationTestSet, *, sta
 
 
 def _write_sandbox_json(path: Path, sandbox: TaskSandbox, validation: ValidationTestSet, *, status: str) -> None:
+    """写入沙箱元数据文件。"""
     path.write_text(json.dumps(_sandbox_payload(sandbox, validation, status=status), indent=2), encoding="utf-8")
 
 
@@ -93,6 +100,11 @@ def _write_runtime_failure_artifacts(
     model_name: str,
     error: Exception,
 ) -> RunSummary:
+    """运行期异常时写入可审计的失败产物。
+
+    一旦 agent loop 已经开始，调用方通常需要 summary/prediction/sandbox 等文件来判断
+    失败位置。因此这里即使 patch 为空，也会尽力写完整的失败摘要。
+    """
     (output_dir / "final.patch").write_text("", encoding="utf-8")
     summary = RunSummary(
         run_id=run_id,
@@ -138,14 +150,22 @@ def run_swebench_task(
     output_dir: str | Path,
     include_pass_to_pass: bool = False,
 ) -> RunSummary:
+    """在 Docker 沙箱中运行一个 SWE-Bench 任务。
+
+    该函数是宿主侧编排入口：它加载验证命令、准备容器、把 ContainerToolExecutor 注入
+    通用 agent loop，并在成功或失败后清理容器。
+    """
     if not base_image.official_compatible:
         raise SandboxedRunInputError("base image must be marked official_compatible")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    # 当前 agent.run_task 需要一个宿主侧 workspace 来生成本地 patch 产物。Docker 模式
+    # 的真实仓库变更发生在容器中，因此这里使用占位快照目录保持接口兼容。
     host_workspace = output_path / "_workspace_snapshot"
     host_workspace.mkdir(parents=True, exist_ok=True)
     validation = validation_from_task(task_record, base_image, include_pass_to_pass=include_pass_to_pass)
     manager = TaskSandboxManager(docker=docker)
+    # prepare 会创建容器、启动容器并 checkout 到任务 base_commit。
     sandbox = manager.prepare(base_image=base_image, instance_id=task_record.instance_id, base_commit=task_record.base_commit)
     _write_sandbox_json(output_path / "sandbox.json", sandbox, validation, status="running")
     run_id = str(uuid.uuid4())
@@ -165,6 +185,7 @@ def run_swebench_task(
         test_timeout_seconds=budget.test_timeout_seconds,
     )
     try:
+        # 从这里开始模型可能产生工具副作用。后续异常要尽量写失败产物，而不是只抛出。
         summary = run_task(
             task=task,
             budget=budget,
@@ -190,6 +211,7 @@ def run_swebench_task(
         manager.stop(sandbox)
         return failure_summary
     manager.stop(sandbox)
+    # run_task 返回的是通用 summary；这里补充 Docker 沙箱元数据后重新写回 summary.json。
     summary = RunSummary(
         run_id=summary.run_id,
         instance_id=summary.instance_id,
@@ -209,6 +231,7 @@ def run_swebench_task(
 
 
 def load_base_image_from_registry(path: str | Path, repo: str) -> BaseImage:
+    """为 swebench run 加载并校验基础镜像。"""
     try:
         base_image = registry_load_base_image(path, repo, require_runnable=False)
         if not base_image.official_compatible:

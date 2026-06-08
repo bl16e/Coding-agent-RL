@@ -11,6 +11,11 @@ from coding_agent.tools.result import ToolExecutionResult
 
 
 def _repo_file_path(repo_path: str, requested_path: str) -> str:
+    """解析容器内仓库路径，并阻止路径逃逸。
+
+    Docker 容器里使用 POSIX 路径，因此这里不能复用宿主机 Path。先拼接、规范化，再
+    检查结果仍位于 repo_path 下，避免模型通过 ../../ 读写仓库外文件。
+    """
     if not requested_path:
         raise ValueError("path is required")
     relative = requested_path.lstrip("/")
@@ -22,10 +27,12 @@ def _repo_file_path(repo_path: str, requested_path: str) -> str:
 
 
 def _docker_error(tool_name: ToolName, exc: Exception) -> ToolExecutionResult:
+    """把 Docker 异常转换为工具结果，避免异常穿透 agent loop。"""
     return ToolExecutionResult(tool_name, Outcome.ERROR, str(exc))
 
 
 def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
+    """兼容 offset/limit 和 line/end_line 两套行号参数。"""
     if "offset" in tool_input or "limit" in tool_input:
         start = int(tool_input.get("offset", 1))
         limit = int(tool_input.get("limit", 1))
@@ -42,7 +49,11 @@ def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
 
 
 class ContainerToolExecutor:
-    """Execute the agent repository tools inside a prepared task container."""
+    """在已准备好的任务容器中执行仓库工具。
+
+    它实现与 LocalToolExecutor 相同的 execute 接口，因此 agent.py 不需要知道工具
+    最终跑在宿主机还是 Docker 容器里。
+    """
 
     def __init__(
         self,
@@ -60,6 +71,7 @@ class ContainerToolExecutor:
         self._test_timeout_seconds = test_timeout_seconds
 
     def execute(self, tool_name: ToolName, tool_input: dict[str, Any]) -> ToolExecutionResult:
+        """按工具名分发到容器内实现。"""
         if tool_name is ToolName.READ_FILE:
             return self.read_file(tool_input)
         if tool_name is ToolName.APPLY_PATCH:
@@ -71,14 +83,17 @@ class ContainerToolExecutor:
         raise ValueError(f"unsupported tool: {tool_name}")
 
     def read_file(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
+        """在容器内读取 UTF-8 文本文件。"""
         try:
             path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
             bounds = _line_bounds(tool_input)
             if bounds is None:
+                # 通过 python -c 读取文件，避免依赖容器里是否安装 sed/head/tail 等工具。
                 script = "from pathlib import Path; import sys; print(Path(sys.argv[1]).read_text(encoding='utf-8'), end='')"
                 result = self._docker.exec(self._container_name, ["python", "-c", script, path])
                 output_summary = f"read {len(result.stdout)} characters"
             else:
+                # 行号切片在容器内完成，宿主侧只接收最终文本，减少大文件传输。
                 script = (
                     "from pathlib import Path; import sys; "
                     "lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(keepends=True); "
@@ -99,6 +114,11 @@ class ContainerToolExecutor:
         )
 
     def apply_patch(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
+        """在容器内执行受限文件修改。
+
+        这里没有暴露任意 patch 命令，而是只支持 add_file/update/move 三类结构化操作，
+        便于记录修改摘要并保持与本地工具的行为一致。
+        """
         patch_type = tool_input.get("type", "")
         if patch_type not in ("add_file", "update", "move"):
             return ToolExecutionResult(
@@ -113,6 +133,7 @@ class ContainerToolExecutor:
             try:
                 path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
                 relative_path = posixpath.relpath(path, self._repo_path)
+                # stdin 承载文件内容，避免把大段文本拼进命令参数。
                 script = (
                     "from pathlib import Path; import sys; "
                     "p=Path(sys.argv[1]); "
@@ -140,6 +161,7 @@ class ContainerToolExecutor:
             try:
                 path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
                 relative_path = posixpath.relpath(path, self._repo_path)
+                # update 要求 old_string 只出现一次，促使模型提供足够上下文，避免误改。
                 script = (
                     "from pathlib import Path; import sys, json; "
                     "p=Path(sys.argv[1]); old=sys.argv[2]; new=sys.argv[3]; "
@@ -192,6 +214,11 @@ class ContainerToolExecutor:
         )
 
     def search_code(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
+        """在容器内递归搜索文本文件。
+
+        这是一版标准库实现，避免依赖容器中是否存在 rg。遇到非 UTF-8 文件会跳过，
+        与 read_file/apply_patch 的文本文件假设保持一致。
+        """
         query = str(tool_input.get("query", ""))
         if not query:
             return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, "query must not be empty")
@@ -222,6 +249,11 @@ class ContainerToolExecutor:
         )
 
     def run_tests(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
+        """在容器内执行一条预先允许的测试命令。
+
+        命令必须精确匹配 validation 生成的 allowed_commands。即使最终通过 sh -lc
+        执行，也不能由模型自由构造 shell。
+        """
         command = str(tool_input.get("command", ""))
         started = time.monotonic()
         if command not in self._allowed_test_commands:

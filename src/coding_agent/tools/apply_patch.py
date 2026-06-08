@@ -13,6 +13,7 @@ PATCH_TYPES = ("add_file", "update", "move")
 
 
 def _generate_diff(path: str, old_text: str, new_text: str) -> str:
+    """为单文件更新生成 unified diff，写入工具输出供轨迹审计。"""
     old_lines = old_text.splitlines(keepends=True)
     new_lines = new_text.splitlines(keepends=True)
     diff = difflib.unified_diff(
@@ -23,6 +24,7 @@ def _generate_diff(path: str, old_text: str, new_text: str) -> str:
 
 
 def _apply_add_file(workspace: str | Path, path: Path, relative_path: str, tool_input: dict[str, Any]) -> ToolExecutionResult:
+    """创建新文件，拒绝覆盖已有路径。"""
     if "content" not in tool_input or not isinstance(tool_input.get("content"), str):
         return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "add_file requires string content")
     if path.exists():
@@ -39,6 +41,11 @@ def _apply_add_file(workspace: str | Path, path: Path, relative_path: str, tool_
 
 
 def _apply_update(workspace: str | Path, path: Path, relative_path: str, tool_input: dict[str, Any]) -> ToolExecutionResult:
+    """用精确字符串替换更新文件。
+
+    old_string 必须非空且只出现一次。这个约束牺牲一点便利性，但能显著降低模型把
+    相似代码块误改掉的风险。
+    """
     old_string = tool_input.get("old_string", "")
     new_string = tool_input.get("new_string", "")
     if not old_string:
@@ -73,6 +80,7 @@ def _apply_update(workspace: str | Path, path: Path, relative_path: str, tool_in
 
 
 def _apply_move(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecutionResult:
+    """移动工作区内文件，拒绝覆盖目标路径。"""
     old_path_str = tool_input.get("old_path", "")
     new_path_str = tool_input.get("new_path", "")
     if not old_path_str or not new_path_str:
@@ -103,13 +111,15 @@ def _apply_move(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecut
 
 
 def apply_patch(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecutionResult:
-    """Unified file modification tool supporting add, edit, and move operations.
+    """统一的结构化文件修改工具。
 
-    Dispatch is based on the ``type`` parameter:
+    根据 ``type`` 参数分发：
 
-    - ``add_file``: create a new file at ``path`` with ``content``.
-    - ``update``: replace the exact ``old_string`` with ``new_string`` in an existing file at ``path``.
-    - ``move``: rename ``old_path`` to ``new_path``.
+    - ``add_file``：在 ``path`` 创建新文件。
+    - ``update``：把已有文件中的精确 ``old_string`` 替换为 ``new_string``。
+    - ``move``：把 ``old_path`` 重命名为 ``new_path``。
+
+    路径解析统一走 workspace.py，确保模型无法通过相对路径逃出任务工作区。
     """
 
     patch_type = tool_input.get("type", "")
@@ -135,5 +145,5 @@ def apply_patch(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecut
             return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
         return _apply_update(workspace, path, relative_path, tool_input)
 
-    # move
+    # 剩下的合法类型只能是 move。
     return _apply_move(workspace, tool_input)

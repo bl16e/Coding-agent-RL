@@ -28,6 +28,11 @@ from coding_agent.trajectory.summary import load_summary, load_trajectory, rende
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构造完整 CLI。
+
+    这个项目刻意把 argparse 留在最外层：子命令只收集字符串/数字参数，真正的领域
+    校验会下沉到 models、registry、dataset 和 sandbox_run，便于测试库函数。
+    """
     parser = argparse.ArgumentParser(prog="coding-agent")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -77,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_command(args: argparse.Namespace) -> int:
+    """运行已准备好的本地工作区任务。
+
+    退出码约定：
+    2 表示用户输入或配置错误，3 表示产物写入失败，4 表示运行期未知错误。
+    Docker/SWE-Bench 路径也沿用这个约定，方便 CI 脚本统一处理。
+    """
     try:
         budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
         task = create_task_from_paths(
@@ -89,6 +100,8 @@ def _run_command(args: argparse.Namespace) -> int:
             backend = MockBackend()
             model_name = args.model or "mock-model"
         else:
+            # 真实后端配置从环境或 .env 读取；CLI 层只允许 --model 覆盖模型名，
+            # 不在命令行暴露 API_KEY，避免 shell history 泄露敏感信息。
             config = load_model_config(model_override=args.model)
             backend = OpenAICompatibleBackend(config)
             model_name = config.model
@@ -112,6 +125,11 @@ def _run_command(args: argparse.Namespace) -> int:
 
 
 def _inspect_command(args: argparse.Namespace) -> int:
+    """渲染一次运行的可读检查报告。
+
+    inspect 依赖 summary.json 和 trajectory.jsonl 这两个审计核心文件；如果任一缺失，
+    说明运行目录不完整，应当让调用方看到输入错误而不是空报告。
+    """
     run_dir = Path(args.run_dir)
     summary_path = run_dir / "summary.json"
     trajectory_path = run_dir / "trajectory.jsonl"
@@ -126,6 +144,7 @@ def _inspect_command(args: argparse.Namespace) -> int:
 
 
 def _export_prediction_command(args: argparse.Namespace) -> int:
+    """从已有运行目录重新导出 SWE-Bench prediction JSONL。"""
     try:
         export_prediction_from_run(args.run_dir, args.model_name, args.output)
     except FileNotFoundError as exc:
@@ -138,6 +157,11 @@ def _export_prediction_command(args: argparse.Namespace) -> int:
 
 
 def _sandbox_register_command(args: argparse.Namespace) -> int:
+    """注册调用方已经准备好的 Docker 基础镜像。
+
+    这里会检查镜像存在，但不会构建镜像。是否官方兼容由调用方通过
+    --official-compatible 显式声明，后续 swebench run 会强制检查这个标记。
+    """
     try:
         register_base_image(
             args.registry,
@@ -159,6 +183,7 @@ def _sandbox_register_command(args: argparse.Namespace) -> int:
 
 
 def _sandbox_list_command(args: argparse.Namespace) -> int:
+    """输出当前沙箱注册表，保持机器可读 JSON 格式。"""
     try:
         registry = SandboxRegistry.load(args.registry)
     except SandboxRegistryError as exc:
@@ -169,6 +194,11 @@ def _sandbox_list_command(args: argparse.Namespace) -> int:
 
 
 def _swebench_run_command(args: argparse.Namespace) -> int:
+    """运行一个 parquet 数据集里的 SWE-Bench 实例。
+
+    这个子命令把数据集、注册表、模型后端和 Docker CLI 拼接起来；具体容器生命周期
+    和验证命令构造分别委托给 sandbox_run/validation，避免 CLI 承担业务编排细节。
+    """
     try:
         budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
         task_record = load_task_record(args.dataset, args.instance_id)
@@ -177,6 +207,7 @@ def _swebench_run_command(args: argparse.Namespace) -> int:
             backend = MockBackend()
             model_name = args.model or "mock-model"
         else:
+            # 与本地 run 保持同样的模型配置路径，确保两种执行位置只差工具执行器。
             config = load_model_config(model_override=args.model)
             backend = OpenAICompatibleBackend(config)
             model_name = config.model
@@ -209,6 +240,7 @@ def _swebench_run_command(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """CLI 入口，返回退出码而不是直接 sys.exit，方便测试。"""
     parser = build_parser()
     try:
         args = parser.parse_args(argv)

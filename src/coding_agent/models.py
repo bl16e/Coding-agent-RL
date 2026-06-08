@@ -48,10 +48,16 @@ class TestStatus(str, Enum):
 
 
 def utc_now() -> datetime:
+    """统一生成带 UTC 时区的时间戳，避免持久化时出现 naive datetime。"""
     return datetime.now(timezone.utc)
 
 
 def _json_value(value: Any) -> Any:
+    """把 dataclass/Enum/Path/datetime 递归转换成 JSON 友好值。
+
+    所有产物都通过这个函数保持一致序列化：枚举写 value，路径写字符串，时间写 ISO。
+    这样 summary、trajectory、sandbox 和 prediction 的字段风格不会各自漂移。
+    """
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, Path):
@@ -69,6 +75,12 @@ def _json_value(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class BenchmarkTask:
+    """一次待解决任务的最小输入契约。
+
+    workspace 可以是本地真实仓库，也可以是 Docker 模式下用于产物计算的宿主侧占位
+    目录。repo/base_commit 是 SWE-Bench 元数据，本地运行时可以为空。
+    """
+
     instance_id: str
     workspace: Path
     problem_statement: str
@@ -77,6 +89,7 @@ class BenchmarkTask:
     base_commit: str | None = None
 
     def __post_init__(self) -> None:
+        # 领域对象在创建时立即校验，避免 agent loop 运行到一半才发现任务不完整。
         if not self.instance_id:
             raise ValueError("instance_id is required")
         if not self.problem_statement:
@@ -92,6 +105,12 @@ class BenchmarkTask:
 
 @dataclass(frozen=True)
 class RunBudget:
+    """单次运行的预算。
+
+    max_steps 约束模型决策次数；timeout_seconds 约束整次运行；test_timeout_seconds
+    约束单条测试命令。三者分开可以区分“模型想太久”和“测试卡住”的失败原因。
+    """
+
     max_steps: int
     timeout_seconds: int
     test_timeout_seconds: int
@@ -105,6 +124,8 @@ class RunBudget:
 
 @dataclass(frozen=True)
 class ModelConfig:
+    """OpenAI-compatible 后端所需的最小配置。"""
+
     provider: str
     model: str
     api_key: str
@@ -118,6 +139,12 @@ class ModelConfig:
 
 @dataclass
 class AgentRun:
+    """运行时状态机。
+
+    start/finish 方法显式限制状态迁移，避免 summary 中出现 pending->solved 或
+    solved->running 这类不可能状态。
+    """
+
     run_id: str
     task: BenchmarkTask
     budget: RunBudget
@@ -145,6 +172,8 @@ class AgentRun:
 
 @dataclass(frozen=True)
 class ToolCall:
+    """轨迹中记录的一次工具调用摘要。"""
+
     tool_name: ToolName
     input: dict[str, Any]
     output_summary: str
@@ -158,6 +187,12 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class TrajectoryStep:
+    """轨迹 JSONL 的单行数据结构。
+
+    MODEL 步记录模型决策；TOOL_RESULT 步记录工具执行结果。二者分开后，审计者可以
+    看清模型意图和实际副作用之间的关系。
+    """
+
     step_index: int
     timestamp: datetime
     action_type: StepActionType
@@ -178,6 +213,8 @@ class TrajectoryStep:
 
 @dataclass(frozen=True)
 class FileModification:
+    """工具报告的文件级变更摘要。"""
+
     path: str
     write_status: Outcome
     before_hash: str | None = None
@@ -186,6 +223,8 @@ class FileModification:
 
 @dataclass(frozen=True)
 class TestResult:
+    """一次测试命令的结构化结果。"""
+
     command: str
     status: TestStatus
     duration_seconds: float
@@ -195,6 +234,12 @@ class TestResult:
 
 @dataclass(frozen=True)
 class BaseImage:
+    """已注册的仓库基础镜像。
+
+    official_compatible 是沙箱运行的关键闸门：只有调用方明确声明镜像兼容官方
+    SWE-Bench 环境时，swebench run 才允许使用它。
+    """
+
     repo: str
     image: str
     repo_path: str
@@ -211,6 +256,12 @@ class BaseImage:
 
 @dataclass(frozen=True)
 class ValidationTestSet:
+    """由 SWE-Bench 测试标识符生成的可执行验证集合。
+
+    fail_to_pass 是默认验证集；pass_to_pass 只有用户显式开启时才加入，避免默认运行
+    变成完整回归测试。
+    """
+
     fail_to_pass: tuple[str, ...]
     pass_to_pass: tuple[str, ...] = ()
     command_source: str | None = None
@@ -232,6 +283,8 @@ class ValidationTestSet:
 
 @dataclass(frozen=True)
 class TaskSandbox:
+    """一次任务对应的 Docker 容器状态。"""
+
     container_name: str
     base_image: BaseImage
     instance_id: str
@@ -250,6 +303,8 @@ class TaskSandbox:
 
 @dataclass(frozen=True)
 class SandboxMetadata:
+    """写入 summary.json 的沙箱补充元数据。"""
+
     task_sandbox: TaskSandbox
     validation_test_set: ValidationTestSet
     failure_state: str | None = None
@@ -257,6 +312,8 @@ class SandboxMetadata:
 
 @dataclass(frozen=True)
 class RunSummary:
+    """summary.json 的持久化契约。"""
+
     run_id: str
     instance_id: str
     model_name: str
@@ -275,6 +332,8 @@ class RunSummary:
 
 @dataclass(frozen=True)
 class Prediction:
+    """SWE-Bench prediction JSONL 的核心字段。"""
+
     instance_id: str
     model_name_or_path: str
     model_patch: str

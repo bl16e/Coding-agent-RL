@@ -10,7 +10,11 @@ from coding_agent.tools.result import ToolExecutionResult
 
 
 def _summarize_output(stdout: str, stderr: str, limit: int = 4000) -> str:
-    """Bound captured test output before storing it in trajectory artifacts."""
+    """限制测试输出长度后再写入轨迹产物。
+
+    测试失败时输出可能非常长；轨迹只需要足够诊断的信息，完整日志不应把 JSONL
+    产物撑到难以读取。
+    """
 
     combined = (stdout + ("\n" if stdout and stderr else "") + stderr).strip()
     return combined[:limit]
@@ -22,11 +26,10 @@ def run_tests(
     allowed_commands: tuple[str, ...],
     timeout_seconds: float,
 ) -> ToolExecutionResult:
-    """Run one pre-declared test command in the task workspace.
+    """在任务工作区运行一条预先声明的测试命令。
 
-    The command must exactly match a caller-provided allowlist entry. This keeps
-    the model from turning the test tool into a general shell while preserving
-    official SWE-Bench-style workflows where evaluators choose the test command.
+    命令必须精确匹配调用方提供的 allowlist。这样既保留官方 SWE-Bench 风格的
+    “评估方指定测试命令”，又防止模型把测试工具变成通用 shell。
     """
 
     command = str(tool_input.get("command", ""))
@@ -35,8 +38,8 @@ def run_tests(
         test_result = TestResult(command, TestStatus.REJECTED, 0.0, output_summary="command is not allowed")
         return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, "command is not allowed", test_result=test_result)
     try:
-        # shell=True is acceptable only because the exact command string was
-        # allowlisted by the caller before reaching this point.
+        # shell=True 只在这里可接受：命令字符串已经通过精确 allowlist 校验，模型
+        # 无法在运行时拼接额外 shell 片段。
         completed = subprocess.run(
             command,
             cwd=Path(workspace),

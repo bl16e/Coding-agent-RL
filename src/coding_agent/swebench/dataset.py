@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -89,3 +90,37 @@ def load_task_record(dataset_path: str | Path, instance_id: str) -> SwebenchTask
         if str(row.get("instance_id")) == instance_id:
             return SwebenchTaskRecord.from_row(row)
     raise SwebenchDatasetError(f"instance not found: {instance_id}")
+
+
+def load_task_records(dataset_path: str | Path, instance_ids: Sequence[str]) -> tuple[SwebenchTaskRecord, ...]:
+    """Load multiple task records with one parquet read after input validation."""
+    requested = tuple(str(instance_id) for instance_id in instance_ids if str(instance_id))
+    if not requested:
+        raise SwebenchDatasetError("at least one instance id is required")
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for instance_id in requested:
+        if instance_id in seen and instance_id not in duplicates:
+            duplicates.append(instance_id)
+        seen.add(instance_id)
+    if duplicates:
+        raise SwebenchDatasetError("duplicate instance id: " + ", ".join(duplicates))
+
+    path = Path(dataset_path)
+    if not path.is_file():
+        raise SwebenchDatasetError(f"dataset does not exist: {path}")
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise SwebenchDatasetError("pyarrow is required to read parquet datasets") from exc
+
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for row in pq.read_table(path).to_pylist():
+        row_instance_id = str(row.get("instance_id"))
+        if row_instance_id in seen and row_instance_id not in rows_by_id:
+            rows_by_id[row_instance_id] = row
+
+    missing = [instance_id for instance_id in requested if instance_id not in rows_by_id]
+    if missing:
+        raise SwebenchDatasetError("instance not found: " + ", ".join(missing))
+    return tuple(SwebenchTaskRecord.from_row(rows_by_id[instance_id]) for instance_id in requested)

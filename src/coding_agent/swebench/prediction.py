@@ -32,6 +32,16 @@ def write_prediction_jsonl(path: str | Path, prediction: Prediction) -> None:
         handle.write(json.dumps(prediction_to_dict(prediction), ensure_ascii=True) + "\n")
 
 
+def write_predictions_jsonl(path: str | Path, predictions: list[Prediction] | tuple[Prediction, ...]) -> None:
+    """Write multiple SWE-Bench prediction records in JSONL order."""
+
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8") as handle:
+        for prediction in predictions:
+            handle.write(json.dumps(prediction_to_dict(prediction), ensure_ascii=True) + "\n")
+
+
 def export_prediction_from_run(run_dir: str | Path, model_name: str, output: str | Path) -> None:
     """从已有运行产物重建 prediction JSONL。
 

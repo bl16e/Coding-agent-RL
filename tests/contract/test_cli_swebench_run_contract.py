@@ -165,3 +165,90 @@ def test_swebench_run_wires_include_pass_to_pass_flag(tmp_path: Path, monkeypatc
 
     assert exit_code == 0
     assert captured["include_pass_to_pass"] is True
+
+
+def test_swebench_run_accepts_repeated_instance_ids_and_jobs(tmp_path: Path, monkeypatch):
+    dataset = tmp_path / "dataset.parquet"
+    dataset.write_text("placeholder", encoding="utf-8")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"sandboxes": {}}), encoding="utf-8")
+    captured = {}
+
+    def fake_run_swebench_tasks(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("coding_agent.cli.run_swebench_tasks", fake_run_swebench_tasks)
+
+    exit_code = main(
+        [
+            "swebench",
+            "run",
+            "--backend",
+            "mock",
+            "--dataset",
+            str(dataset),
+            "--instance-id",
+            "django__django-1",
+            "--instance-id",
+            "django__django-2",
+            "--registry",
+            str(registry),
+            "--jobs",
+            "2",
+            "--max-steps",
+            "1",
+            "--timeout-seconds",
+            "60",
+            "--test-timeout-seconds",
+            "10",
+            "--output-dir",
+            str(tmp_path / "run"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["instance_ids"] == ("django__django-1", "django__django-2")
+    assert captured["jobs"] == 2
+
+
+def test_swebench_run_reads_instance_id_file(tmp_path: Path, monkeypatch):
+    dataset = tmp_path / "dataset.parquet"
+    dataset.write_text("placeholder", encoding="utf-8")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"sandboxes": {}}), encoding="utf-8")
+    instance_file = tmp_path / "instances.txt"
+    instance_file.write_text("# batch\n\ndjango__django-1\ndjango__django-2\n", encoding="utf-8")
+    captured = {}
+
+    def fake_run_swebench_tasks(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("coding_agent.cli.run_swebench_tasks", fake_run_swebench_tasks)
+
+    exit_code = main(
+        [
+            "swebench",
+            "run",
+            "--backend",
+            "mock",
+            "--dataset",
+            str(dataset),
+            "--instance-id-file",
+            str(instance_file),
+            "--registry",
+            str(registry),
+            "--max-steps",
+            "1",
+            "--timeout-seconds",
+            "60",
+            "--test-timeout-seconds",
+            "10",
+            "--output-dir",
+            str(tmp_path / "run"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["instance_ids"] == ("django__django-1", "django__django-2")

@@ -22,7 +22,9 @@ from coding_agent.swebench.sandbox_run import (
     SandboxedRunInputError,
     SandboxedRunRuntimeError,
     load_base_image_from_registry,
+    parse_instance_id_file,
     run_swebench_task,
+    run_swebench_tasks,
 )
 from coding_agent.trajectory.summary import load_summary, load_trajectory, render_inspect_report
 
@@ -67,10 +69,13 @@ def build_parser() -> argparse.ArgumentParser:
     sandbox_list_parser.add_argument("--registry", default=".coding-agent/sandboxes.json")
     swebench_parser = subparsers.add_parser("swebench", help="SWE-Bench commands")
     swebench_subparsers = swebench_parser.add_subparsers(dest="swebench_command")
-    swebench_run_parser = swebench_subparsers.add_parser("run", help="run one SWE-Bench task in Docker")
+    swebench_run_parser = swebench_subparsers.add_parser("run", help="run SWE-Bench task(s) in Docker")
     swebench_run_parser.add_argument("--dataset", required=True)
-    swebench_run_parser.add_argument("--instance-id", required=True)
+    instance_source = swebench_run_parser.add_mutually_exclusive_group(required=True)
+    instance_source.add_argument("--instance-id", action="append", dest="instance_ids")
+    instance_source.add_argument("--instance-id-file")
     swebench_run_parser.add_argument("--registry", required=True)
+    swebench_run_parser.add_argument("--jobs", type=int, default=1)
     swebench_run_parser.add_argument("--max-steps", type=int, required=True)
     swebench_run_parser.add_argument("--timeout-seconds", type=int, required=True)
     swebench_run_parser.add_argument("--test-timeout-seconds", type=int, required=True)
@@ -200,30 +205,60 @@ def _swebench_run_command(args: argparse.Namespace) -> int:
     和验证命令构造分别委托给 sandbox_run/validation，避免 CLI 承担业务编排细节。
     """
     try:
+        instance_ids = tuple(args.instance_ids or parse_instance_id_file(args.instance_id_file))
         budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
-        task_record = load_task_record(args.dataset, args.instance_id)
-        base_image = load_base_image_from_registry(args.registry, task_record.repo)
-        if args.backend == "mock":
-            backend = MockBackend()
-            model_name = args.model or "mock-model"
+        if args.jobs <= 0:
+            raise ValueError("jobs must be a positive integer")
+        if len(instance_ids) == 1:
+            task_record = load_task_record(args.dataset, instance_ids[0])
+            base_image = load_base_image_from_registry(args.registry, task_record.repo)
+            if args.backend == "mock":
+                backend = MockBackend()
+                model_name = args.model or "mock-model"
+            else:
+                # 与本地 run 保持同样的模型配置路径，确保两种执行位置只差工具执行器。
+                config = load_model_config(model_override=args.model)
+                backend = OpenAICompatibleBackend(config)
+                model_name = config.model
+            summary = run_swebench_task(
+                task_record=task_record,
+                base_image=base_image,
+                docker=DockerCli(),
+                backend=backend,
+                budget=budget,
+                model_name=model_name,
+                output_dir=Path(args.output_dir),
+                include_pass_to_pass=args.include_pass_to_pass,
+            )
+            if summary.status is RunStatus.ERRORED:
+                print(summary.error or "sandboxed run failed", file=sys.stderr)
+                return 4
         else:
-            # 与本地 run 保持同样的模型配置路径，确保两种执行位置只差工具执行器。
-            config = load_model_config(model_override=args.model)
-            backend = OpenAICompatibleBackend(config)
-            model_name = config.model
-        summary = run_swebench_task(
-            task_record=task_record,
-            base_image=base_image,
-            docker=DockerCli(),
-            backend=backend,
-            budget=budget,
-            model_name=model_name,
-            output_dir=Path(args.output_dir),
-            include_pass_to_pass=args.include_pass_to_pass,
-        )
-        if summary.status is RunStatus.ERRORED:
-            print(summary.error or "sandboxed run failed", file=sys.stderr)
-            return 4
+            if args.backend == "mock":
+                model_name = args.model or "mock-model"
+
+                def backend_factory():
+                    return MockBackend()
+
+            else:
+                config = load_model_config(model_override=args.model)
+                model_name = config.model
+
+                def backend_factory():
+                    return OpenAICompatibleBackend(config)
+
+            return run_swebench_tasks(
+                dataset_path=args.dataset,
+                instance_ids=instance_ids,
+                registry_path=args.registry,
+                docker=DockerCli(),
+                backend_factory=backend_factory,
+                budget=budget,
+                model_name=model_name,
+                output_dir=Path(args.output_dir),
+                jobs=args.jobs,
+                include_pass_to_pass=args.include_pass_to_pass,
+            )
     except (ValueError, SwebenchDatasetError, SandboxedRunInputError, MissingModelConfigError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

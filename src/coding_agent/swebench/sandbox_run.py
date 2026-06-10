@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +24,8 @@ from coding_agent.sandbox.docker_cli import DockerCli
 from coding_agent.sandbox.manager import TaskSandboxManager
 from coding_agent.sandbox.registry import SandboxRegistryError, load_base_image_from_registry as registry_load_base_image
 from coding_agent.sandbox.tools import ContainerToolExecutor
-from coding_agent.swebench.dataset import SwebenchTaskRecord
-from coding_agent.swebench.prediction import write_prediction_jsonl
+from coding_agent.swebench.dataset import SwebenchTaskRecord, load_task_records
+from coding_agent.swebench.prediction import write_prediction_jsonl, write_predictions_jsonl
 from coding_agent.swebench.validation import ValidationMetadataError, build_validation_test_set
 from coding_agent.trajectory.summary import write_summary
 
@@ -139,6 +141,200 @@ def _write_runtime_failure_artifacts(
     return summary
 
 
+def _safe_instance_dir(instance_id: str) -> str:
+    safe = "".join(char if char.isalnum() or char in "._-" else "-" for char in instance_id).strip("-")
+    return safe or "instance"
+
+
+def parse_instance_id_file(path: str | Path) -> tuple[str, ...]:
+    """Read one instance id per line, ignoring blank lines and comment lines."""
+    source = Path(path)
+    try:
+        instance_ids = tuple(
+            line.strip()
+            for line in source.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+    except OSError as exc:
+        raise SandboxedRunInputError(str(exc)) from exc
+    if not instance_ids:
+        raise SandboxedRunInputError("instance-id-file must contain at least one instance id")
+    return instance_ids
+
+
+def _load_base_images_for_records(
+    *,
+    task_records: Sequence[SwebenchTaskRecord],
+    registry_path: str | Path | None,
+    base_images: Mapping[str, BaseImage] | None,
+) -> dict[str, BaseImage]:
+    if base_images is not None:
+        images = dict(base_images)
+        required_repos = {record.repo for record in task_records}
+        missing = sorted(repo for repo in required_repos if repo not in images)
+        if missing:
+            raise SandboxedRunInputError("base image not provided for repo: " + ", ".join(missing))
+        for repo in required_repos:
+            image = images[repo]
+            if not image.official_compatible:
+                raise SandboxedRunInputError("base image must be marked official_compatible")
+        return images
+    if registry_path is None:
+        raise SandboxedRunInputError("registry is required")
+    return {
+        repo: load_base_image_from_registry(registry_path, repo)
+        for repo in sorted({record.repo for record in task_records})
+    }
+
+
+def _prediction_from_run_dir(run_dir: Path, instance_id: str, model_name: str) -> Prediction:
+    prediction_path = run_dir / "prediction.jsonl"
+    if not prediction_path.is_file():
+        return Prediction(instance_id, model_name, "")
+    for line in prediction_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        return Prediction(
+            instance_id=str(payload.get("instance_id", instance_id)),
+            model_name_or_path=str(payload.get("model_name_or_path", model_name)),
+            model_patch=str(payload.get("model_patch", "")),
+        )
+    return Prediction(instance_id, model_name, "")
+
+
+def run_swebench_tasks(
+    *,
+    task_records: Sequence[SwebenchTaskRecord] | None = None,
+    dataset_path: str | Path | None = None,
+    instance_ids: Sequence[str] = (),
+    registry_path: str | Path | None = None,
+    base_images: Mapping[str, BaseImage] | None = None,
+    docker: DockerCli,
+    backend_factory: Callable[[], ModelBackend],
+    budget: RunBudget,
+    model_name: str,
+    output_dir: str | Path,
+    jobs: int = 1,
+    include_pass_to_pass: bool = False,
+) -> int:
+    """Run multiple SWE-Bench tasks with independent sandboxes and artifacts."""
+    if jobs <= 0:
+        raise SandboxedRunInputError("jobs must be a positive integer")
+    if task_records is None:
+        if dataset_path is None:
+            raise SandboxedRunInputError("dataset is required")
+        records = tuple(load_task_records(dataset_path, instance_ids))
+    else:
+        records = tuple(task_records)
+    if not records:
+        raise SandboxedRunInputError("at least one instance id is required")
+    seen_instance_ids: set[str] = set()
+    duplicate_instance_ids: list[str] = []
+    for record in records:
+        if record.instance_id in seen_instance_ids and record.instance_id not in duplicate_instance_ids:
+            duplicate_instance_ids.append(record.instance_id)
+        seen_instance_ids.add(record.instance_id)
+    if duplicate_instance_ids:
+        raise SandboxedRunInputError("duplicate instance id: " + ", ".join(duplicate_instance_ids))
+
+    images_by_repo = _load_base_images_for_records(
+        task_records=records,
+        registry_path=registry_path,
+        base_images=base_images,
+    )
+    for record in records:
+        validation_from_task(record, images_by_repo[record.repo], include_pass_to_pass=include_pass_to_pass)
+
+    root = Path(output_dir)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return 3
+    max_workers = min(jobs, len(records))
+    results: dict[str, dict[str, Any]] = {}
+
+    def run_one(record: SwebenchTaskRecord) -> dict[str, Any]:
+        run_dir = root / _safe_instance_dir(record.instance_id)
+        try:
+            summary = run_swebench_task(
+                task_record=record,
+                base_image=images_by_repo[record.repo],
+                docker=docker,
+                backend=backend_factory(),
+                budget=budget,
+                model_name=model_name,
+                output_dir=run_dir,
+                include_pass_to_pass=include_pass_to_pass,
+            )
+            return {
+                "instance_id": record.instance_id,
+                "status": summary.status.value,
+                "error": summary.error,
+                "output_dir": str(run_dir),
+                "artifact_error": False,
+                "runtime_error": summary.status is RunStatus.ERRORED,
+            }
+        except ArtifactPersistenceError as exc:
+            return {
+                "instance_id": record.instance_id,
+                "status": "artifact_error",
+                "error": str(exc),
+                "output_dir": str(run_dir),
+                "artifact_error": True,
+                "runtime_error": False,
+            }
+        except Exception as exc:
+            return {
+                "instance_id": record.instance_id,
+                "status": "errored",
+                "error": str(exc),
+                "output_dir": str(run_dir),
+                "artifact_error": False,
+                "runtime_error": True,
+            }
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_record = {pool.submit(run_one, record): record for record in records}
+        for future in as_completed(future_to_record):
+            record = future_to_record[future]
+            results[record.instance_id] = future.result()
+
+    ordered_results = [results[record.instance_id] for record in records]
+    status_counts: dict[str, int] = {}
+    for result in ordered_results:
+        status = str(result["status"])
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    try:
+        predictions = [
+            _prediction_from_run_dir(Path(result["output_dir"]), result["instance_id"], model_name)
+            for result in ordered_results
+        ]
+        write_predictions_jsonl(root / "prediction.jsonl", predictions)
+        (root / "batch_summary.json").write_text(
+            json.dumps(
+                {
+                    "total": len(ordered_results),
+                    "jobs": jobs,
+                    "statuses": status_counts,
+                    "tasks": ordered_results,
+                },
+                indent=2,
+                ensure_ascii=True,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        return 3
+
+    if any(result["artifact_error"] for result in ordered_results):
+        return 3
+    if any(result["runtime_error"] for result in ordered_results):
+        return 4
+    return 0
+
+
 def run_swebench_task(
     *,
     task_record: SwebenchTaskRecord,
@@ -165,10 +361,15 @@ def run_swebench_task(
     host_workspace.mkdir(parents=True, exist_ok=True)
     validation = validation_from_task(task_record, base_image, include_pass_to_pass=include_pass_to_pass)
     manager = TaskSandboxManager(docker=docker)
-    # prepare 会创建容器、启动容器并 checkout 到任务 base_commit。
-    sandbox = manager.prepare(base_image=base_image, instance_id=task_record.instance_id, base_commit=task_record.base_commit)
-    _write_sandbox_json(output_path / "sandbox.json", sandbox, validation, status="running")
     run_id = str(uuid.uuid4())
+    # prepare 会创建容器、启动容器并 checkout 到任务 base_commit。
+    sandbox = manager.prepare(
+        base_image=base_image,
+        instance_id=task_record.instance_id,
+        base_commit=task_record.base_commit,
+        run_id=run_id,
+    )
+    _write_sandbox_json(output_path / "sandbox.json", sandbox, validation, status="running")
     task = BenchmarkTask(
         instance_id=task_record.instance_id,
         workspace=host_workspace,
@@ -196,6 +397,7 @@ def run_swebench_task(
             tool_executor=executor,
         )
     except ArtifactPersistenceError:
+        manager.stop(sandbox)
         raise
     except Exception as exc:
         failure_summary = _write_runtime_failure_artifacts(

@@ -81,3 +81,23 @@ def test_stop_removes_task_container_name_for_next_run():
         ("stop", (sandbox.container_name,)),
         ("remove", (sandbox.container_name,)),
     ]
+
+
+def test_prepare_appends_short_run_id_to_container_name():
+    docker = RecordingDocker()
+    manager = TaskSandboxManager(docker=docker)
+    base_image = BaseImage(
+        repo="django/django",
+        image="django-base:latest",
+        repo_path="/workspace/repo",
+        official_compatible=True,
+    )
+
+    sandbox = manager.prepare(
+        base_image=base_image,
+        instance_id="django__django-11099",
+        base_commit="abc123",
+        run_id="12345678-90ab-cdef-1234-567890abcdef",
+    )
+
+    assert sandbox.container_name == "coding-agent-django__django-11099-12345678"

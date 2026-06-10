@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+from coding_agent.agent import ArtifactPersistenceError
 from coding_agent.model_backends.base import AgentAction, AgentActionType
 from coding_agent.model_backends.mock import MockBackend
 from coding_agent.models import BaseImage, RunBudget
@@ -88,9 +91,10 @@ def test_sandboxed_run_writes_standard_artifacts_and_sandbox_metadata(tmp_path: 
     assert sandbox["validation"]["command_source"] == "registered_template"
     assert summary_json["sandbox"]["task_sandbox"]["base_commit"] == "abc123"
     assert docker.calls[-2:] == [
-        ("stop", "coding-agent-django__django-11099"),
-        ("remove", "coding-agent-django__django-11099"),
+        ("stop", sandbox["container_name"]),
+        ("remove", sandbox["container_name"]),
     ]
+    assert sandbox["container_name"].startswith("coding-agent-django__django-11099-")
 
 
 def test_sandboxed_run_preserves_partial_artifacts_after_post_start_runtime_failure(tmp_path: Path):
@@ -122,3 +126,29 @@ def test_sandboxed_run_preserves_partial_artifacts_after_post_start_runtime_fail
     assert (run_dir / "prediction.jsonl").is_file()
     assert summary["status"] == "errored"
     assert sandbox["status"] == "error"
+
+
+def test_sandboxed_run_cleans_up_after_artifact_persistence_error(tmp_path: Path, monkeypatch):
+    docker = FakeDocker()
+
+    def fake_run_task(**kwargs):
+        raise ArtifactPersistenceError("disk full")
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.run_task", fake_run_task)
+
+    with pytest.raises(ArtifactPersistenceError, match="disk full"):
+        run_swebench_task(
+            task_record=_task_record(),
+            base_image=_base_image(),
+            docker=docker,
+            backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="incomplete")]),
+            budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+            model_name="mock-model",
+            output_dir=tmp_path / "run",
+        )
+
+    container_name = next(call[1] for call in docker.calls if call[0] == "create")
+    assert docker.calls[-2:] == [
+        ("stop", container_name),
+        ("remove", container_name),
+    ]

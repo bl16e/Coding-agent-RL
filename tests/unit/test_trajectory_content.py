@@ -45,3 +45,37 @@ def test_agent_persists_reasoning_intent_and_tool_selection_reason(tmp_path: Pat
     assert first["next_intent"] == "Read file"
     assert first["tool_selection_reason"] == "app.py is likely relevant"
 
+
+def test_summary_trajectory_preserves_failed_apply_patch_status(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "temp_test.py").write_text("existing", encoding="utf-8")
+    problem = tmp_path / "problem.txt"
+    problem.write_text("Fix it.", encoding="utf-8")
+    task = create_task_from_paths(
+        instance_id="example__repo-1",
+        workspace=workspace,
+        problem_statement_file=problem,
+        allowed_test_commands=("python -m pytest",),
+    )
+    backend = MockBackend(
+        [
+            AgentAction(
+                action=AgentActionType.APPLY_PATCH,
+                tool_input={"type": "add_file", "path": "temp_test.py", "content": "new"},
+            ),
+            AgentAction(action=AgentActionType.FINAL, final_status="incomplete"),
+        ]
+    )
+
+    run_task(
+        task=task,
+        budget=RunBudget(max_steps=3, timeout_seconds=60, test_timeout_seconds=5),
+        backend=backend,
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+    )
+
+    trajectory = json.loads((tmp_path / "run" / "trajectory.json").read_text(encoding="utf-8"))
+    assert trajectory["steps"][0]["observation"]["status"] == "rejected"
+    assert "file already exists" in trajectory["steps"][0]["observation"]["output"]

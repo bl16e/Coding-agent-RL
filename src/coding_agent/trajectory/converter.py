@@ -41,6 +41,8 @@ def convert_trajectory_to_summary_format(
             tool_call = tool_result.get("tool_call", {})
             tool_name = tool_call.get("tool_name", "")
             tool_input = tool_call.get("input", {})
+            tool_status = str(tool_call.get("status") or tool_result.get("outcome") or "")
+            output_summary = str(tool_call.get("output_summary") or "")
 
             # Clean input: remove reasoning fields
             args = {
@@ -50,7 +52,7 @@ def convert_trajectory_to_summary_format(
 
             # Extract observation
             result = tool_result.get("tool_result", )
-            observation = _format_observation(tool_name, result)
+            observation = _format_observation(tool_name, result, tool_status=tool_status, output_summary=output_summary)
 
             steps.append({
                 "step": step_counter,
@@ -86,7 +88,13 @@ def convert_trajectory_to_summary_format(
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
 
-def _format_observation(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+def _format_observation(
+    tool_name: str,
+    result: dict[str, Any],
+    *,
+    tool_status: str = "",
+    output_summary: str = "",
+) -> dict[str, Any]:
     """Format tool result into observation dict."""
 
     if tool_name == "read_file":
@@ -105,7 +113,7 @@ def _format_observation(tool_name: str, result: dict[str, Any]) -> dict[str, Any
                 "status": "success" if mod.get("write_status") == "ok" else "failed",
                 "path": mod.get("path", ""),
             }
-        return {"status": "applied"}
+        return {"status": tool_status or "unknown", "output": output_summary}
 
     elif tool_name == "search_code":
         output = result.get("output", {})
@@ -120,7 +128,7 @@ def _format_observation(tool_name: str, result: dict[str, Any]) -> dict[str, Any
         return {
             "status": test_result.get("status", ""),
             "passed": test_result.get("status") == "passed",
-            "output": test_result.get("output_summary", "")[:200],  # Truncate
+            "output": test_result.get("output_summary", ""),  # Truncate
         }
 
     # Generic fallback

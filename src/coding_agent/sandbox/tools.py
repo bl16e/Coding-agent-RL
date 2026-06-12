@@ -135,11 +135,14 @@ class ContainerToolExecutor:
                 relative_path = posixpath.relpath(path, self._repo_path)
                 # stdin 承载文件内容，避免把大段文本拼进命令参数。
                 script = (
-                    "from pathlib import Path; import sys; "
-                    "p=Path(sys.argv[1]); "
-                    "if p.exists(): print('file exists'); sys.exit(1)\n"
-                    "p.parent.mkdir(parents=True, exist_ok=True); "
-                    "p.write_text(sys.stdin.read(), encoding='utf-8')"
+                    "from pathlib import Path\n"
+                    "import sys\n"
+                    "p=Path(sys.argv[1])\n"
+                    "if p.exists():\n"
+                    "    print('file exists')\n"
+                    "    sys.exit(1)\n"
+                    "p.parent.mkdir(parents=True, exist_ok=True)\n"
+                    "p.write_text(sys.stdin.read(), encoding='utf-8')\n"
                 )
                 self._docker.exec(self._container_name, ["python", "-c", script, path], stdin=content)
             except ValueError as exc:
@@ -163,17 +166,25 @@ class ContainerToolExecutor:
                 relative_path = posixpath.relpath(path, self._repo_path)
                 # update 要求 old_string 只出现一次，促使模型提供足够上下文，避免误改。
                 script = (
-                    "from pathlib import Path; import sys, json; "
-                    "p=Path(sys.argv[1]); old=sys.argv[2]; new=sys.argv[3]; "
-                    "content=p.read_text(encoding='utf-8'); count=content.count(old); "
-                    "if count==0: print(json.dumps({'error':'not found'})); sys.exit(1)\n"
-                    "if count>1: print(json.dumps({'error':f'appears {count} times'})); sys.exit(1)\n"
-                    "new_content=content.replace(old,new,1); p.write_text(new_content,encoding='utf-8'); "
+                    "from pathlib import Path\n"
+                    "import json\n"
+                    "import sys\n"
+                    "p=Path(sys.argv[1])\n"
+                    "old=sys.argv[2]\n"
+                    "new=sys.argv[3]\n"
+                    "content=p.read_text(encoding='utf-8')\n"
+                    "count=content.count(old)\n"
+                    "if count == 0:\n"
+                    "    print(json.dumps({'error':'not found'}))\n"
+                    "    sys.exit(1)\n"
+                    "if count > 1:\n"
+                    "    print(json.dumps({'error':f'appears {count} times'}))\n"
+                    "    sys.exit(1)\n"
+                    "new_content=content.replace(old,new,1)\n"
+                    "p.write_text(new_content,encoding='utf-8')\n"
                     "print(json.dumps({'status':'ok'}))"
                 )
-                escaped_old = old_string.replace("'", "'\\''")
-                escaped_new = new_string.replace("'", "'\\''")
-                self._docker.exec(self._container_name, ["python", "-c", script, path, escaped_old, escaped_new])
+                self._docker.exec(self._container_name, ["python", "-c", script, path, old_string, new_string])
             except ValueError as exc:
                 return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
             except (DockerCommandError, DockerCommandTimeout) as exc:

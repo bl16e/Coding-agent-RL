@@ -50,6 +50,7 @@ class SwebenchTaskRecord:
     version: str | None = None
     environment_setup_commit: str | None = None
     eval_script: str | None = None
+    test_patch: str = ""
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "SwebenchTaskRecord":
@@ -68,6 +69,7 @@ class SwebenchTaskRecord:
             version=str(row["version"]) if row.get("version") else None,
             environment_setup_commit=str(row["environment_setup_commit"]) if row.get("environment_setup_commit") else None,
             eval_script=str(row["eval_script"]) if row.get("eval_script") else None,
+            test_patch=str(row["test_patch"]) if row.get("test_patch") else "",
         )
 
 

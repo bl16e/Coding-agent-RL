@@ -53,18 +53,21 @@ class DockerCli:
     ) -> DockerResult:
         """执行一条 docker 子命令并返回标准输出、标准错误和退出码。"""
         command = ["docker", *args]
+        stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
         try:
             completed = self._runner(
                 command,
-                text=True,
-                input=stdin,
+                text=False,
+                input=stdin_bytes,
                 capture_output=True,
                 timeout=timeout_seconds,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise DockerCommandTimeout(f"docker command timed out: {' '.join(command)}") from exc
-        result = DockerResult(completed.stdout or "", completed.stderr or "", int(completed.returncode))
+        stdout = completed.stdout.decode("utf-8", errors="replace") if isinstance(completed.stdout, bytes) else completed.stdout or ""
+        stderr = completed.stderr.decode("utf-8", errors="replace") if isinstance(completed.stderr, bytes) else completed.stderr or ""
+        result = DockerResult(stdout or "", stderr or "", int(completed.returncode))
         if check and result.returncode != 0:
             raise DockerCommandError(args, result)
         return result

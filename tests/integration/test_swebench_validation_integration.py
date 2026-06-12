@@ -12,6 +12,7 @@ from coding_agent.swebench.sandbox_run import SandboxedRunInputError, run_sweben
 class RecordingDocker:
     def __init__(self) -> None:
         self.commands: list[tuple[str, ...]] = []
+        self.current_commit_by_container: dict[str, str] = {}
 
     def create_container(self, *, name: str, image: str) -> DockerResult:
         return DockerResult("", "", 0)
@@ -27,6 +28,10 @@ class RecordingDocker:
 
     def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None) -> DockerResult:
         self.commands.append(tuple(command))
+        if command[:4] == ["git", "-C", "/workspace/repo", "checkout"]:
+            self.current_commit_by_container[container] = command[-1]
+        if command[:4] == ["git", "-C", "/workspace/repo", "rev-parse"] and command[-1] == "HEAD":
+            return DockerResult(self.current_commit_by_container.get(container, ""), "", 0)
         return DockerResult("ok", "", 0)
 
 

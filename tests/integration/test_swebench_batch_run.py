@@ -9,11 +9,13 @@ from coding_agent.models import BaseImage, RunBudget
 from coding_agent.sandbox.docker_cli import DockerResult
 from coding_agent.swebench.dataset import SwebenchTaskRecord
 from coding_agent.swebench.sandbox_run import SandboxedRunInputError, run_swebench_tasks
+from coding_agent.swebench.sandbox_run import prepare_swebench_sandboxes, solve_swebench_sandboxes
 
 
 class FakeDocker:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.current_commit_by_container: dict[str, str] = {}
 
     def create_container(self, *, name: str, image: str) -> DockerResult:
         self.calls.append(("create", name, image))
@@ -33,6 +35,10 @@ class FakeDocker:
 
     def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None) -> DockerResult:
         self.calls.append(("exec", container, tuple(command)))
+        if command[:4] == ["git", "-C", "/workspace/repo", "checkout"]:
+            self.current_commit_by_container[container] = command[-1]
+        if command[:4] == ["git", "-C", "/workspace/repo", "rev-parse"] and command[-1] == "HEAD":
+            return DockerResult(self.current_commit_by_container.get(container, ""), "", 0)
         return DockerResult("", "", 0)
 
 
@@ -120,3 +126,80 @@ def test_batch_run_rejects_duplicate_direct_task_records_before_starting_sandbox
         )
 
     assert docker.calls == []
+
+
+def test_prepare_sandboxes_writes_locked_state_and_active_index_without_cleanup(tmp_path: Path):
+    docker = FakeDocker()
+    output_dir = tmp_path / "batch"
+    state_path = output_dir / "state.json"
+    active_index = tmp_path / ".coding-agent" / "active-sandboxes.json"
+
+    exit_code = prepare_swebench_sandboxes(
+        task_records=[
+            _task_record("django__django-11099", "abc123"),
+            _task_record("django__django-11100", "def456"),
+        ],
+        base_images={"django/django": _base_image()},
+        docker=docker,
+        output_dir=output_dir,
+        state_path=state_path,
+        active_index_path=active_index,
+        jobs=2,
+    )
+
+    assert exit_code == 0
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["total"] == 2
+    assert state["statuses"] == {"ready": 2}
+    assert state["tasks"]["django__django-11099"]["status"] == "ready"
+    assert state["tasks"]["django__django-11099"]["prepare_dir"] == str(output_dir / "django__django-11099" / "prepare")
+    assert state["tasks"]["django__django-11100"]["status"] == "ready"
+    index = json.loads(active_index.read_text(encoding="utf-8"))
+    assert set(index["sandboxes"]) == {"django__django-11099", "django__django-11100"}
+    assert not any(call[0] in {"stop", "remove"} for call in docker.calls)
+
+
+def test_solve_sandboxes_uses_state_to_skip_solved_and_update_remaining_task(tmp_path: Path):
+    docker = FakeDocker()
+    output_dir = tmp_path / "batch"
+    state_path = output_dir / "state.json"
+    active_index = tmp_path / ".coding-agent" / "active-sandboxes.json"
+    records = [
+        _task_record("django__django-11099", "abc123"),
+        _task_record("django__django-11100", "def456"),
+    ]
+    prepare_swebench_sandboxes(
+        task_records=records,
+        base_images={"django/django": _base_image()},
+        docker=docker,
+        output_dir=output_dir,
+        state_path=state_path,
+        active_index_path=active_index,
+        jobs=2,
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["tasks"]["django__django-11099"]["status"] = "solved"
+    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    docker.calls.clear()
+
+    exit_code = solve_swebench_sandboxes(
+        task_records=records,
+        docker=docker,
+        backend_factory=_backend_factory,
+        budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=output_dir,
+        state_path=state_path,
+        active_index_path=active_index,
+        jobs=2,
+    )
+
+    assert exit_code == 0
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["tasks"]["django__django-11099"]["status"] == "solved"
+    assert state["tasks"]["django__django-11100"]["status"] == "incomplete"
+    assert state["tasks"]["django__django-11100"]["solve_dir"] == str(output_dir / "django__django-11100" / "solve")
+    assert (output_dir / "django__django-11100" / "solve" / "summary.json").is_file()
+    assert not (output_dir / "django__django-11099" / "solve").exists()
+    created_names = [call[1] for call in docker.calls if call[0] == "create"]
+    assert created_names == []

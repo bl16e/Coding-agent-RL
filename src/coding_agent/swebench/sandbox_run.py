@@ -4,7 +4,9 @@ import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from coding_agent.agent import ArtifactPersistenceError, run_task
@@ -13,12 +15,14 @@ from coding_agent.models import (
     BaseImage,
     BenchmarkTask,
     Prediction,
+    PreparedSandboxSummary,
     RunBudget,
     RunStatus,
     RunSummary,
     SandboxMetadata,
     TaskSandbox,
     ValidationTestSet,
+    utc_now,
 )
 from coding_agent.sandbox.docker_cli import DockerCli
 from coding_agent.sandbox.manager import TaskSandboxManager
@@ -27,6 +31,7 @@ from coding_agent.sandbox.tools import ContainerToolExecutor
 from coding_agent.swebench.dataset import SwebenchTaskRecord, load_task_records
 from coding_agent.swebench.prediction import write_prediction_jsonl, write_predictions_jsonl
 from coding_agent.swebench.validation import ValidationMetadataError, build_validation_test_set
+from coding_agent.trajectory.converter import convert_trajectory_to_summary_format
 from coding_agent.trajectory.summary import write_summary
 
 
@@ -55,7 +60,15 @@ def validation_from_task(
         raise SandboxedRunInputError(str(exc)) from exc
 
 
-def _sandbox_payload(sandbox: TaskSandbox, validation: ValidationTestSet, *, status: str) -> dict[str, Any]:
+def _sandbox_payload(
+    sandbox: TaskSandbox,
+    validation: ValidationTestSet,
+    *,
+    status: str,
+    test_patch_applied: bool = False,
+    test_patch_staged: bool = False,
+    ready_checks: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """构造 sandbox.json 内容。
 
     sandbox.json 是 Docker 模式的审计补充文件，用来回答“这次任务跑在哪个容器、哪个
@@ -68,6 +81,9 @@ def _sandbox_payload(sandbox: TaskSandbox, validation: ValidationTestSet, *, sta
         "container_name": sandbox.container_name,
         "repo_path": sandbox.repo_path,
         "status": status,
+        "test_patch_applied": test_patch_applied,
+        "test_patch_staged": test_patch_staged,
+        "ready_checks": dict(ready_checks or {}),
         "base_image": sandbox.base_image.to_dict() if hasattr(sandbox.base_image, "to_dict") else {
             "repo": sandbox.base_image.repo,
             "image": sandbox.base_image.image,
@@ -86,9 +102,426 @@ def _sandbox_payload(sandbox: TaskSandbox, validation: ValidationTestSet, *, sta
     }
 
 
-def _write_sandbox_json(path: Path, sandbox: TaskSandbox, validation: ValidationTestSet, *, status: str) -> None:
+def _write_sandbox_json(
+    path: Path,
+    sandbox: TaskSandbox,
+    validation: ValidationTestSet,
+    *,
+    status: str,
+    test_patch_applied: bool = False,
+    test_patch_staged: bool = False,
+    ready_checks: Mapping[str, Any] | None = None,
+) -> None:
     """写入沙箱元数据文件。"""
-    path.write_text(json.dumps(_sandbox_payload(sandbox, validation, status=status), indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            _sandbox_payload(
+                sandbox,
+                validation,
+                status=status,
+                test_patch_applied=test_patch_applied,
+                test_patch_staged=test_patch_staged,
+                ready_checks=ready_checks,
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _changed_files_from_patch(patch: str) -> list[str]:
+    """Return changed file paths from a unified git diff."""
+    changed: set[str] = set()
+    for line in patch.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        path = parts[3]
+        changed.add(path[2:] if path.startswith("b/") else path)
+    return sorted(changed)
+
+
+def _export_container_patch(docker: DockerCli, sandbox: TaskSandbox) -> str:
+    """Export repository changes made inside the task container."""
+    return docker.exec(
+        sandbox.container_name,
+        ["git", "-C", sandbox.repo_path, "diff", "--binary"],
+    ).stdout
+
+
+def _apply_test_patch(docker: DockerCli, sandbox: TaskSandbox, test_patch: str) -> None:
+    """Apply and stage SWE-Bench test_patch so validation tests exist but are not exported."""
+    if not test_patch.strip():
+        return
+    docker.exec(
+        sandbox.container_name,
+        ["sh", "-lc", f"tr -d '\\r' | git -C {sandbox.repo_path} apply --whitespace=nowarn -"],
+        stdin=test_patch,
+    )
+    docker.exec(sandbox.container_name, ["git", "-C", sandbox.repo_path, "add", "-A"])
+
+
+def _base_image_from_dict(payload: Mapping[str, Any]) -> BaseImage:
+    return BaseImage(
+        repo=str(payload["repo"]),
+        image=str(payload["image"]),
+        repo_path=str(payload["repo_path"]),
+        official_compatible=bool(payload.get("official_compatible", False)),
+        compatibility_source=payload.get("compatibility_source"),
+        validation_command_template=payload.get("validation_command_template"),
+    )
+
+
+def _sandbox_from_payload(payload: Mapping[str, Any]) -> TaskSandbox:
+    return TaskSandbox(
+        container_name=str(payload["container_name"]),
+        base_image=_base_image_from_dict(payload["base_image"]),
+        instance_id=str(payload["instance_id"]),
+        repo=str(payload["repo"]),
+        base_commit=str(payload["base_commit"]),
+        repo_path=str(payload["repo_path"]),
+        status=str(payload.get("status", "ready")),
+    )
+
+
+def load_active_sandbox(index_path: str | Path, instance_id: str) -> TaskSandbox:
+    """Load the active sandbox for an instance id from the active sandbox index."""
+    path = Path(index_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SandboxedRunInputError("active sandbox index does not exist") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxedRunInputError(str(exc)) from exc
+    entry = payload.get("sandboxes", {}).get(instance_id)
+    if not entry:
+        raise SandboxedRunInputError(f"active sandbox not found for instance id: {instance_id}")
+    sandbox_json = Path(str(entry["sandbox_json"]))
+    try:
+        sandbox_payload = json.loads(sandbox_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxedRunInputError(str(exc)) from exc
+    return _sandbox_from_payload(sandbox_payload)
+
+
+def save_active_sandbox(
+    index_path: str | Path,
+    sandbox: TaskSandbox,
+    sandbox_json_path: str | Path,
+    *,
+    replace_existing: bool = False,
+) -> None:
+    """Record a prepared sandbox as the active sandbox for its instance id."""
+    path = Path(index_path)
+    try:
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            payload = {"sandboxes": {}}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxedRunInputError(str(exc)) from exc
+    sandboxes = payload.setdefault("sandboxes", {})
+    if sandbox.instance_id in sandboxes and not replace_existing:
+        raise ValueError(f"{sandbox.instance_id} already has an active sandbox")
+    sandboxes[sandbox.instance_id] = {
+        "container_name": sandbox.container_name,
+        "repo": sandbox.repo,
+        "base_commit": sandbox.base_commit,
+        "repo_path": sandbox.repo_path,
+        "sandbox_json": str(Path(sandbox_json_path)),
+        "status": sandbox.status,
+        "base_image": {
+            "repo": sandbox.base_image.repo,
+            "image": sandbox.base_image.image,
+            "repo_path": sandbox.base_image.repo_path,
+            "official_compatible": sandbox.base_image.official_compatible,
+            "compatibility_source": sandbox.base_image.compatibility_source,
+            "validation_command_template": sandbox.base_image.validation_command_template,
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _assert_active_slot_available(index_path: str | Path, instance_id: str, *, replace_existing: bool) -> None:
+    if replace_existing:
+        return
+    path = Path(index_path)
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxedRunInputError(str(exc)) from exc
+    if instance_id in payload.get("sandboxes", {}):
+        raise ValueError(f"{instance_id} already has an active sandbox")
+
+
+def _collect_command(command: str) -> str:
+    if "pytest" in command and "--collect-only" not in command:
+        return f"{command} --collect-only"
+    return command
+
+
+def _ready_checks(docker: DockerCli, sandbox: TaskSandbox, validation: ValidationTestSet) -> dict[str, Any]:
+    checks: dict[str, Any] = {}
+    docker.exec(sandbox.container_name, ["git", "-C", sandbox.repo_path, "rev-parse", "--is-inside-work-tree"])
+    checks["container_exec"] = {"ok": True}
+    head = docker.exec(
+        sandbox.container_name,
+        ["git", "-C", sandbox.repo_path, "rev-parse", "HEAD"],
+    ).stdout.strip()
+    checks["head_match"] = {"ok": head == sandbox.base_commit, "actual": head}
+    if head != sandbox.base_commit:
+        raise SandboxedRunInputError(f"container HEAD {head} does not match base commit {sandbox.base_commit}")
+    docker.exec(sandbox.container_name, ["git", "-C", sandbox.repo_path, "diff", "--quiet"])
+    checks["unstaged_diff"] = {"ok": True}
+    collect = _collect_command(validation.allowed_commands[0])
+    docker.exec(sandbox.container_name, ["sh", "-lc", f"cd {sandbox.repo_path} && {collect}"])
+    checks["collect_only"] = {"ok": True, "command": collect}
+    return checks
+
+
+def _validate_prepared_sandbox(docker: DockerCli, sandbox: TaskSandbox) -> None:
+    docker.exec(sandbox.container_name, ["git", "-C", sandbox.repo_path, "rev-parse", "--is-inside-work-tree"])
+    head = docker.exec(
+        sandbox.container_name,
+        ["git", "-C", sandbox.repo_path, "rev-parse", "HEAD"],
+    ).stdout.strip()
+    if head != sandbox.base_commit:
+        raise SandboxedRunInputError(f"container HEAD {head} does not match base commit {sandbox.base_commit}")
+    docker.exec(sandbox.container_name, ["git", "-C", sandbox.repo_path, "diff", "--quiet"])
+
+
+def prepare_swebench_sandbox(
+    *,
+    task_record: SwebenchTaskRecord,
+    base_image: BaseImage,
+    docker: DockerCli,
+    output_dir: str | Path,
+    include_pass_to_pass: bool = False,
+    active_index_path: str | Path | None = None,
+    replace_existing: bool = False,
+) -> PreparedSandboxSummary:
+    """Create and leave running a SWE-Bench sandbox prepared for solving."""
+    if not base_image.official_compatible:
+        raise SandboxedRunInputError("base image must be marked official_compatible")
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    validation = validation_from_task(task_record, base_image, include_pass_to_pass=include_pass_to_pass)
+    if active_index_path is not None:
+        _assert_active_slot_available(
+            active_index_path,
+            task_record.instance_id,
+            replace_existing=replace_existing,
+        )
+    manager = TaskSandboxManager(docker=docker)
+    sandbox = manager.prepare(
+        base_image=base_image,
+        instance_id=task_record.instance_id,
+        base_commit=task_record.base_commit,
+        run_id=str(uuid.uuid4()),
+    )
+    test_patch_applied = False
+    test_patch_staged = False
+    ready_checks: dict[str, Any] = {}
+    sandbox_json_path = output_path / "sandbox.json"
+    try:
+        _apply_test_patch(docker, sandbox, task_record.test_patch)
+        test_patch_applied = bool(task_record.test_patch.strip())
+        test_patch_staged = test_patch_applied
+        ready_checks = _ready_checks(docker, sandbox, validation)
+        ready_sandbox = replace(sandbox, status="ready")
+        _write_sandbox_json(
+            sandbox_json_path,
+            ready_sandbox,
+            validation,
+            status="ready",
+            test_patch_applied=test_patch_applied,
+            test_patch_staged=test_patch_staged,
+            ready_checks=ready_checks,
+        )
+        if active_index_path is not None:
+            save_active_sandbox(
+                active_index_path,
+                ready_sandbox,
+                sandbox_json_path,
+                replace_existing=replace_existing,
+            )
+        return PreparedSandboxSummary(
+            sandbox=ready_sandbox,
+            validation_test_set=validation,
+            sandbox_json=sandbox_json_path,
+            status="ready",
+            ready_checks=ready_checks,
+        )
+    except Exception:
+        _write_sandbox_json(
+            sandbox_json_path,
+            sandbox,
+            validation,
+            status="error",
+            test_patch_applied=test_patch_applied,
+            test_patch_staged=test_patch_staged,
+            ready_checks=ready_checks,
+        )
+        raise
+
+
+def solve_prepared_sandbox(
+    *,
+    task_record: SwebenchTaskRecord,
+    sandbox: TaskSandbox,
+    docker: DockerCli,
+    backend: ModelBackend,
+    budget: RunBudget,
+    model_name: str,
+    output_dir: str | Path,
+    include_pass_to_pass: bool = False,
+    cleanup: bool = False,
+) -> RunSummary:
+    """Run the coding agent inside an already prepared SWE-Bench sandbox."""
+    if sandbox.instance_id != task_record.instance_id:
+        raise SandboxedRunInputError("active sandbox instance id does not match requested task")
+    if sandbox.base_commit != task_record.base_commit:
+        raise SandboxedRunInputError("active sandbox base commit does not match requested task")
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    host_workspace = output_path / "_workspace_snapshot"
+    host_workspace.mkdir(parents=True, exist_ok=True)
+    validation = validation_from_task(task_record, sandbox.base_image, include_pass_to_pass=include_pass_to_pass)
+    manager = TaskSandboxManager(docker=docker)
+    run_id = str(uuid.uuid4())
+    _validate_prepared_sandbox(docker, sandbox)
+    running_sandbox = replace(sandbox, status="running")
+    _write_sandbox_json(
+        output_path / "sandbox.json",
+        running_sandbox,
+        validation,
+        status="running",
+        test_patch_applied=bool(task_record.test_patch.strip()),
+        test_patch_staged=bool(task_record.test_patch.strip()),
+    )
+    task = BenchmarkTask(
+        instance_id=task_record.instance_id,
+        workspace=host_workspace,
+        problem_statement=task_record.problem_statement,
+        allowed_test_commands=validation.allowed_commands,
+        repo=task_record.repo,
+        base_commit=task_record.base_commit,
+    )
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name=sandbox.container_name,
+        repo_path=sandbox.repo_path,
+        allowed_test_commands=validation.allowed_commands,
+        test_timeout_seconds=budget.test_timeout_seconds,
+    )
+    try:
+        summary = run_task(
+            task=task,
+            budget=budget,
+            backend=backend,
+            model_name=model_name,
+            output_dir=output_path,
+            run_id=run_id,
+            tool_executor=executor,
+        )
+    except ArtifactPersistenceError:
+        if cleanup:
+            manager.stop(sandbox)
+        raise
+    except Exception as exc:
+        failure_summary = _write_runtime_failure_artifacts(
+            output_dir=output_path,
+            run_id=run_id,
+            task_record=task_record,
+            sandbox=replace(sandbox, status="error"),
+            validation=validation,
+            budget=budget,
+            model_name=model_name,
+            error=exc,
+        )
+        if cleanup:
+            manager.stop(sandbox)
+        return failure_summary
+    container_patch = _export_container_patch(docker, sandbox)
+    used_sandbox = replace(sandbox, status="used")
+    summary = RunSummary(
+        run_id=summary.run_id,
+        instance_id=summary.instance_id,
+        model_name=summary.model_name,
+        status=summary.status,
+        budget=summary.budget,
+        changed_files=_changed_files_from_patch(container_patch) if container_patch else summary.changed_files,
+        test_summary=summary.test_summary,
+        error=summary.error,
+        last_successful_tool_call=summary.last_successful_tool_call,
+        artifacts={**summary.artifacts, "sandbox": str(output_path / "sandbox.json")},
+        sandbox=SandboxMetadata(task_sandbox=used_sandbox, validation_test_set=validation),
+    )
+    write_summary(output_path / "summary.json", summary)
+    if container_patch:
+        summary = _rewrite_patch_artifacts(
+            output_path=output_path,
+            task_record=task_record,
+            summary=summary,
+            sandbox=used_sandbox,
+            validation=validation,
+            model_name=model_name,
+            patch=container_patch,
+        )
+    _write_sandbox_json(
+        output_path / "sandbox.json",
+        used_sandbox,
+        validation,
+        status="used",
+        test_patch_applied=bool(task_record.test_patch.strip()),
+        test_patch_staged=bool(task_record.test_patch.strip()),
+    )
+    if cleanup:
+        manager.stop(sandbox)
+    return summary
+
+
+def _rewrite_patch_artifacts(
+    *,
+    output_path: Path,
+    task_record: SwebenchTaskRecord,
+    summary: RunSummary,
+    sandbox: TaskSandbox,
+    validation: ValidationTestSet,
+    model_name: str,
+    patch: str,
+) -> RunSummary:
+    """Replace host placeholder patch artifacts with the container diff."""
+    (output_path / "final.patch").write_bytes(patch.encode("utf-8"))
+    write_prediction_jsonl(output_path / "prediction.jsonl", Prediction(task_record.instance_id, model_name, patch))
+    convert_trajectory_to_summary_format(
+        trajectory_jsonl=output_path / "trajectory.jsonl",
+        task_id=task_record.instance_id,
+        issue=task_record.problem_statement,
+        final_diff=patch,
+        resolved=summary.status is RunStatus.SOLVED,
+        output_path=output_path / "trajectory.json",
+    )
+    rewritten = RunSummary(
+        run_id=summary.run_id,
+        instance_id=summary.instance_id,
+        model_name=summary.model_name,
+        status=summary.status,
+        budget=summary.budget,
+        changed_files=_changed_files_from_patch(patch),
+        test_summary=summary.test_summary,
+        error=summary.error,
+        last_successful_tool_call=summary.last_successful_tool_call,
+        artifacts={**summary.artifacts, "sandbox": str(output_path / "sandbox.json")},
+        sandbox=SandboxMetadata(task_sandbox=sandbox, validation_test_set=validation),
+    )
+    write_summary(output_path / "summary.json", rewritten)
+    return rewritten
 
 
 def _write_runtime_failure_artifacts(
@@ -160,6 +593,252 @@ def parse_instance_id_file(path: str | Path) -> tuple[str, ...]:
     if not instance_ids:
         raise SandboxedRunInputError("instance-id-file must contain at least one instance id")
     return instance_ids
+
+
+def _state_path(output_dir: str | Path, state_path: str | Path | None) -> Path:
+    return Path(state_path) if state_path is not None else Path(output_dir) / "batch_state.json"
+
+
+def _load_batch_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"version": 1, "tasks": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxedRunInputError(str(exc)) from exc
+    payload.setdefault("version", 1)
+    payload.setdefault("tasks", {})
+    return payload
+
+
+def _write_batch_state(path: Path, payload: Mapping[str, Any]) -> None:
+    state = dict(payload)
+    tasks = dict(state.get("tasks", {}))
+    status_counts: dict[str, int] = {}
+    for task in tasks.values():
+        status = str(task.get("status", "pending"))
+        status_counts[status] = status_counts.get(status, 0) + 1
+    state["total"] = len(tasks)
+    state["statuses"] = status_counts
+    state["updated_at"] = utc_now().isoformat()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, ensure_ascii=True), encoding="utf-8")
+
+
+def _update_batch_task(path: Path, lock: Lock, instance_id: str, **fields: Any) -> None:
+    with lock:
+        state = _load_batch_state(path)
+        tasks = state.setdefault("tasks", {})
+        entry = dict(tasks.get(instance_id, {}))
+        entry.update(fields)
+        entry["updated_at"] = utc_now().isoformat()
+        tasks[instance_id] = entry
+        _write_batch_state(path, state)
+
+
+def _initialize_batch_state(
+    *,
+    path: Path,
+    lock: Lock,
+    task_records: Sequence[SwebenchTaskRecord],
+    output_dir: Path,
+) -> None:
+    with lock:
+        state = _load_batch_state(path)
+        tasks = state.setdefault("tasks", {})
+        for record in task_records:
+            entry = dict(tasks.get(record.instance_id, {}))
+            entry.setdefault("instance_id", record.instance_id)
+            entry.setdefault("repo", record.repo)
+            entry.setdefault("base_commit", record.base_commit)
+            entry.setdefault("status", "pending")
+            entry.setdefault("prepare_dir", str(output_dir / _safe_instance_dir(record.instance_id) / "prepare"))
+            entry.setdefault("solve_dir", str(output_dir / _safe_instance_dir(record.instance_id) / "solve"))
+            tasks[record.instance_id] = entry
+        _write_batch_state(path, state)
+
+
+def _load_records_for_batch(
+    *,
+    task_records: Sequence[SwebenchTaskRecord] | None,
+    dataset_path: str | Path | None,
+    instance_ids: Sequence[str],
+) -> tuple[SwebenchTaskRecord, ...]:
+    if task_records is not None:
+        records = tuple(task_records)
+    else:
+        if dataset_path is None:
+            raise SandboxedRunInputError("dataset is required")
+        records = tuple(load_task_records(dataset_path, instance_ids))
+    if not records:
+        raise SandboxedRunInputError("at least one instance id is required")
+    seen_instance_ids: set[str] = set()
+    duplicate_instance_ids: list[str] = []
+    for record in records:
+        if record.instance_id in seen_instance_ids and record.instance_id not in duplicate_instance_ids:
+            duplicate_instance_ids.append(record.instance_id)
+        seen_instance_ids.add(record.instance_id)
+    if duplicate_instance_ids:
+        raise SandboxedRunInputError("duplicate instance id: " + ", ".join(duplicate_instance_ids))
+    return records
+
+
+def prepare_swebench_sandboxes(
+    *,
+    task_records: Sequence[SwebenchTaskRecord] | None = None,
+    dataset_path: str | Path | None = None,
+    instance_ids: Sequence[str] = (),
+    registry_path: str | Path | None = None,
+    base_images: Mapping[str, BaseImage] | None = None,
+    docker: DockerCli,
+    output_dir: str | Path,
+    state_path: str | Path | None = None,
+    active_index_path: str | Path = ".coding-agent/active-sandboxes.json",
+    jobs: int = 1,
+    include_pass_to_pass: bool = False,
+    replace_existing: bool = False,
+) -> int:
+    """Prepare many reusable SWE-Bench sandboxes in one process with locked state writes."""
+    if jobs <= 0:
+        raise SandboxedRunInputError("jobs must be a positive integer")
+    records = _load_records_for_batch(task_records=task_records, dataset_path=dataset_path, instance_ids=instance_ids)
+    images_by_repo = _load_base_images_for_records(
+        task_records=records,
+        registry_path=registry_path,
+        base_images=base_images,
+    )
+    for record in records:
+        validation_from_task(record, images_by_repo[record.repo], include_pass_to_pass=include_pass_to_pass)
+    active_index = Path(active_index_path)
+    if not replace_existing:
+        for record in records:
+            _assert_active_slot_available(active_index, record.instance_id, replace_existing=False)
+
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    state = _state_path(root, state_path)
+    state_lock = Lock()
+    active_lock = Lock()
+    _initialize_batch_state(path=state, lock=state_lock, task_records=records, output_dir=root)
+
+    def prepare_one(record: SwebenchTaskRecord) -> dict[str, Any]:
+        prepare_dir = root / _safe_instance_dir(record.instance_id) / "prepare"
+        current_state = _load_batch_state(state)
+        current_status = current_state.get("tasks", {}).get(record.instance_id, {}).get("status")
+        if current_status in {"ready", "solving", "solved"}:
+            return {"instance_id": record.instance_id, "status": current_status, "error": None}
+        _update_batch_task(state, state_lock, record.instance_id, status="preparing", prepare_dir=str(prepare_dir), last_error=None)
+        try:
+            prepared = prepare_swebench_sandbox(
+                task_record=record,
+                base_image=images_by_repo[record.repo],
+                docker=docker,
+                output_dir=prepare_dir,
+                include_pass_to_pass=include_pass_to_pass,
+            )
+            with active_lock:
+                save_active_sandbox(
+                    active_index,
+                    prepared.sandbox,
+                    prepared.sandbox_json,
+                    replace_existing=replace_existing,
+                )
+            _update_batch_task(
+                state,
+                state_lock,
+                record.instance_id,
+                status="ready",
+                container_name=prepared.sandbox.container_name,
+                sandbox_json=str(prepared.sandbox_json),
+                last_error=None,
+            )
+            return {"instance_id": record.instance_id, "status": "ready", "error": None}
+        except Exception as exc:
+            _update_batch_task(state, state_lock, record.instance_id, status="errored", last_error=str(exc))
+            return {"instance_id": record.instance_id, "status": "errored", "error": str(exc)}
+
+    max_workers = min(jobs, len(records))
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(prepare_one, record) for record in records]
+        for future in as_completed(futures):
+            results.append(future.result())
+    return 4 if any(result["status"] == "errored" for result in results) else 0
+
+
+def solve_swebench_sandboxes(
+    *,
+    task_records: Sequence[SwebenchTaskRecord] | None = None,
+    dataset_path: str | Path | None = None,
+    instance_ids: Sequence[str] = (),
+    docker: DockerCli,
+    backend_factory: Callable[[], ModelBackend],
+    budget: RunBudget,
+    model_name: str,
+    output_dir: str | Path,
+    state_path: str | Path | None = None,
+    active_index_path: str | Path = ".coding-agent/active-sandboxes.json",
+    jobs: int = 1,
+    include_pass_to_pass: bool = False,
+    cleanup: bool = False,
+) -> int:
+    """Solve many prepared SWE-Bench sandboxes, using the batch state for resumable skips."""
+    if jobs <= 0:
+        raise SandboxedRunInputError("jobs must be a positive integer")
+    records = _load_records_for_batch(task_records=task_records, dataset_path=dataset_path, instance_ids=instance_ids)
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    state = _state_path(root, state_path)
+    state_lock = Lock()
+    active_lock = Lock()
+    _initialize_batch_state(path=state, lock=state_lock, task_records=records, output_dir=root)
+
+    def solve_one(record: SwebenchTaskRecord) -> dict[str, Any]:
+        solve_dir = root / _safe_instance_dir(record.instance_id) / "solve"
+        current_state = _load_batch_state(state)
+        current_status = current_state.get("tasks", {}).get(record.instance_id, {}).get("status")
+        if current_status == "solved":
+            return {"instance_id": record.instance_id, "status": "solved", "error": None}
+        _update_batch_task(state, state_lock, record.instance_id, status="solving", solve_dir=str(solve_dir), last_error=None)
+        try:
+            with active_lock:
+                sandbox = load_active_sandbox(active_index_path, record.instance_id)
+            summary = solve_prepared_sandbox(
+                task_record=record,
+                sandbox=sandbox,
+                docker=docker,
+                backend=backend_factory(),
+                budget=budget,
+                model_name=model_name,
+                output_dir=solve_dir,
+                include_pass_to_pass=include_pass_to_pass,
+                cleanup=cleanup,
+            )
+            _update_batch_task(
+                state,
+                state_lock,
+                record.instance_id,
+                status=summary.status.value,
+                solve_dir=str(solve_dir),
+                last_error=summary.error,
+            )
+            return {"instance_id": record.instance_id, "status": summary.status.value, "error": summary.error}
+        except ArtifactPersistenceError as exc:
+            _update_batch_task(state, state_lock, record.instance_id, status="artifact_error", last_error=str(exc))
+            return {"instance_id": record.instance_id, "status": "artifact_error", "error": str(exc)}
+        except Exception as exc:
+            _update_batch_task(state, state_lock, record.instance_id, status="errored", last_error=str(exc))
+            return {"instance_id": record.instance_id, "status": "errored", "error": str(exc)}
+
+    max_workers = min(jobs, len(records))
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(solve_one, record) for record in records]
+        for future in as_completed(futures):
+            results.append(future.result())
+    if any(result["status"] == "artifact_error" for result in results):
+        return 3
+    return 4 if any(result["status"] == "errored" for result in results) else 0
 
 
 def _load_base_images_for_records(
@@ -351,85 +1030,24 @@ def run_swebench_task(
     该函数是宿主侧编排入口：它加载验证命令、准备容器、把 ContainerToolExecutor 注入
     通用 agent loop，并在成功或失败后清理容器。
     """
-    if not base_image.official_compatible:
-        raise SandboxedRunInputError("base image must be marked official_compatible")
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    # 当前 agent.run_task 需要一个宿主侧 workspace 来生成本地 patch 产物。Docker 模式
-    # 的真实仓库变更发生在容器中，因此这里使用占位快照目录保持接口兼容。
-    host_workspace = output_path / "_workspace_snapshot"
-    host_workspace.mkdir(parents=True, exist_ok=True)
-    validation = validation_from_task(task_record, base_image, include_pass_to_pass=include_pass_to_pass)
-    manager = TaskSandboxManager(docker=docker)
-    run_id = str(uuid.uuid4())
-    # prepare 会创建容器、启动容器并 checkout 到任务 base_commit。
-    sandbox = manager.prepare(
+    prepared = prepare_swebench_sandbox(
+        task_record=task_record,
         base_image=base_image,
-        instance_id=task_record.instance_id,
-        base_commit=task_record.base_commit,
-        run_id=run_id,
-    )
-    _write_sandbox_json(output_path / "sandbox.json", sandbox, validation, status="running")
-    task = BenchmarkTask(
-        instance_id=task_record.instance_id,
-        workspace=host_workspace,
-        problem_statement=task_record.problem_statement,
-        allowed_test_commands=validation.allowed_commands,
-        repo=task_record.repo,
-        base_commit=task_record.base_commit,
-    )
-    executor = ContainerToolExecutor(
         docker=docker,
-        container_name=sandbox.container_name,
-        repo_path=sandbox.repo_path,
-        allowed_test_commands=validation.allowed_commands,
-        test_timeout_seconds=budget.test_timeout_seconds,
+        output_dir=output_dir,
+        include_pass_to_pass=include_pass_to_pass,
     )
-    try:
-        # 从这里开始模型可能产生工具副作用。后续异常要尽量写失败产物，而不是只抛出。
-        summary = run_task(
-            task=task,
-            budget=budget,
-            backend=backend,
-            model_name=model_name,
-            output_dir=output_path,
-            run_id=run_id,
-            tool_executor=executor,
-        )
-    except ArtifactPersistenceError:
-        manager.stop(sandbox)
-        raise
-    except Exception as exc:
-        failure_summary = _write_runtime_failure_artifacts(
-            output_dir=output_path,
-            run_id=run_id,
-            task_record=task_record,
-            sandbox=sandbox,
-            validation=validation,
-            budget=budget,
-            model_name=model_name,
-            error=exc,
-        )
-        manager.stop(sandbox)
-        return failure_summary
-    manager.stop(sandbox)
-    # run_task 返回的是通用 summary；这里补充 Docker 沙箱元数据后重新写回 summary.json。
-    summary = RunSummary(
-        run_id=summary.run_id,
-        instance_id=summary.instance_id,
-        model_name=summary.model_name,
-        status=summary.status,
-        budget=summary.budget,
-        changed_files=summary.changed_files,
-        test_summary=summary.test_summary,
-        error=summary.error,
-        last_successful_tool_call=summary.last_successful_tool_call,
-        artifacts={**summary.artifacts, "sandbox": str(output_path / "sandbox.json")},
-        sandbox=SandboxMetadata(task_sandbox=sandbox, validation_test_set=validation),
+    return solve_prepared_sandbox(
+        task_record=task_record,
+        sandbox=prepared.sandbox,
+        docker=docker,
+        backend=backend,
+        budget=budget,
+        model_name=model_name,
+        output_dir=output_dir,
+        include_pass_to_pass=include_pass_to_pass,
+        cleanup=True,
     )
-    write_summary(output_path / "summary.json", summary)
-    _write_sandbox_json(output_path / "sandbox.json", sandbox, validation, status="stopped")
-    return summary
 
 
 def load_base_image_from_registry(path: str | Path, repo: str) -> BaseImage:

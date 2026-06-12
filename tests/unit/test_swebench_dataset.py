@@ -16,6 +16,7 @@ def _write_dataset(path: Path) -> None:
             "problem_statement": ["Fix the issue.", "Fix the second issue."],
             "FAIL_TO_PASS": [["tests/test_issue.py::test_fix"], ["tests/test_second.py::test_fix"]],
             "PASS_TO_PASS": [["tests/test_regression.py::test_old"], []],
+            "test_patch": ["diff --git a/tests/test_issue.py b/tests/test_issue.py\n", ""],
         }
     )
     parquet.write_table(table, path)
@@ -31,6 +32,7 @@ def test_load_task_record_by_instance_id(tmp_path: Path):
     assert record.repo == "django/django"
     assert record.fail_to_pass == ("tests/test_issue.py::test_fix",)
     assert record.pass_to_pass == ("tests/test_regression.py::test_old",)
+    assert record.test_patch == "diff --git a/tests/test_issue.py b/tests/test_issue.py\n"
 
 
 def test_load_task_record_rejects_missing_required_fields():

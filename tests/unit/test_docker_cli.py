@@ -40,6 +40,22 @@ def test_docker_cli_maps_timeout_to_timeout_error():
         cli.run(["exec", "container", "pytest"], timeout_seconds=1)
 
 
+def test_docker_cli_sends_stdin_as_utf8_bytes():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, b"ok\n", b"")
+
+    cli = DockerCli(runner=runner)
+
+    result = cli.run(["exec", "-i", "container", "cat"], stdin="Ўъ\n")
+
+    assert result.stdout == "ok\n"
+    assert calls[0][1]["input"] == "Ўъ\n".encode("utf-8")
+    assert calls[0][1]["text"] is False
+
+
 def test_docker_cli_inspect_helpers_return_booleans():
     seen = []
 

@@ -285,6 +285,7 @@ def run_task(
     final_error: str | None = None
     test_summary: dict[str, int] = {}
     last_successful_tool_call: str | None = None
+    unresolved_tool_failure = False
     trajectory_index = 0
     messages: list[dict[str, object]] = [
         {"role": "system", "content": _system_prompt(task)},
@@ -309,18 +310,27 @@ def run_task(
         trajectory_index += 1
         messages.append(_action_message(action))
         if action.action is AgentActionType.FINAL:
-            agent_run.finish(_terminal_status(action))
-            final_error = action.final_message
+            terminal_status = _terminal_status(action)
+            if terminal_status is RunStatus.SOLVED and unresolved_tool_failure:
+                agent_run.finish(RunStatus.INCOMPLETE)
+                final_error = "model reported solved after unresolved tool failure"
+            else:
+                agent_run.finish(terminal_status)
+                final_error = action.final_message
             break
         tool_name = ACTION_TOOL_MAP[action.action]
         result = executor.execute(tool_name, action.tool_input)
         if result.status is Outcome.OK:
             last_successful_tool_call = result.tool_name.value
+        else:
+            unresolved_tool_failure = True
         if result.test_result is not None:
             # summary 只保留测试状态计数；完整输出保存在对应的 trajectory tool_result，
             # 避免 summary.json 变成大日志文件。
             key = result.test_result.status.value
             test_summary[key] = test_summary.get(key, 0) + 1
+            if key == "passed":
+                unresolved_tool_failure = False
         try:
             writer.write_step(_tool_result_step(trajectory_index, result, action.tool_input))
         except OSError as exc:

@@ -297,8 +297,8 @@ class TaskSandbox:
         for field_name in ("container_name", "instance_id", "repo", "base_commit", "repo_path"):
             if not getattr(self, field_name):
                 raise ValueError(f"{field_name} is required")
-        if self.status not in {"pending", "ready", "running", "stopped", "error"}:
-            raise ValueError("status must be pending, ready, running, stopped, or error")
+        if self.status not in {"pending", "ready", "running", "used", "stopped", "error"}:
+            raise ValueError("status must be pending, ready, running, used, stopped, or error")
 
 
 @dataclass(frozen=True)
@@ -308,6 +308,17 @@ class SandboxMetadata:
     task_sandbox: TaskSandbox
     validation_test_set: ValidationTestSet
     failure_state: str | None = None
+
+
+@dataclass(frozen=True)
+class PreparedSandboxSummary:
+    """Result returned after preparing a reusable SWE-Bench sandbox."""
+
+    sandbox: TaskSandbox
+    validation_test_set: ValidationTestSet
+    sandbox_json: Path
+    status: str
+    ready_checks: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

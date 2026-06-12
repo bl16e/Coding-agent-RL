@@ -252,3 +252,215 @@ def test_swebench_run_reads_instance_id_file(tmp_path: Path, monkeypatch):
 
     assert exit_code == 0
     assert captured["instance_ids"] == ("django__django-1", "django__django-2")
+
+
+def test_swebench_prepare_sandbox_wires_arguments(tmp_path: Path, monkeypatch):
+    dataset = tmp_path / "dataset.parquet"
+    dataset.write_text("placeholder", encoding="utf-8")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"sandboxes": {}}), encoding="utf-8")
+    captured = {}
+
+    class TaskRecord:
+        repo = "django/django"
+
+    class Prepared:
+        status = "ready"
+
+    def fake_load_task_record(dataset_path, instance_id):
+        captured["dataset"] = dataset_path
+        captured["instance_id"] = instance_id
+        return TaskRecord()
+
+    def fake_load_base_image_from_registry(registry_path, repo):
+        captured["registry"] = registry_path
+        captured["repo"] = repo
+        return object()
+
+    def fake_prepare_swebench_sandbox(**kwargs):
+        captured.update(kwargs)
+        return Prepared()
+
+    monkeypatch.setattr("coding_agent.cli.load_task_record", fake_load_task_record)
+    monkeypatch.setattr("coding_agent.cli.load_base_image_from_registry", fake_load_base_image_from_registry)
+    monkeypatch.setattr("coding_agent.cli.prepare_swebench_sandbox", fake_prepare_swebench_sandbox)
+
+    exit_code = main(
+        [
+            "swebench",
+            "prepare-sandbox",
+            "--dataset",
+            str(dataset),
+            "--instance-id",
+            "django__django-1",
+            "--registry",
+            str(registry),
+            "--output-dir",
+            str(tmp_path / "prepared"),
+            "--replace-existing",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["instance_id"] == "django__django-1"
+    assert captured["repo"] == "django/django"
+    assert captured["output_dir"] == Path(tmp_path / "prepared")
+    assert captured["active_index_path"] == Path(".coding-agent/active-sandboxes.json")
+    assert captured["replace_existing"] is True
+
+
+def test_swebench_solve_sandbox_wires_arguments(tmp_path: Path, monkeypatch):
+    dataset = tmp_path / "dataset.parquet"
+    dataset.write_text("placeholder", encoding="utf-8")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"sandboxes": {}}), encoding="utf-8")
+    captured = {}
+
+    class TaskRecord:
+        repo = "django/django"
+
+    class Summary:
+        status = RunStatus.SOLVED
+        error = None
+
+    def fake_load_task_record(dataset_path, instance_id):
+        captured["dataset"] = dataset_path
+        captured["instance_id"] = instance_id
+        return TaskRecord()
+
+    def fake_load_active_sandbox(index_path, instance_id):
+        captured["index_path"] = index_path
+        captured["active_instance_id"] = instance_id
+        return object()
+
+    def fake_solve_prepared_sandbox(**kwargs):
+        captured.update(kwargs)
+        return Summary()
+
+    monkeypatch.setattr("coding_agent.cli.load_task_record", fake_load_task_record)
+    monkeypatch.setattr("coding_agent.cli.load_active_sandbox", fake_load_active_sandbox)
+    monkeypatch.setattr("coding_agent.cli.solve_prepared_sandbox", fake_solve_prepared_sandbox)
+
+    exit_code = main(
+        [
+            "swebench",
+            "solve-sandbox",
+            "--backend",
+            "mock",
+            "--dataset",
+            str(dataset),
+            "--instance-id",
+            "django__django-1",
+            "--registry",
+            str(registry),
+            "--max-steps",
+            "1",
+            "--timeout-seconds",
+            "60",
+            "--test-timeout-seconds",
+            "10",
+            "--output-dir",
+            str(tmp_path / "solve"),
+            "--cleanup",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["active_instance_id"] == "django__django-1"
+    assert captured["index_path"] == Path(".coding-agent/active-sandboxes.json")
+    assert captured["output_dir"] == Path(tmp_path / "solve")
+    assert captured["cleanup"] is True
+
+
+def test_swebench_prepare_sandboxes_wires_batch_arguments(tmp_path: Path, monkeypatch):
+    dataset = tmp_path / "dataset.parquet"
+    dataset.write_text("placeholder", encoding="utf-8")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"sandboxes": {}}), encoding="utf-8")
+    instance_file = tmp_path / "instances.txt"
+    instance_file.write_text("django__django-1\ndjango__django-2\n", encoding="utf-8")
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("coding_agent.cli.prepare_swebench_sandboxes", fake_run)
+
+    exit_code = main(
+        [
+            "swebench",
+            "prepare-sandboxes",
+            "--dataset",
+            str(dataset),
+            "--instance-id-file",
+            str(instance_file),
+            "--registry",
+            str(registry),
+            "--jobs",
+            "2",
+            "--output-dir",
+            str(tmp_path / "batch"),
+            "--state",
+            str(tmp_path / "state.json"),
+            "--replace-existing",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["dataset_path"] == str(dataset)
+    assert captured["instance_ids"] == ("django__django-1", "django__django-2")
+    assert captured["registry_path"] == str(registry)
+    assert captured["jobs"] == 2
+    assert captured["state_path"] == Path(tmp_path / "state.json")
+    assert captured["replace_existing"] is True
+
+
+def test_swebench_solve_sandboxes_wires_batch_arguments(tmp_path: Path, monkeypatch):
+    dataset = tmp_path / "dataset.parquet"
+    dataset.write_text("placeholder", encoding="utf-8")
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"sandboxes": {}}), encoding="utf-8")
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("coding_agent.cli.solve_swebench_sandboxes", fake_run)
+
+    exit_code = main(
+        [
+            "swebench",
+            "solve-sandboxes",
+            "--backend",
+            "mock",
+            "--dataset",
+            str(dataset),
+            "--instance-id",
+            "django__django-1",
+            "--instance-id",
+            "django__django-2",
+            "--registry",
+            str(registry),
+            "--jobs",
+            "2",
+            "--max-steps",
+            "1",
+            "--timeout-seconds",
+            "60",
+            "--test-timeout-seconds",
+            "10",
+            "--output-dir",
+            str(tmp_path / "batch"),
+            "--state",
+            str(tmp_path / "state.json"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["dataset_path"] == str(dataset)
+    assert captured["instance_ids"] == ("django__django-1", "django__django-2")
+    assert captured["active_index_path"] == Path(".coding-agent/active-sandboxes.json")
+    assert captured["jobs"] == 2
+    assert captured["state_path"] == Path(tmp_path / "state.json")

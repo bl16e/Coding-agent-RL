@@ -90,6 +90,48 @@ def test_container_executor_applies_add_file():
     assert docker.calls[0][2] == "print('fixed')\n"
 
 
+def test_container_executor_add_file_script_is_valid_python():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task-1",
+        repo_path="/workspace/repo",
+        allowed_test_commands=("python -m pytest tests/test_issue.py",),
+        test_timeout_seconds=30,
+    )
+
+    result = executor.execute(ToolName.APPLY_PATCH, {"type": "add_file", "path": "app.py", "content": "print('fixed')\n"})
+
+    assert result.status is Outcome.OK
+    script = docker.calls[0][1][2]
+    compile(script, "<container-add-file-script>", "exec")
+
+
+def test_container_executor_update_script_is_valid_python():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task-1",
+        repo_path="/workspace/repo",
+        allowed_test_commands=("python -m pytest tests/test_issue.py",),
+        test_timeout_seconds=30,
+    )
+
+    result = executor.execute(
+        ToolName.APPLY_PATCH,
+        {
+            "type": "update",
+            "path": "app.py",
+            "old_string": "old",
+            "new_string": "new",
+        },
+    )
+
+    assert result.status is Outcome.OK
+    script = docker.calls[0][1][2]
+    compile(script, "<container-update-script>", "exec")
+
+
 def test_container_executor_searches_with_bounded_results():
     executor = ContainerToolExecutor(
         docker=FakeDocker(),

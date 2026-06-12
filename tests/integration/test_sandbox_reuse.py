@@ -12,6 +12,7 @@ class RecordingDocker:
     def __init__(self) -> None:
         self.checkouts: list[str] = []
         self.images: list[str] = []
+        self.current_commit_by_container: dict[str, str] = {}
 
     def create_container(self, *, name: str, image: str) -> DockerResult:
         self.images.append(image)
@@ -27,8 +28,11 @@ class RecordingDocker:
         return DockerResult("", "", 0)
 
     def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None) -> DockerResult:
-        if command[:3] == ["git", "-C", "/workspace/repo"]:
+        if command[:4] == ["git", "-C", "/workspace/repo", "rev-parse"] and command[-1] == "HEAD":
+            return DockerResult(self.current_commit_by_container.get(container, ""), "", 0)
+        if command[:4] == ["git", "-C", "/workspace/repo", "checkout"]:
             self.checkouts.append(command[-1])
+            self.current_commit_by_container[container] = command[-1]
         return DockerResult("", "", 0)
 
 

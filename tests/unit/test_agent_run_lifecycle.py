@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -197,3 +198,37 @@ def test_agent_run_rejects_invalid_final_status(tmp_path: Path):
             model_name="mock-model",
             output_dir=tmp_path / "run",
         )
+
+
+def test_agent_downgrades_solved_after_unresolved_tool_failure(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    problem = tmp_path / "problem.txt"
+    problem.write_text("Fix it.", encoding="utf-8")
+    task = create_task_from_paths(
+        instance_id="example__repo-1",
+        workspace=workspace,
+        problem_statement_file=problem,
+        allowed_test_commands=("python -m pytest tests/test_issue.py::test_fix",),
+    )
+
+    summary = run_task(
+        task=task,
+        budget=RunBudget(max_steps=3, timeout_seconds=60, test_timeout_seconds=10),
+        backend=MockBackend(
+            [
+                AgentAction(
+                    action=AgentActionType.RUN_TESTS,
+                    tool_input={"command": "python -m pytest"},
+                ),
+                AgentAction(action=AgentActionType.FINAL, final_status="solved"),
+            ]
+        ),
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+    )
+
+    trajectory = json.loads((tmp_path / "run" / "trajectory.json").read_text(encoding="utf-8"))
+    assert summary.status is RunStatus.INCOMPLETE
+    assert "unresolved tool failure" in (summary.error or "")
+    assert trajectory["resolved"] is False

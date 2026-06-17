@@ -23,6 +23,7 @@ Thumbs.db
 
 # Local agent data
 .coding-agent/
+.worktrees/
 
 # Python
 .venv_linux/

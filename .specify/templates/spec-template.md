@@ -85,6 +85,8 @@
   Fill them out with the right functional requirements.
   Do not guess unclear behavior. Mark uncertainty with NEEDS CLARIFICATION and
   ask the user before planning or implementation depends on it.
+  Requirements must describe user-visible or domain behavior. Do not encode
+  behavior solely from current tests, fixtures, or sample-only values.
 -->
 
 ### Functional Requirements
@@ -110,6 +112,8 @@
 <!--
   ACTION REQUIRED: Define measurable success criteria.
   These must be technology-agnostic and measurable.
+  Criteria must validate observable behavior, not internal lookup tables or
+  test-specific branches.
 -->
 
 ### Measurable Outcomes
@@ -125,6 +129,8 @@
   ACTION REQUIRED: Capture only user-confirmed clarifications, documented
   existing project behavior, or low-risk defaults that are explicitly stated.
   Do not invent behavior to fill gaps.
+  Include source links or references when a default comes from official
+  documentation, official samples, upstream behavior, or an existing contract.
 -->
 
 - [Clarification or explicit default, e.g., "User confirmed mobile support is out of scope for v1"]

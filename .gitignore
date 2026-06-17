@@ -36,3 +36,5 @@ runs/
 # IDE
 .vscode/
 .idea/
+
+SWE-bench

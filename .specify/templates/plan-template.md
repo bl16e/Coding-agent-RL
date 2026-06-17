@@ -22,6 +22,8 @@
 
 **Primary Dependencies**: [e.g., FastAPI, UIKit, LLVM or NEEDS CLARIFICATION]
 
+**Reference Sources**: [Official documentation, official samples, upstream behavior, existing project contracts, or NEEDS CLARIFICATION]
+
 **Storage**: [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
 
 **Testing**: [e.g., pytest, XCTest, cargo test or NEEDS CLARIFICATION]
@@ -46,9 +48,12 @@
 - Cohesion/coupling gate: Module boundaries are named, each planned file has a
   focused responsibility, and any oversized file or broad coupling risk is
   justified in Complexity Tracking.
-- Official behavior gate: Library, API, CLI, framework, and configuration usage
-  matches official documentation or existing project contracts, with sources
-  named in the plan.
+- Source-backed behavior gate: Library, API, CLI, framework, and configuration
+  usage matches official documentation, official samples, upstream behavior, or
+  existing project contracts, with sources named in the plan.
+- Test integrity gate: The implementation approach targets general behavior,
+  not current test fixtures. Any static mapping or fixture-like data is named,
+  sourced, and justified as domain metadata rather than a test shortcut.
 
 ## Project Structure
 
@@ -120,3 +125,4 @@ directories captured above]
 | [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
 | [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
 | [e.g., oversized module] | [specific responsibility conflict] | [why splitting now would increase risk] |
+| [e.g., static mapping] | [official/domain source requiring it] | [why deriving dynamically is unsupported] |

@@ -15,7 +15,7 @@
 - Q: What is the first supported benchmark task scope for this refactor? → A: Core SWE-Bench Lite repository set; unknown repositories fail with an explicit unsupported message.
 - Q: How should a core repository/version be handled when source-backed metadata is unavailable? → A: Treat it as unsupported and fail before agent execution with a missing source-backed metadata message.
 - Q: What legacy sandbox registry compatibility level is required? → A: Keep only explicit legacy commands and flows compatible; new benchmark runs do not use the legacy registry.
-- Q: Which user-visible operation modes are required in the first version? → A: Prepare runtime, run directly, and continue a prepared environment; batch benchmark orchestration is out of scope.
+- Q: Which user-visible operation modes are required in the first version? → A: Two operations only: prepare all required environments, then run the agent from a prepared environment; batch benchmark orchestration is out of scope.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -51,26 +51,26 @@ readiness status before any agent action begins.
 
 ### User Story 2 - Run Agent Work Through the Prepared Environment (Priority: P2)
 
-A developer wants to either run a benchmark task directly or continue from a
-prepared task environment while preserving the existing run artifacts, budgets,
-model interaction flow, and repository-tool behavior.
+A developer wants to run a benchmark task from a prepared task environment
+while preserving the existing run artifacts, budgets, model interaction flow,
+and repository-tool behavior.
 
 **Why this priority**: The refactor must improve runtime preparation without
 breaking the agent's core solving workflow or existing artifact contract.
 
-**Independent Test**: Can be tested by running one task directly, preparing one
-task and continuing it, and confirming that code inspection, edits, search, and
-allowed validation occur only in the selected environment while trajectory,
-summary, final patch, and prediction artifacts remain available to the
-developer.
+**Independent Test**: Can be tested by preparing one task, running the agent
+against that prepared environment, and confirming that code inspection, edits,
+search, and allowed validation occur only in the selected environment while
+trajectory, summary, final patch, and prediction artifacts remain available to
+the developer.
 
 **Acceptance Scenarios**:
 
 1. **Given** a prepared task environment, **When** the developer starts an agent
    run, **Then** the agent operates only on the selected task workspace.
 2. **Given** a selected task has not already been prepared, **When** the
-   developer starts a direct run, **Then** the system prepares the task
-   environment and starts the agent in one workflow.
+   developer starts a run, **Then** the system stops before agent execution and
+   reports that the task environment must be prepared first.
 3. **Given** the agent completes or exhausts its configured limits, **When** the
    run ends, **Then** the developer receives the same core artifact set as the
    current project flow plus environment metadata.
@@ -173,15 +173,15 @@ runtime path by default.
   distinguish reusable layers from the task-specific environment used for a run.
 - **FR-004**: The system MUST reuse compatible prepared runtime layers across
   tasks when doing so does not change the selected task's clean starting point.
-- **FR-005**: The system MUST stop before agent execution when a required
-  runtime layer is missing unless the developer explicitly opted into creating
-  missing runtime layers.
+- **FR-005**: During `prepare`, the system MUST stop before agent execution when
+  a required runtime layer is missing unless the developer explicitly opted into
+  creating missing runtime layers; `run` MUST NOT create missing runtime layers.
 - **FR-006**: The system MUST verify the prepared task environment is tied to the
   selected task and starts from the selected base revision before any agent file
   operation occurs.
-- **FR-006a**: The first version MUST support three user-visible benchmark
-  operation modes: prepare a runtime environment, run a selected task directly,
-  and continue solving from a prepared environment.
+- **FR-006a**: The first version MUST support two user-visible benchmark
+  operations: prepare all required runtime and task environments, and run the
+  agent from a prepared task environment.
 - **FR-006b**: Batch benchmark orchestration MUST remain out of scope for this
   feature.
 - **FR-007**: The system MUST keep model orchestration, budget tracking,
@@ -202,9 +202,10 @@ runtime path by default.
   selected task's allowed validation set.
 - **FR-014**: The system MUST prevent validation-only task files or patches from
   permanently contaminating the final code patch.
-- **FR-015**: The system MUST report final validation outcomes in a way that
-  distinguishes fixed checks, regression checks, failures, and unavailable
-  validation sources.
+- **FR-015**: The system MUST perform final run review by executing the adapted
+  TestSpec official-style `eval_script` inside the prepared environment, grade
+  that script output, and report fixed checks, regression checks, failures, and
+  unavailable validation sources separately.
 - **FR-016**: The system MUST keep existing prepared-workspace runs available
   without requiring benchmark runtime configuration.
 - **FR-017**: The system MUST keep legacy sandbox registry behavior available as
@@ -259,9 +260,8 @@ runtime path by default.
 - **SC-002**: For 100% of runs that reach agent execution, all repository file
   operations and validation attempts are confined to the selected task
   environment.
-- **SC-002a**: A developer can complete each first-version operation mode
-  against at least one supported benchmark task: prepare runtime, direct run,
-  and continue prepared environment.
+- **SC-002a**: A developer can complete both first-version operations against
+  at least one supported benchmark task: prepare, then run.
 - **SC-003**: For 100% of completed runs, the artifact set identifies the task,
   base revision, runtime lineage, validation source, selected validation mode,
   final outcome, and compatibility/default path used.
@@ -295,8 +295,11 @@ runtime path by default.
 - A core repository/version is supported only when required repository,
   environment, and validation metadata is source-backed; missing source-backed
   metadata makes that task unsupported for this feature.
-- The first user-visible operation modes are prepare runtime, direct run, and
-  continue prepared environment.
+- The first user-visible benchmark operations are `prepare` and `run` only.
+  `prepare` resolves the task into an adapted TestSpec, prepares or reuses
+  Base/Env/Instance image layers, and creates the task-specific prepared
+  environment; `run` starts the agent from that prepared environment and does
+  not build images.
 - Batch benchmark orchestration is out of scope for this feature.
 - The default benchmark runtime path follows the reference plan's official-style
   environment preparation, task-specific environment creation, source-backed
@@ -309,6 +312,10 @@ runtime path by default.
 - Creating missing runtime layers is opt-in; missing layers fail before agent
   execution by default.
 - Regression validation is opt-in; fix-verification validation is the default.
+- Agent-requested validation during a run may use only the selected task's
+  allowed validation commands, while final review MUST execute the adapted
+  TestSpec `eval_script` and use its graded output as the final benchmark
+  outcome.
 - Runtime implementation must be source-backed by official documentation,
   official samples, upstream behavior, or existing project contracts during
   planning.

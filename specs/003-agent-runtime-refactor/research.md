@@ -58,7 +58,7 @@ supported and unsupported paths.
 - All SWE-Bench tasks: rejected because it broadens scope beyond SWE-Bench Lite
   and increases metadata coverage risk.
 - Framework only with no runnable task: rejected because it would not satisfy
-  user-visible prepare/run/continue flows.
+  the two user-visible `prepare` and `run` operations.
 
 ## Decision: New benchmark runs use official-style image graph by default
 
@@ -79,10 +79,38 @@ task-specific starting point.
 - Continue creating containers from legacy base images: rejected for default
   benchmark runs.
 
-## Decision: Missing images fail unless `--build-missing` is explicit
+## Decision: Use the local SWE-Bench Lite data as the first audit scope
 
-Prepare and run flows check required images first. Missing images fail before
-agent execution unless the developer supplies an explicit build-missing option.
+The first supported source-backed runtime metadata scope is the two local
+SWE-Bench Lite parquet files under `data/`. Applying the upstream `TestSpec`
+image-key rules to those files produces 323 supported rows, 18 repositories,
+81 repo/version pairs, one base image key, 45 environment image keys, and 323
+instance image keys with zero generation failures.
+
+The detailed audit inventory is recorded in
+[runtime-image-audit.md](./runtime-image-audit.md). It lists the dataset files,
+source harness files, supported repo/version pairs, the base image key, all
+environment image keys, and the deterministic instance image key rule.
+
+**Rationale**: This converts the vague "core SWE-Bench Lite repository set"
+scope into an auditable local dataset scope while preserving the constitution's
+distinction between source-backed domain metadata and fixture-shaped shortcuts.
+
+**Alternatives considered**:
+
+- Embed a hand-written per-instance image table in production code: rejected
+  because instance image keys are deterministically derived from `instance_id`.
+- Treat all upstream SWE-Bench repositories as supported immediately: rejected
+  because this feature's current data source is the local SWE-Bench Lite data.
+- Store only example image keys in the plan: rejected because it would not
+  satisfy the source-backed audit requirement for repo/version coverage.
+
+## Decision: `prepare` fails on missing images unless `--build-missing` is explicit
+
+`prepare` checks required Base/Env/Instance images before any agent execution.
+Missing images fail before agent execution unless the developer supplies an
+explicit build-missing option. `run` never builds images and instead requires a
+matching prepared environment from the active index.
 
 **Rationale**: Image creation is expensive and environment-changing. Explicit
 opt-in keeps runtime behavior predictable and keeps pre-agent failures
@@ -92,8 +120,8 @@ actionable.
 
 - Always build missing images: rejected because it changes runtime state
   implicitly and can hide setup problems.
-- Never build images: rejected because the spec requires prepare-runtime and
-  direct run flows that can create missing layers when explicitly requested.
+- Never build images: rejected because `prepare` must be able to create missing
+  runtime layers when explicitly requested.
 
 ## Decision: Keep host-orchestrated agent solving
 
@@ -132,9 +160,9 @@ Validation-only files must not contaminate the model's final patch.
 ## Decision: Preserve legacy registry only as explicit compatibility
 
 Existing `sandbox register/list` and legacy flows remain available as
-compatibility behavior. New benchmark run, prepare, and continue flows do not
-use the legacy registry unless the developer invokes an explicit legacy command
-or compatibility path.
+compatibility behavior. New benchmark `prepare` and `run` flows do not use the
+legacy registry unless the developer invokes an explicit legacy command or
+compatibility path.
 
 **Rationale**: This protects existing workflows while making the new
 official-style runtime path unambiguous.
@@ -148,8 +176,10 @@ official-style runtime path unambiguous.
 
 ## Decision: Do not implement batch benchmark orchestration in this feature
 
-The first version supports prepare-runtime, prepare, direct run, and
-continue-prepared operation modes for selected tasks. Batch benchmark
+The first version supports only two user-visible benchmark operations for
+selected tasks: `prepare` and `run`. `prepare` builds or reuses runtime layers
+when explicitly allowed and creates the prepared task environment; `run` starts
+the host-owned agent from that prepared environment. Batch benchmark
 orchestration is out of scope.
 
 **Rationale**: The user asked for an agent runtime environment refactor, not a
@@ -184,7 +214,12 @@ implementation proves otherwise.
 - `specs/002-swebench-docker-sandbox/spec.md`
 - `SWE-bench/swebench/harness/test_spec/test_spec.py`
 - `SWE-bench/swebench/harness/test_spec/utils.py`
+- `SWE-bench/swebench/harness/test_spec/python.py`
 - `SWE-bench/swebench/harness/docker_build.py`
 - `SWE-bench/swebench/harness/grading.py`
+- `SWE-bench/swebench/harness/constants/__init__.py`
 - `SWE-bench/swebench/harness/constants/python.py`
+- `data/dev-00000-of-00001.parquet`
+- `data/test-00000-of-00001.parquet`
+- `specs/003-agent-runtime-refactor/runtime-image-audit.md`
 - Docker CLI documentation for image build and container lifecycle commands

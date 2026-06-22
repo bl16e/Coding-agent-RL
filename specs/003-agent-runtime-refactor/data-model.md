@@ -151,7 +151,7 @@ used -> stopped
 
 ## ValidationSet
 
-Allowed validation commands and source metadata.
+Allowed in-run validation commands, final review script, and source metadata.
 
 **Fields**
 
@@ -159,20 +159,22 @@ Allowed validation commands and source metadata.
 - `pass_to_pass`
 - `include_pass_to_pass`
 - `command_source`: `official_testspec` or `source_backed_repo_spec`.
-- `eval_script`
-- `allowed_commands`
+- `eval_script`: adapted TestSpec official-style final review script.
+- `allowed_commands`: commands the agent may request during the run.
 - `test_patch_reset_commands`
 
 **Validation Rules**
 
 - `fail_to_pass` is required.
 - `pass_to_pass` is included only when explicitly requested.
-- Requests outside `allowed_commands` are rejected and recorded.
+- Requests outside `allowed_commands` are rejected and recorded during the run.
+- Final benchmark review must execute `eval_script`; `allowed_commands` are not
+  sufficient to declare the final benchmark outcome.
 - Validation-only patches must not appear in the final exported code patch.
 
 ## EvalReport
 
-Final validation outcome parsed from official-style eval output.
+Final validation outcome parsed from the adapted TestSpec `eval_script` output.
 
 **Fields**
 
@@ -187,8 +189,8 @@ Final validation outcome parsed from official-style eval output.
 
 - A task is resolved only when all required `FAIL_TO_PASS` checks pass and all
   selected `PASS_TO_PASS` checks pass.
-- Missing or unparsable eval output is recorded as validation failure, not as a
-  solved task.
+- Missing or unparsable `eval_script` output is recorded as validation failure,
+  not as a solved task.
 
 ## AgentRunArtifactSet
 
@@ -213,7 +215,7 @@ The persisted artifacts for one run.
 
 ## ActivePreparedEnvironmentIndex
 
-Index of prepared environments available for continue-prepared workflows.
+Index of prepared environments available for `run` workflows.
 
 **Fields**
 
@@ -229,7 +231,7 @@ Index of prepared environments available for continue-prepared workflows.
 **Validation Rules**
 
 - Duplicate active entries are rejected unless replace semantics are explicit.
-- Continue-prepared validates index metadata against the requested task record.
+- `run` validates index metadata against the requested task record.
 
 ## CompatibilityPath
 

@@ -26,8 +26,7 @@ python -m pytest tests\contract\test_cli_swebench_runtime_contract.py -q
 Expected:
 
 - `swebench run` no longer requires `--registry`.
-- `prepare-runtime`, `prepare`, and `continue-prepared` parse required
-  arguments.
+- `prepare` and `run` parse required arguments.
 - Legacy registry commands still parse as explicit compatibility flows.
 
 ## 2. Run Unit Tests For Runtime Metadata
@@ -53,13 +52,13 @@ Expected:
 - Validation-only test patches are applied temporarily or excluded from final
   patch export.
 
-## 3. Validate Prepare Runtime Without Building
+## 3. Validate Prepare Without Building
 
 ```powershell
-coding-agent swebench prepare-runtime `
+coding-agent swebench prepare `
   --dataset data\lite.parquet `
   --instance-id django__django-11099 `
-  --output-dir runs\prepare-runtime-check
+  --output-dir runs\prepare-check
 ```
 
 Expected when images are missing:
@@ -67,65 +66,29 @@ Expected when images are missing:
 - Command exits before agent execution.
 - Message identifies missing image keys.
 - No model backend is initialized.
-- `runs\prepare-runtime-check` contains a preparation report if the output
-  directory was created before the failure.
+- `runs\prepare-check` contains preparation diagnostics if the output directory
+  was created before the failure.
 
-## 4. Validate Prepare Runtime With Explicit Build
+## 4. Validate Prepare With Explicit Build
 
 ```powershell
-coding-agent swebench prepare-runtime `
+coding-agent swebench prepare `
   --dataset data\lite.parquet `
   --instance-id django__django-11099 `
   --build-missing `
-  --output-dir runs\prepare-runtime-build
+  --output-dir runs\django-11099-prepare
 ```
 
 Expected:
 
 - Missing images are built in base -> env -> instance order.
 - Existing images are reused.
-- Report records built and reused image keys.
-- No agent solving starts.
-
-## 5. Prepare And Continue A Task Environment
-
-```powershell
-coding-agent swebench prepare `
-  --dataset data\lite.parquet `
-  --instance-id django__django-11099 `
-  --output-dir runs\django-11099-prepare `
-  --build-missing
-```
-
-Expected:
-
-- `sandbox.json` is written.
+- `sandbox.json` records built and reused image keys.
 - Active environment index includes the selected instance id.
 - Readiness checks are recorded.
-- The environment remains available for continuation.
+- No agent solving starts.
 
-Continue from the prepared environment:
-
-```powershell
-coding-agent swebench continue-prepared `
-  --dataset data\lite.parquet `
-  --instance-id django__django-11099 `
-  --backend mock `
-  --max-steps 1 `
-  --timeout-seconds 60 `
-  --test-timeout-seconds 30 `
-  --output-dir runs\django-11099-continue `
-  --cleanup
-```
-
-Expected:
-
-- Standard artifacts are written.
-- `summary.json` and `sandbox.json` identify the official-style runtime path.
-- The final patch excludes validation-only test patch changes.
-- The prepared environment is removed only because `--cleanup` was provided.
-
-## 6. Direct Run
+## 5. Run Agent From Prepared Environment
 
 ```powershell
 coding-agent swebench run `
@@ -136,15 +99,36 @@ coding-agent swebench run `
   --timeout-seconds 60 `
   --test-timeout-seconds 30 `
   --output-dir runs\django-11099-run `
-  --build-missing
+  --cleanup
 ```
 
 Expected:
 
-- The command prepares the runtime and runs the agent in one workflow.
-- Artifacts include `trajectory.jsonl`, `trajectory.json`, `summary.json`,
-  `final.patch`, `prediction.jsonl`, and `sandbox.json`.
-- `sandbox.json` includes base/env/instance image keys and validation source.
+- Standard artifacts are written.
+- `summary.json` and `sandbox.json` identify the official-style runtime path.
+- Final review executes the adapted TestSpec `eval_script` and records graded
+  `FAIL_TO_PASS` plus selected `PASS_TO_PASS` results.
+- The final patch excludes validation-only test patch changes.
+- The prepared environment is removed only because `--cleanup` was provided.
+
+## 6. Run Without Prepared Environment
+
+```powershell
+coding-agent swebench run `
+  --dataset data\lite.parquet `
+  --instance-id django__django-11099 `
+  --backend mock `
+  --max-steps 1 `
+  --timeout-seconds 60 `
+  --test-timeout-seconds 30 `
+  --output-dir runs\django-11099-missing
+```
+
+Expected:
+
+- Command exits before agent execution.
+- Error identifies that the prepared environment is missing or mismatched.
+- No model calls occur.
 
 ## 7. Unsupported Repository Check
 

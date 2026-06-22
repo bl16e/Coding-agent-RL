@@ -39,9 +39,14 @@ existing wrapper, pytest for tests. No runtime import dependency on the local
 - Existing project implementation contracts under `src/coding_agent/`
 - Local upstream reference only: `SWE-bench/swebench/harness/test_spec/test_spec.py`
 - Local upstream reference only: `SWE-bench/swebench/harness/test_spec/utils.py`
+- Local upstream reference only: `SWE-bench/swebench/harness/test_spec/python.py`
 - Local upstream reference only: `SWE-bench/swebench/harness/docker_build.py`
 - Local upstream reference only: `SWE-bench/swebench/harness/grading.py`
+- Local upstream reference only: `SWE-bench/swebench/harness/constants/__init__.py`
 - Local upstream reference only: `SWE-bench/swebench/harness/constants/python.py`
+- Local SWE-Bench Lite data: `data/dev-00000-of-00001.parquet`
+- Local SWE-Bench Lite data: `data/test-00000-of-00001.parquet`
+- Runtime image audit: `specs/003-agent-runtime-refactor/runtime-image-audit.md`
 - Docker CLI documentation for image build, container create/start/exec/cp,
   and container lifecycle behavior
 
@@ -80,9 +85,13 @@ must cite upstream or project sources and must represent domain metadata.
 
 **Scale/Scope**: First version supports the core SWE-Bench Lite repository set
 where source-backed repository, environment, and validation metadata is present.
-Required user-visible operation modes are: prepare runtime, direct run, and
-continue prepared environment. Unknown repositories and missing source-backed
-metadata fail before agent execution.
+Required user-visible benchmark operations are `prepare` and `run`. `prepare`
+resolves the task into an adapted TestSpec, prepares or reuses Base/Env/Instance
+image layers, and creates the task-specific prepared environment. `run` starts
+the agent from a prepared environment and does not build images. Unknown
+repositories, missing source-backed metadata, missing runtime layers during
+prepare, and missing prepared environments during run fail before agent
+execution.
 
 ## Constitution Check
 
@@ -114,6 +123,7 @@ specs/003-agent-runtime-refactor/
 |-- spec.md
 |-- plan.md
 |-- research.md
+|-- runtime-image-audit.md
 |-- data-model.md
 |-- quickstart.md
 |-- contracts/
@@ -147,7 +157,7 @@ src/coding_agent/
     |-- images.py                          # New image graph resolution/build orchestration
     |-- grading.py                         # New official-style eval output grading
     |-- validation.py                      # Validation from adapted TestSpec
-    |-- sandbox_run.py                     # Prepare/direct run/continue prepared orchestration
+    |-- sandbox_run.py                     # Prepare/run orchestration
     `-- prediction.py                      # Existing prediction JSONL writer
 
 tests/
@@ -176,11 +186,13 @@ and [quickstart.md](./quickstart.md).
 
 ### Runtime Pipeline
 
-1. Load a dataset row and normalize it into a benchmark task record.
-2. Build an adapted source-backed task spec from the task record.
+1. During `prepare`, load a dataset row and normalize it into a benchmark task
+   record.
+2. Build an adapted source-backed TestSpec from the task record.
 3. Resolve required repo/version metadata from source-backed repo specs.
-4. Derive setup scripts, eval script, image keys, validation commands, and
-   runtime lineage from the adapted task spec.
+4. Derive setup scripts, the official-style `eval_script`, Base/Env/Instance
+   image keys, allowed in-run validation commands, and runtime lineage from the
+   adapted TestSpec.
 5. Check all required runtime images before model execution.
 6. If `--build-missing` is absent and an image is missing, fail with exit 2.
 7. If `--build-missing` is present, build missing images in base -> env ->
@@ -188,22 +200,29 @@ and [quickstart.md](./quickstart.md).
 8. Create or reuse a task-specific prepared environment from the instance image.
 9. Verify readiness: container exec works, repo is a worktree, task/repo/base
    revision match, workspace starts clean, validation source exists.
-10. Run the host-owned agent with a container tool executor.
-11. Run final official-style eval and grade `FAIL_TO_PASS` plus optional
-    `PASS_TO_PASS`.
-12. Export container diff as final patch without validation-only changes.
-13. Write summary, prediction, trajectory, and sandbox metadata artifacts.
+10. For `run`, load and verify the prepared environment from the active index.
+11. Run the host-owned agent with a container tool executor; repository reads,
+    edits, searches, and in-run validation commands execute inside the sandbox.
+12. For final review, execute the adapted TestSpec `eval_script` inside the
+    prepared environment and grade its official-style output for `FAIL_TO_PASS`
+    plus optional `PASS_TO_PASS`.
+13. Export container diff as final patch without validation-only changes.
+14. Write summary, prediction, trajectory, and sandbox metadata artifacts.
 
 ### Operation Modes
 
-- `prepare-runtime`: prepare the runtime image graph for one or more selected
-  supported tasks. This is not batch benchmark orchestration; it only prepares
-  runtime layers.
-- `prepare`: create and index a running task-specific prepared environment for
-  one selected task.
-- `run`: prepare as needed and solve one selected task in a single workflow.
-- `continue-prepared`: solve using the indexed prepared environment for one
-  selected task.
+- `prepare`: for one selected supported task, resolve the dataset row into an
+  adapted TestSpec, prepare or reuse Base/Env/Instance image layers, and create
+  a running task-specific prepared environment. This command checks or builds
+  image layers when explicitly allowed, writes `sandbox.json`, and indexes the
+  environment in `.coding-agent/active-sandboxes.json`.
+- `run`: solve one selected task by loading the indexed prepared environment,
+  verifying task identity and base revision, and running the host-owned agent
+  with command-based, container-confined repository tools. `run` does not build
+  images or create a missing prepared environment; missing or mismatched
+  prepared environments fail before agent execution. Final review is performed
+  by executing the adapted TestSpec `eval_script`, not by accepting arbitrary
+  agent-requested validation commands as the benchmark outcome.
 
 Existing `sandbox register/list` commands remain as explicit legacy
 compatibility commands. Existing prepared-workspace `coding-agent run` remains
@@ -213,9 +232,12 @@ unchanged.
 
 Supported repo/version metadata is valid only when it is derived from upstream
 SWE-Bench harness constants, official samples, official documentation, or an
-existing project contract. Tests may use compact fixture records, but
-production logic must call the same general metadata lookup path and must fail
-on missing metadata.
+existing project contract. The first local SWE-Bench Lite audit scope is
+recorded in `runtime-image-audit.md`: 323 rows, 18 repositories, 81
+repo/version pairs, one base image key, 45 environment image keys, and 323
+deterministic instance image keys from `data/*.parquet`. Tests may use compact
+fixture records, but production logic must call the same general metadata
+lookup path and must fail on missing metadata.
 
 ### Compatibility Policy
 

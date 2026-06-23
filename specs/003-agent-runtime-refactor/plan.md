@@ -16,10 +16,10 @@ and preserve the existing artifact contract.
 This plan intentionally does not expand into batch benchmark orchestration.
 The first supported scope is the core SWE-Bench Lite repository set. Tasks
 outside that set, or inside the set but missing source-backed metadata, fail
-before agent execution with actionable messages. Existing prepared-workspace
-runs remain supported. The legacy sandbox registry remains only through
-explicit legacy commands and compatibility flows; new benchmark runs must not
-use it.
+before agent execution with actionable messages. The first version exposes only
+`prepare` and `run` for SWE-Bench benchmark runtime work; legacy registry,
+legacy sandbox, and batch SWE-Bench runtime operations are rejected instead of
+preserved as compatibility flows.
 
 ## Technical Context
 
@@ -55,7 +55,7 @@ existing wrapper, pytest for tests. No runtime import dependency on the local
 `prediction.jsonl`, and `sandbox.json`. Active prepared environments continue
 to be indexed under `.coding-agent/active-sandboxes.json`. Runtime image/build
 metadata is recorded in `sandbox.json` and summary metadata, not in the legacy
-repo-keyed registry for new benchmark runs.
+repo-keyed registry.
 
 **Testing**: pytest unit, contract, and integration tests. Docker interactions
 use fakes for default automated tests. Real Docker image preparation remains
@@ -77,11 +77,12 @@ runtime flow remains bounded by the existing run budget settings.
 
 **Constraints**: New benchmark runs do not use the legacy sandbox registry.
 Creating missing runtime layers is opt-in through an explicit flag. Batch
-benchmark orchestration is out of scope. The host owns model calls, budgets,
-trajectory, summary, prediction, and final patch export. The prepared task
-environment owns repository reads, edits, searches, validation attempts, and
-final diff extraction. Runtime behavior must be source-backed; static mappings
-must cite upstream or project sources and must represent domain metadata.
+benchmark orchestration and legacy SWE-Bench runtime operations are rejected.
+The host owns model calls, budgets, trajectory, summary, prediction, and final
+patch export. The prepared task environment owns repository reads, edits,
+searches, validation attempts, and final diff extraction. Runtime behavior must
+be source-backed; static mappings must cite upstream or project sources and
+must represent domain metadata.
 
 **Scale/Scope**: First version supports the core SWE-Bench Lite repository set
 where source-backed repository, environment, and validation metadata is present.
@@ -98,8 +99,8 @@ execution.
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
 - Clarification gate: PASS. `/speckit-clarify` resolved supported repository
-  scope, behavior for missing source-backed metadata, legacy registry
-  compatibility, required operation modes, and batch orchestration scope.
+  scope, behavior for missing source-backed metadata, legacy registry removal,
+  required operation modes, and batch orchestration scope.
 - Cohesion/coupling gate: PASS. Planned boundaries keep TestSpec adaptation,
   repo metadata, script generation, image resolution/building, grading, Docker
   command execution, sandbox lifecycle, container tools, and CLI parsing in
@@ -136,7 +137,7 @@ specs/003-agent-runtime-refactor/
 
 ```text
 scripts/
-`-- prepare_swebench_repo_images.py        # Existing repo-image helper; remains compatibility/reference only
+`-- prepare_swebench_repo_images.py        # Existing repo-image helper; reference only
 
 src/coding_agent/
 |-- cli.py                                 # CLI parsing, command dispatch, exit-code mapping
@@ -147,7 +148,7 @@ src/coding_agent/
 |-- sandbox/
 |   |-- docker_cli.py                      # Docker CLI wrapper and build/copy helpers
 |   |-- manager.py                         # Container lifecycle and prepared environment checks
-|   |-- registry.py                        # Legacy registry compatibility path only
+|   |-- registry.py                        # Existing registry module; not used by new SWE-Bench runtime
 |   `-- tools.py                           # Container-backed read/edit/search/test executor
 `-- swebench/
     |-- dataset.py                         # Dataset loading and task record normalization
@@ -197,17 +198,27 @@ and [quickstart.md](./quickstart.md).
 6. If `--build-missing` is absent and an image is missing, fail with exit 2.
 7. If `--build-missing` is present, build missing images in base -> env ->
    instance order and record which images were built.
-8. Create or reuse a task-specific prepared environment from the instance image.
+8. Create a task-specific prepared environment from the instance image, or
+   replace the existing active prepared environment only when
+   `--replace-existing` is supplied. Reuse is for Base/Env/Instance image layers,
+   not for already-used task workspaces.
 9. Verify readiness: container exec works, repo is a worktree, task/repo/base
    revision match, workspace starts clean, validation source exists.
-10. For `run`, load and verify the prepared environment from the active index.
-11. Run the host-owned agent with a container tool executor; repository reads,
+10. For `run`, load and verify a ready prepared environment from the active
+    index. Missing, mismatched, used, stopped, errored, or concurrently running
+    prepared environments fail before agent execution.
+11. Transition the prepared environment to running while the host-owned agent
+    executes with a container tool executor; repository reads,
     edits, searches, and in-run validation commands execute inside the sandbox.
 12. For final review, execute the adapted TestSpec `eval_script` inside the
     prepared environment and grade its official-style output for `FAIL_TO_PASS`
     plus optional `PASS_TO_PASS`.
-13. Export container diff as final patch without validation-only changes.
-14. Write summary, prediction, trajectory, and sandbox metadata artifacts.
+13. Mark successful or limit-exhausted runs as used; mark post-start runtime
+    failures as error while preserving partial diagnostics.
+14. Export container diff as final patch without validation-only changes.
+15. Write summary, prediction, trajectory, and sandbox metadata artifacts with
+    self-contained runtime path, status transition, validation source, and
+    artifact location data.
 
 ### Operation Modes
 
@@ -215,18 +226,46 @@ and [quickstart.md](./quickstart.md).
   adapted TestSpec, prepare or reuse Base/Env/Instance image layers, and create
   a running task-specific prepared environment. This command checks or builds
   image layers when explicitly allowed, writes `sandbox.json`, and indexes the
-  environment in `.coding-agent/active-sandboxes.json`.
+  environment in `.coding-agent/active-sandboxes.json`. If an active entry for
+  the same instance already exists, `prepare` fails before environment changes
+  unless `--replace-existing` is supplied. With `--replace-existing`, it stops or
+  removes the prior prepared environment when present, replaces only the active
+  index entry, writes new preparation metadata, and leaves prior run artifact
+  directories intact. It does not select the final validation mode.
 - `run`: solve one selected task by loading the indexed prepared environment,
   verifying task identity and base revision, and running the host-owned agent
   with command-based, container-confined repository tools. `run` does not build
-  images or create a missing prepared environment; missing or mismatched
-  prepared environments fail before agent execution. Final review is performed
-  by executing the adapted TestSpec `eval_script`, not by accepting arbitrary
-  agent-requested validation commands as the benchmark outcome.
+  images or create a missing prepared environment; only a ready prepared
+  environment may be consumed. Missing, mismatched, used, stopped, errored, or
+  concurrently running prepared environments fail before agent execution and
+  direct the developer to run `prepare --replace-existing`. Final review is
+  performed by executing the adapted TestSpec `eval_script`, not by accepting
+  arbitrary agent-requested validation commands as the benchmark outcome. `run
+  --include-pass-to-pass` is the only first-version CLI switch that opts into
+  regression validation.
 
-Existing `sandbox register/list` commands remain as explicit legacy
-compatibility commands. Existing prepared-workspace `coding-agent run` remains
-unchanged.
+### Prepared Environment State Policy
+
+Prepared task environments are single-use for solving. The active index can
+point to exactly one prepared environment per instance. `run` accepts only
+`ready`, transitions it to `running` for the duration of agent execution, and
+then records `used` for completed or limit-exhausted runs. Post-start runtime
+failures record `error`. `used`, `stopped`, `error`, and `running` entries are
+not reusable by `run`; they require a fresh `prepare --replace-existing`.
+Without `--cleanup`, completed or limit-exhausted runs leave the active index
+entry in `used` status. With `--cleanup`, run artifacts record `used -> stopped`,
+the container is stopped or removed, and the active index entry is removed.
+If a post-start runtime failure occurs with `--cleanup`, artifacts record
+`running -> error` plus the cleanup action, the container is stopped or removed
+when possible, and the active index entry is removed.
+Reviewers inspect run-level `summary.json` and `sandbox.json` for runtime path,
+status transition, task metadata, validation source, and artifact locations
+without consulting the active index or legacy registry.
+
+No legacy SWE-Bench runtime operation is preserved as a compatibility path.
+Old registry-based, sandbox-based, or batch SWE-Bench entry points must be
+removed from the supported benchmark runtime surface or rejected with an
+unsupported-operation message.
 
 ### Source-Backed Metadata Policy
 
@@ -239,12 +278,12 @@ deterministic instance image keys from `data/*.parquet`. Tests may use compact
 fixture records, but production logic must call the same general metadata
 lookup path and must fail on missing metadata.
 
-### Compatibility Policy
+### Legacy Operation Policy
 
-Legacy registry behavior is preserved so existing users can still run explicit
-legacy flows. New benchmark commands must not require `--registry` and must not
-silently fall back to repo-keyed base images. If a legacy path is used, artifacts
-must identify it as a compatibility path.
+Legacy registry behavior is not preserved for this feature's benchmark runtime.
+New benchmark commands must not accept `--registry`, must not silently fall
+back to repo-keyed base images, and must reject old SWE-Bench runtime commands
+instead of labeling them as compatibility paths.
 
 ## Post-Design Constitution Check
 

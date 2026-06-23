@@ -1,9 +1,8 @@
 # CLI Contract: Agent Runtime Environment Refactor
 
 This contract describes user-visible command behavior for the first version of
-the refactored benchmark runtime. Names are documented as target contracts for
-planning; implementation may preserve old aliases only as explicit
-compatibility commands.
+the refactored benchmark runtime. The first version exposes only `prepare` and
+`run` for SWE-Bench benchmark runtime work.
 
 ## Exit Code Contract
 
@@ -26,7 +25,6 @@ coding-agent swebench prepare
   --instance-id <id>
   --output-dir <path>
   [--build-missing]
-  [--include-pass-to-pass]
   [--replace-existing]
   [--arch <x86_64|arm64>]
 ```
@@ -42,11 +40,19 @@ coding-agent swebench prepare
 - With `--build-missing`, builds missing images in base -> env -> instance
   order and reuses existing images.
 - Uses official-style runtime image resolution.
-- Does not require `--registry`.
-- Creates or verifies the task-specific prepared environment.
+- Does not accept `--registry`.
+- Creates the task-specific prepared environment from the instance image; image
+  layers may be reused, but already-used task workspaces are not reused.
 - Records the prepared environment in `.coding-agent/active-sandboxes.json`.
 - Writes `sandbox.json` in the output directory.
 - Leaves the prepared environment running for `run`.
+- Fails before environment changes when an active entry already exists for the
+  selected instance and `--replace-existing` is absent.
+- With `--replace-existing`, stops or removes the prior prepared environment
+  when present, replaces the active index entry, writes new preparation
+  metadata, and does not modify prior run artifact directories.
+- Does not choose final validation mode; regression validation is selected only
+  by `run --include-pass-to-pass`.
 - Fails before agent execution on unsupported repository, missing
   source-backed metadata, or missing image without `--build-missing`.
 
@@ -70,7 +76,7 @@ coding-agent swebench run
 
 **Behavior**
 
-- Does not require `--registry`.
+- Does not accept `--registry`.
 - Uses the official-style runtime path by default.
 - Loads `.coding-agent/active-sandboxes.json`.
 - Validates active environment instance id and base revision against the
@@ -78,21 +84,27 @@ coding-agent swebench run
 - Does not create or build images.
 - Fails before agent execution when the prepared environment is missing or
   mismatched.
+- Accepts only a `ready` prepared environment. Entries marked `used`, `stopped`,
+  `error`, or `running` fail before agent execution and direct the developer to
+  run `prepare --replace-existing`.
 - Runs the host-owned agent with repository tools confined to the prepared
   task environment.
+- Transitions the environment from `ready` to `running`, then to `used` for
+  completed or limit-exhausted runs. Post-start runtime failures record `error`
+  while preserving partial artifacts.
+- Uses default `FAIL_TO_PASS` validation unless `--include-pass-to-pass` is
+  supplied for this run.
 - Runs final validation by executing the adapted TestSpec `eval_script` inside
   the prepared environment and records official-style grading.
 - Writes `trajectory.jsonl`, `trajectory.json`, `summary.json`, `final.patch`,
   `prediction.jsonl`, and `sandbox.json`.
-- Removes the environment only when `--cleanup` is provided.
-
-## Legacy Compatibility Commands
-
-Existing `coding-agent sandbox register`, `coding-agent sandbox list`, and
-legacy SWE-Bench commands may remain as explicit compatibility flows. They must
-be labeled as compatibility behavior in help text and artifacts when used.
-New benchmark `prepare` and `run` commands must not silently use the legacy
-registry.
+- Without `--cleanup`, retains the active index entry with status `used`.
+- With `--cleanup`, records `used -> stopped` for completed or limit-exhausted
+  runs, stops or removes the container, and removes the entry from
+  `.coding-agent/active-sandboxes.json`.
+- With `--cleanup` after a post-start runtime failure, records `running -> error`
+  plus the cleanup action, stops or removes the container when possible, and
+  removes the active index entry.
 
 ## Unsupported Inputs
 
@@ -103,18 +115,27 @@ Commands must fail before agent execution with exit code 2 for:
 - repository outside the supported core SWE-Bench Lite set;
 - supported repository/version missing source-backed metadata;
 - prepare required image missing and `--build-missing` absent;
+- prepare active entry already exists and `--replace-existing` absent;
 - validation metadata unavailable or untranslatable;
 - run active environment missing or mismatched;
-- batch benchmark orchestration request for this feature's new runtime path.
+- run active environment status is `used`, `stopped`, `error`, or `running`;
+- legacy registry, legacy sandbox, or legacy SWE-Bench runtime options such as
+  `--registry`, `prepare-sandbox`, `solve-sandbox`, `prepare-sandboxes`, or
+  `solve-sandboxes`;
+- batch benchmark orchestration request.
 
 ## Artifact Contract
 
 For every run that reaches agent execution:
 
-- `summary.json` records runtime path, image lineage, validation source,
-  validation mode, final outcome, and artifact locations.
+- `summary.json` records official-style runtime path, image lineage,
+  prepared-environment status transition, validation source, validation mode,
+  final outcome, and artifact locations.
 - `sandbox.json` records task identity, repository, version, base revision,
   container name, repo path, base/env/instance image keys, build policy,
-  built/reused images, readiness checks, and validation source.
+  built/reused images, readiness checks, prepared-environment status, cleanup
+  action, active-index result, and validation source.
+- `summary.json` and `sandbox.json` are sufficient for run review without
+  reading `.coding-agent/active-sandboxes.json` or any legacy registry.
 - `final.patch` excludes validation-only task files and patches.
 - `prediction.jsonl` uses the exported final patch.

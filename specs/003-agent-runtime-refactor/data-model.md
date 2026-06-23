@@ -100,7 +100,7 @@ Audit record for reusable and task-specific runtime layers.
 
 **Fields**
 
-- `runtime_path`: `official_style` or explicit compatibility path.
+- `runtime_path`: `official_style`.
 - `base_image_key`
 - `env_image_key`
 - `instance_image_key`
@@ -113,7 +113,7 @@ Audit record for reusable and task-specific runtime layers.
 **Validation Rules**
 
 - New benchmark runs must use `official_style`.
-- Legacy registry lineage is allowed only for explicit compatibility flows.
+- Legacy registry lineage is not valid for this feature's benchmark runtime.
 - Missing images without `build_missing` fail before agent execution.
 
 ## PreparedTaskEnvironment
@@ -147,7 +147,14 @@ used -> stopped
 
 - Ready environments must pass container exec, git worktree, base revision,
   clean workspace, task identity, and validation source checks.
-- Continue-prepared must reject instance/base-commit mismatches.
+- `run` must reject instance/base-commit mismatches.
+- `run` may consume only `ready` environments. `used`, `stopped`, `error`, and
+  `running` states are rejected before agent execution.
+- `run` transitions `ready -> running -> used` for completed or limit-exhausted
+  agent runs. Runtime failures after agent execution starts transition
+  `running -> error`.
+- Reusing a used, stopped, errored, or concurrently running prepared environment
+  requires a fresh `prepare --replace-existing`.
 
 ## ValidationSet
 
@@ -157,7 +164,8 @@ Allowed in-run validation commands, final review script, and source metadata.
 
 - `fail_to_pass`
 - `pass_to_pass`
-- `include_pass_to_pass`
+- `include_pass_to_pass`: run-time selection from
+  `run --include-pass-to-pass`.
 - `command_source`: `official_testspec` or `source_backed_repo_spec`.
 - `eval_script`: adapted TestSpec official-style final review script.
 - `allowed_commands`: commands the agent may request during the run.
@@ -166,7 +174,7 @@ Allowed in-run validation commands, final review script, and source metadata.
 **Validation Rules**
 
 - `fail_to_pass` is required.
-- `pass_to_pass` is included only when explicitly requested.
+- `pass_to_pass` is included only when explicitly requested for a run.
 - Requests outside `allowed_commands` are rejected and recorded during the run.
 - Final benchmark review must execute `eval_script`; `allowed_commands` are not
   sufficient to declare the final benchmark outcome.
@@ -210,7 +218,8 @@ The persisted artifacts for one run.
 - Runs that reach agent execution preserve the core artifact set.
 - Post-start runtime failures preserve partial diagnostics where derivable.
 - `summary.json` and `sandbox.json` identify runtime path, task metadata,
-  image lineage, validation source, selected validation mode, and artifact
+  image lineage, prepared-environment status transition, validation source,
+  selected validation mode, cleanup action, active-index result, and artifact
   locations.
 
 ## ActivePreparedEnvironmentIndex
@@ -232,22 +241,37 @@ Index of prepared environments available for `run` workflows.
 
 - Duplicate active entries are rejected unless replace semantics are explicit.
 - `run` validates index metadata against the requested task record.
+- Without `--replace-existing`, `prepare` rejects an existing entry for the same
+  instance before changing containers or index state.
+- With `--replace-existing`, `prepare` stops or removes the prior prepared
+  environment when present, replaces the active index entry, and does not modify
+  prior run artifact directories.
+- Completed or limit-exhausted `run` without `--cleanup` retains the active
+  entry as `used`.
+- Completed or limit-exhausted `run --cleanup` records `used -> stopped` in run
+  artifacts, stops or removes the container, and removes the active index entry.
+- Post-start runtime failures without `--cleanup` retain or update the active
+  index entry as `error` so a later run rejects it before agent execution.
+- Post-start runtime failures with `--cleanup` record `running -> error` plus
+  the cleanup action in run artifacts, stop or remove the container when
+  possible, and remove the active index entry.
+- Active index status is not a review dependency: completed or failed run
+  inspection uses run-level `summary.json` and `sandbox.json`.
 
-## CompatibilityPath
+## UnsupportedLegacyOperation
 
-Explicit legacy workflow retained during migration.
+Prior SWE-Bench runtime entry point that is no longer supported by this
+feature.
 
 **Fields**
 
-- `path_name`
-- `registry_path`
-- `repo`
-- `base_image`
-- `validation_command_template`
-- `artifact_marker`
+- `operation_name`
+- `legacy_surface`: `registry_option`, `sandbox_command`, or `batch_command`.
+- `replacement`: `prepare` or `run` when a direct replacement exists.
+- `error_message`
 
 **Validation Rules**
 
-- Compatibility path must be explicitly selected.
-- New benchmark runs must not silently use this entity.
-- Artifacts must identify compatibility usage.
+- Legacy operations are rejected before agent execution.
+- New benchmark runs must not silently use legacy registry data.
+- Help text and argument errors must direct users to `prepare` and `run`.

@@ -25,9 +25,10 @@ python -m pytest tests\contract\test_cli_swebench_runtime_contract.py -q
 
 Expected:
 
-- `swebench run` no longer requires `--registry`.
+- `swebench prepare` and `swebench run` do not accept `--registry`.
 - `prepare` and `run` parse required arguments.
-- Legacy registry commands still parse as explicit compatibility flows.
+- Legacy SWE-Bench runtime commands and `--registry` on the new commands are
+  rejected.
 
 ## 2. Run Unit Tests For Runtime Metadata
 
@@ -105,11 +106,24 @@ coding-agent swebench run `
 Expected:
 
 - Standard artifacts are written.
-- `summary.json` and `sandbox.json` identify the official-style runtime path.
+- `summary.json` and `sandbox.json` identify the official-style runtime path,
+  prepared-environment status transition, task metadata, validation source, and
+  artifact locations without requiring the active index or legacy registry.
 - Final review executes the adapted TestSpec `eval_script` and records graded
   `FAIL_TO_PASS` plus selected `PASS_TO_PASS` results.
 - The final patch excludes validation-only test patch changes.
-- The prepared environment is removed only because `--cleanup` was provided.
+- Because `--cleanup` was provided, artifacts record `used -> stopped`, the
+  prepared environment is stopped or removed, and the active index entry is
+  removed.
+- Without `--cleanup`, the same completed or limit-exhausted run keeps the
+  active index entry with status `used`.
+
+For a post-start runtime failure with `--cleanup`, expected behavior is:
+
+- Partial artifacts are preserved.
+- Artifacts record `running -> error` plus the cleanup action.
+- The container is stopped or removed when possible.
+- The active index entry is removed.
 
 ## 6. Run Without Prepared Environment
 
@@ -129,6 +143,32 @@ Expected:
 - Command exits before agent execution.
 - Error identifies that the prepared environment is missing or mismatched.
 - No model calls occur.
+
+Also verify used, stopped, errored, or already running active entries:
+
+- Command exits before agent execution.
+- Error identifies that the prepared environment is not reusable and directs the
+  developer to `swebench prepare --replace-existing`.
+- No model calls occur.
+
+## 6a. Replace Existing Prepared Environment
+
+```powershell
+coding-agent swebench prepare `
+  --dataset data\lite.parquet `
+  --instance-id django__django-11099 `
+  --output-dir runs\django-11099-reprepare `
+  --replace-existing
+```
+
+Expected:
+
+- Without `--replace-existing`, preparing the same instance with an active entry
+  exits before changing containers or index state.
+- With `--replace-existing`, the prior prepared environment is stopped or
+  removed when present.
+- The active index entry and new preparation `sandbox.json` are replaced.
+- Prior run artifact directories are not modified.
 
 ## 7. Unsupported Repository Check
 
@@ -152,17 +192,20 @@ Expected:
 - Error identifies which metadata source is missing.
 - No fixture-only metadata is used.
 
-## 9. Legacy Compatibility Check
+## 9. Legacy Operation Rejection Check
 
 ```powershell
-coding-agent sandbox list --registry .coding-agent\sandboxes.json
+coding-agent swebench prepare-sandbox --help
+coding-agent swebench solve-sandbox --help
+coding-agent swebench run --registry .coding-agent\sandboxes.json
 ```
 
 Expected:
 
-- Legacy command remains available.
-- New benchmark run commands do not require or read this registry unless an
-  explicit compatibility command is used.
+- Legacy SWE-Bench runtime commands are rejected or absent from the supported
+  command surface.
+- New benchmark `prepare` and `run` commands do not accept `--registry`.
+- The error message directs users to `swebench prepare` and `swebench run`.
 
 ## 10. Full Verification
 

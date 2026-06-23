@@ -38,8 +38,8 @@ behavior and brittle implementations.
   make fixture coverage look like real support.
 - Allow best-effort generated defaults: rejected because setup and validation
   commands vary by repo/version.
-- Fall back to legacy registry templates: rejected for new benchmark runs;
-  legacy remains explicit compatibility only.
+- Fall back to legacy registry templates: rejected because old benchmark
+  runtime operations are not preserved as compatibility paths.
 
 ## Decision: First support the core SWE-Bench Lite repository set
 
@@ -143,7 +143,8 @@ contract while moving task code execution into the prepared environment.
 ## Decision: Use official-style eval semantics for validation
 
 Validation is derived from the adapted task spec. Default validation uses
-`FAIL_TO_PASS`; `PASS_TO_PASS` is included only when explicitly requested.
+`FAIL_TO_PASS`; `PASS_TO_PASS` is included only when explicitly requested on
+`run`.
 Test patches are applied temporarily or isolated from final patch export.
 Final eval output is parsed into fix-verification and regression results.
 
@@ -157,22 +158,23 @@ Validation-only files must not contaminate the model's final patch.
 - Accept arbitrary model-requested tests: rejected because it violates the
   allowed validation set and weakens auditability.
 
-## Decision: Preserve legacy registry only as explicit compatibility
+## Decision: Remove legacy benchmark runtime compatibility paths
 
-Existing `sandbox register/list` and legacy flows remain available as
-compatibility behavior. New benchmark `prepare` and `run` flows do not use the
-legacy registry unless the developer invokes an explicit legacy command or
-compatibility path.
+The first version supports only `prepare` and `run` for SWE-Bench benchmark
+runtime work. Legacy registry, legacy sandbox, and batch SWE-Bench runtime
+entry points are rejected instead of retained as compatibility paths.
 
-**Rationale**: This protects existing workflows while making the new
-official-style runtime path unambiguous.
+**Rationale**: Keeping old benchmark runtime operations available would
+preserve the ambiguity the refactor is intended to remove. A two-operation
+surface makes environment construction and agent execution explicit.
 
 **Alternatives considered**:
 
 - Keep legacy and new paths equally supported: rejected because it would make
-  default behavior ambiguous.
-- Remove legacy immediately: rejected because the spec requires migration
-  without breaking existing workflows.
+  runtime selection ambiguous.
+- Keep legacy only as explicit compatibility: rejected by the updated design;
+  the benchmark runtime should expose only the current `prepare` and `run`
+  operations.
 
 ## Decision: Do not implement batch benchmark orchestration in this feature
 
@@ -190,8 +192,9 @@ reduces state-management risk.
 
 - Migrate current batch commands to the new path: deferred because it expands
   acceptance and concurrency scope.
-- Remove existing batch code: rejected because that is unrelated cleanup and
-  risks breaking existing users.
+- Keep existing batch commands as compatibility flows: rejected because the
+  updated design allows only `prepare` and `run` as benchmark runtime
+  operations.
 
 ## Decision: Prefer standard-library parsing unless a dependency is justified
 

@@ -39,7 +39,7 @@
 
 **CRITICAL**: No user story implementation can begin until this phase is complete.
 
-- [ ] T011 Add source-backed runtime dataclasses for benchmark task records, adapted specs, runtime lineage, prepared environments, validation sets, eval reports, and compatibility paths in `src/coding_agent/models.py`
+- [ ] T011 Add source-backed runtime dataclasses for benchmark task records, adapted specs, runtime lineage, prepared environments, validation sets, eval reports, and unsupported legacy operations in `src/coding_agent/models.py`
 - [ ] T012 Extend SWE-Bench dataset normalization with repo version, environment setup commit, eval script, test patch, and explicit metadata errors in `src/coding_agent/swebench/dataset.py`
 - [ ] T013 [P] Create source-backed repo/version metadata lookup boundaries and review-status types in `src/coding_agent/swebench/repo_specs.py`
 - [ ] T014 [P] Create adapted TestSpec construction interfaces without production metadata values in `src/coding_agent/swebench/testspec.py`
@@ -47,7 +47,7 @@
 - [ ] T016 [P] Create image graph planning interfaces for base, env, and instance layers in `src/coding_agent/swebench/images.py`
 - [ ] T017 [P] Create official-style grading parser interfaces in `src/coding_agent/swebench/grading.py`
 - [ ] T018 Update SWE-Bench package exports for new modules in `src/coding_agent/swebench/__init__.py`
-- [ ] T019 Add explicit runtime path and compatibility markers to sandbox metadata serialization in `src/coding_agent/swebench/sandbox_run.py`
+- [ ] T019 Add explicit official-style runtime path metadata to sandbox metadata serialization in `src/coding_agent/swebench/sandbox_run.py`
 - [ ] T020 Add an implementation compliance checklist for source-backed mappings and no test gaming in `specs/003-agent-runtime-refactor/quickstart.md`
 
 **Checkpoint**: Foundational types and module boundaries exist; story work can proceed in priority order or in parallel if staffed.
@@ -62,8 +62,8 @@
 
 ### Tests for User Story 1
 
-- [ ] T021 [P] [US1] Add contract tests for `coding-agent swebench prepare` argument parsing, no `--registry` requirement, and `--build-missing` handling in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T022 [P] [US1] Add contract tests for `coding-agent swebench prepare` active index options, readiness output, and missing image failures in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [ ] T021 [P] [US1] Add contract tests for `coding-agent swebench prepare` argument parsing, `--registry` rejection, and `--build-missing` handling in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [ ] T022 [P] [US1] Add contract tests for `coding-agent swebench prepare` active index options, `--replace-existing` behavior, readiness output, and missing image failures in `tests/contract/test_cli_swebench_runtime_contract.py`
 - [ ] T023 [P] [US1] Add dataset normalization tests for supported repo, unsupported repo, and missing source-backed metadata in `tests/unit/test_swebench_dataset.py`
 - [ ] T024 [P] [US1] Add source-backed repo metadata tests that reject fixture-only mappings and require source references in `tests/unit/test_swebench_repo_specs.py`
 - [ ] T025 [P] [US1] Add adapted TestSpec tests for deterministic repo path, env name, validation metadata, and image keys in `tests/unit/test_swebench_testspec.py`
@@ -99,22 +99,22 @@
 
 ### Tests for User Story 2
 
-- [ ] T042 [P] [US2] Update `swebench run` contract tests to remove the `--registry` requirement and assert official-style runtime dispatch in `tests/contract/test_cli_swebench_run_contract.py`
-- [ ] T043 [P] [US2] Add `swebench run` contract tests for active index lookup, cleanup flag, absence of `--build-missing`, and no image build behavior in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T044 [P] [US2] Add integration tests for run artifact creation from a prepared environment with the mock backend and fake Docker in `tests/integration/test_swebench_official_runtime.py`
+- [ ] T042 [P] [US2] Update `swebench run` contract tests to reject `--registry` and assert official-style runtime dispatch in `tests/contract/test_cli_swebench_run_contract.py`
+- [ ] T043 [P] [US2] Add `swebench run` contract tests for active index lookup, ready-only status enforcement, cleanup active-index removal, absence of `--build-missing`, and no image build behavior in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [ ] T044 [P] [US2] Add integration tests for run artifact creation from a prepared environment with the mock backend and fake Docker, including self-contained `summary.json` and `sandbox.json` review fields, in `tests/integration/test_swebench_official_runtime.py`
 - [ ] T045 [P] [US2] Add integration tests for prepare then run using the active environment index in `tests/integration/test_swebench_official_runtime.py`
-- [ ] T046 [P] [US2] Add runtime failure diagnostic tests that preserve partial artifacts after agent start in `tests/integration/test_errored_run_diagnostics.py`
+- [ ] T046 [P] [US2] Add runtime failure diagnostic tests that preserve partial artifacts after agent start and verify `--cleanup` records `running -> error` plus active-index removal in `tests/integration/test_errored_run_diagnostics.py`
 - [ ] T047 [P] [US2] Add container tool confinement tests for official-style prepared environments in `tests/unit/test_container_tools.py`
 
 ### Implementation for User Story 2
 
 - [ ] T048 [US2] Refactor `run_swebench_task` orchestration to require an active prepared environment and remove default legacy registry dependency in `src/coding_agent/swebench/sandbox_run.py`
 - [ ] T049 [US2] Implement `run_prepared` orchestration with active environment metadata validation in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T050 [US2] Update active prepared environment index load/save metadata for repo version, runtime lineage, and sandbox JSON paths in `src/coding_agent/swebench/sandbox_run.py`
+- [ ] T050 [US2] Update active prepared environment index load/save metadata for repo version, runtime lineage, sandbox JSON paths, used-status retention without cleanup, and active-index removal with cleanup in `src/coding_agent/swebench/sandbox_run.py`
 - [ ] T051 [US2] Inject `ContainerToolExecutor` using the prepared environment repo path and official validation set in `src/coding_agent/swebench/sandbox_run.py`
 - [ ] T052 [US2] Preserve post-start failure artifacts including `summary.json`, `trajectory.jsonl`, `trajectory.json`, `prediction.jsonl`, `final.patch`, and `sandbox.json` in `src/coding_agent/swebench/sandbox_run.py`
 - [ ] T053 [US2] Export final container diff and prediction JSONL from the official-style prepared environment in `src/coding_agent/swebench/prediction.py`
-- [ ] T054 [US2] Add runtime lineage, validation source, selected validation mode, and artifact locations to run summaries in `src/coding_agent/trajectory/summary.py`
+- [ ] T054 [US2] Add runtime lineage, prepared-environment status transition, cleanup action, active-index result, validation source, selected validation mode, and artifact locations to run summaries in `src/coding_agent/trajectory/summary.py`
 - [ ] T055 [US2] Wire the `swebench run` CLI command to official-style prepared-environment orchestration and exit-code mapping in `src/coding_agent/cli.py`
 - [ ] T056 [US2] Run the US2 prepare-then-run checks from `specs/003-agent-runtime-refactor/quickstart.md`
 
@@ -138,7 +138,7 @@
 
 ### Implementation for User Story 3
 
-- [ ] T062 [US3] Replace registered-template default validation with adapted TestSpec validation while keeping explicit compatibility fallback isolated in `src/coding_agent/swebench/validation.py`
+- [ ] T062 [US3] Replace registered-template default validation with adapted TestSpec validation and reject legacy registry-template validation for new benchmark runs in `src/coding_agent/swebench/validation.py`
 - [ ] T063 [US3] Implement validation command allow-list construction and disallowed command recording in `src/coding_agent/swebench/validation.py`
 - [ ] T064 [US3] Implement official-style adapted TestSpec `eval_script` output parsing into `EvalReport` in `src/coding_agent/swebench/grading.py`
 - [ ] T065 [US3] Integrate final `eval_script` execution and grading into run summaries and sandbox metadata in `src/coding_agent/swebench/sandbox_run.py`
@@ -150,29 +150,29 @@
 
 ---
 
-## Phase 6: User Story 4 - Migrate Without Breaking Existing Workflows (Priority: P4)
+## Phase 6: User Story 4 - Enforce Only Two Benchmark Operations (Priority: P4)
 
-**Goal**: New benchmark runs use the official-style path by default, while existing prepared-workspace and explicit legacy sandbox flows remain usable and visibly marked as compatibility behavior.
+**Goal**: New benchmark runtime exposes only `prepare` and `run`, while old registry-based, sandbox-based, and batch SWE-Bench runtime entry points are rejected instead of preserved as compatibility paths.
 
-**Independent Test**: Run existing prepared-workspace flow and legacy sandbox registration/list flow after the refactor, then verify new benchmark commands do not use the legacy registry unless an explicit compatibility command is selected.
+**Independent Test**: Inspect CLI help and run contract checks proving only `coding-agent swebench prepare` and `coding-agent swebench run` are supported for benchmark runtime work; old `--registry`, `prepare-sandbox`, `solve-sandbox`, `prepare-sandboxes`, and `solve-sandboxes` paths fail before agent execution with an unsupported-operation message.
 
 ### Tests for User Story 4
 
-- [ ] T069 [P] [US4] Add prepared-workspace compatibility regression tests in `tests/integration/test_prepared_workspace_compatibility.py`
-- [ ] T070 [P] [US4] Add legacy sandbox register/list compatibility tests with compatibility markers in `tests/contract/test_cli_sandbox_contract.py`
-- [ ] T071 [P] [US4] Add tests proving new benchmark prepare/run commands do not read `SandboxRegistry` by default in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T072 [P] [US4] Add out-of-scope batch benchmark orchestration tests for the new runtime path in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [ ] T069 [P] [US4] Add CLI help/parse contract tests proving only `swebench prepare` and `swebench run` are supported benchmark runtime operations in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [ ] T070 [P] [US4] Add contract tests rejecting legacy `--registry` input on new `prepare` and `run` commands in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [ ] T071 [P] [US4] Add contract tests rejecting old `prepare-sandbox` and `solve-sandbox` SWE-Bench runtime commands in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [ ] T072 [P] [US4] Add contract tests rejecting old `prepare-sandboxes` and `solve-sandboxes` batch benchmark commands in `tests/contract/test_cli_swebench_runtime_contract.py`
 
 ### Implementation for User Story 4
 
-- [ ] T073 [US4] Preserve existing prepared-workspace `coding-agent run` behavior without benchmark runtime configuration in `src/coding_agent/cli.py`
-- [ ] T074 [US4] Preserve `coding-agent sandbox register` and `coding-agent sandbox list` as explicit compatibility commands in `src/coding_agent/cli.py`
-- [ ] T075 [US4] Label legacy registry usage as compatibility behavior in sandbox metadata and help text in `src/coding_agent/sandbox/registry.py`
-- [ ] T076 [US4] Prevent new benchmark runtime paths from silently falling back to `SandboxRegistry` in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T077 [US4] Keep current batch commands isolated from the new official-style runtime path or return an explicit out-of-scope error for new runtime batch requests in `src/coding_agent/cli.py`
-- [ ] T078 [US4] Run the US4 migration checks from `specs/003-agent-runtime-refactor/quickstart.md`
+- [ ] T073 [US4] Remove or reject legacy SWE-Bench runtime subcommands from `src/coding_agent/cli.py` so the supported benchmark runtime surface is only `prepare` and `run`
+- [ ] T074 [US4] Remove `--registry` parsing and registry-based dispatch from new SWE-Bench `prepare` and `run` flows in `src/coding_agent/cli.py`
+- [ ] T075 [US4] Remove default `SandboxRegistry` lookup/fallback from new SWE-Bench runtime orchestration in `src/coding_agent/swebench/sandbox_run.py`
+- [ ] T076 [US4] Add unsupported-operation errors for legacy sandbox and batch benchmark runtime requests in `src/coding_agent/cli.py`
+- [ ] T077 [US4] Update CLI help and developer-facing messages to direct benchmark users to `swebench prepare` and `swebench run` only in `src/coding_agent/cli.py`
+- [ ] T078 [US4] Run the US4 legacy-operation rejection checks from `specs/003-agent-runtime-refactor/quickstart.md`
 
-**Checkpoint**: Migration behavior is observable, reversible through explicit compatibility commands, and default benchmark runs avoid the legacy registry path.
+**Checkpoint**: The benchmark runtime command surface exposes only `prepare` and `run`; old registry, sandbox, and batch SWE-Bench runtime operations fail before agent execution.
 
 ---
 
@@ -205,7 +205,7 @@
 - **User Story 1 (Phase 3)**: Depends on Foundational; MVP scope.
 - **User Story 2 (Phase 4)**: Depends on Foundational and integrates most naturally after US1 prepared environments exist.
 - **User Story 3 (Phase 5)**: Depends on Foundational; can start after TestSpec and validation interfaces exist, but final integration depends on US2 run orchestration.
-- **User Story 4 (Phase 6)**: Depends on Foundational; can run in parallel with US2/US3 if compatibility tests are kept isolated.
+- **User Story 4 (Phase 6)**: Depends on Foundational; can run in parallel with US2/US3 if CLI rejection tests are kept isolated.
 - **Polish (Phase 7)**: Depends on all desired user stories.
 
 ### User Story Dependencies
@@ -213,7 +213,7 @@
 - **US1 (P1)**: No dependency on other stories after Foundational.
 - **US2 (P2)**: Uses prepared environment and image lineage from US1.
 - **US3 (P3)**: Uses adapted TestSpec from US1 and run artifact integration from US2.
-- **US4 (P4)**: Uses CLI/runtime boundaries from US1 and US2, but compatibility tests can be written early.
+- **US4 (P4)**: Uses CLI/runtime boundaries from US1 and US2, but legacy-operation rejection tests can be written early.
 
 ### Within Each User Story
 
@@ -237,7 +237,7 @@
 ## Parallel Example: User Story 1
 
 ```text
-Task: "T021 [P] [US1] Add contract tests for coding-agent swebench prepare argument parsing, no --registry requirement, and --build-missing handling in tests/contract/test_cli_swebench_runtime_contract.py"
+Task: "T021 [P] [US1] Add contract tests for coding-agent swebench prepare argument parsing, --registry rejection, and --build-missing handling in tests/contract/test_cli_swebench_runtime_contract.py"
 Task: "T024 [P] [US1] Add source-backed repo metadata tests that reject fixture-only mappings and require source references in tests/unit/test_swebench_repo_specs.py"
 Task: "T027 [P] [US1] Add image graph tests for base -> env -> instance ordering, reuse detection, and no-build failure in tests/unit/test_swebench_images.py"
 ```
@@ -245,7 +245,7 @@ Task: "T027 [P] [US1] Add image graph tests for base -> env -> instance ordering
 ## Parallel Example: User Story 2
 
 ```text
-Task: "T042 [P] [US2] Update swebench run contract tests to remove the --registry requirement and assert official-style runtime dispatch in tests/contract/test_cli_swebench_run_contract.py"
+Task: "T042 [P] [US2] Update swebench run contract tests to reject --registry and assert official-style runtime dispatch in tests/contract/test_cli_swebench_run_contract.py"
 Task: "T044 [P] [US2] Add integration tests for run artifact creation from a prepared environment with the mock backend and fake Docker in tests/integration/test_swebench_official_runtime.py"
 Task: "T047 [P] [US2] Add container tool confinement tests for official-style prepared environments in tests/unit/test_container_tools.py"
 ```
@@ -261,9 +261,9 @@ Task: "T060 [P] [US3] Add final patch exclusion tests for validation-only task f
 ## Parallel Example: User Story 4
 
 ```text
-Task: "T069 [P] [US4] Add prepared-workspace compatibility regression tests in tests/integration/test_prepared_workspace_compatibility.py"
-Task: "T070 [P] [US4] Add legacy sandbox register/list compatibility tests with compatibility markers in tests/contract/test_cli_sandbox_contract.py"
-Task: "T071 [P] [US4] Add tests proving new benchmark prepare/run commands do not read SandboxRegistry by default in tests/contract/test_cli_swebench_runtime_contract.py"
+Task: "T069 [P] [US4] Add CLI help/parse contract tests proving only swebench prepare and swebench run are supported benchmark runtime operations in tests/contract/test_cli_swebench_runtime_contract.py"
+Task: "T070 [P] [US4] Add contract tests rejecting legacy --registry input on new prepare and run commands in tests/contract/test_cli_swebench_runtime_contract.py"
+Task: "T071 [P] [US4] Add contract tests rejecting old prepare-sandbox and solve-sandbox SWE-Bench runtime commands in tests/contract/test_cli_swebench_runtime_contract.py"
 ```
 
 ---
@@ -282,7 +282,7 @@ Task: "T071 [P] [US4] Add tests proving new benchmark prepare/run commands do no
 1. Deliver US1 so official-style runtime preparation is available and auditable.
 2. Deliver US2 so run from a prepared environment preserves current artifacts.
 3. Deliver US3 so validation semantics are source-backed and final patches stay clean.
-4. Deliver US4 so migration compatibility remains explicit and observable.
+4. Deliver US4 so old benchmark runtime operations are rejected and the CLI surface is only `prepare` and `run`.
 5. Run final quickstart and full pytest verification.
 
 ### Parallel Team Strategy
@@ -291,7 +291,7 @@ Task: "T071 [P] [US4] Add tests proving new benchmark prepare/run commands do no
 2. Assign US1 implementation to the runtime preparation owner.
 3. Assign US2 implementation to the agent orchestration and artifact owner.
 4. Assign US3 implementation to the validation and grading owner.
-5. Assign US4 implementation to the CLI compatibility owner.
+5. Assign US4 implementation to the CLI runtime-surface owner.
 
 ---
 
@@ -300,7 +300,7 @@ Task: "T071 [P] [US4] Add tests proving new benchmark prepare/run commands do no
 - **US1**: Preparing a supported task records task identity, repo identity, base revision, image lineage, build/reuse status, and readiness before model execution.
 - **US2**: Run operates only in the selected prepared environment and produces the standard artifact set plus runtime metadata.
 - **US3**: In-run validation uses selected task metadata, final review executes the adapted TestSpec `eval_script`, regression checks are opt-in, disallowed commands are rejected, and validation-only changes are absent from `final.patch`.
-- **US4**: Existing prepared-workspace and explicit legacy sandbox flows still work, while new benchmark runs use official-style runtime by default.
+- **US4**: Only `prepare` and `run` are supported benchmark runtime operations; old registry, sandbox, and batch SWE-Bench runtime operations are rejected.
 
 ## Notes
 

@@ -48,6 +48,32 @@ class TaskSandboxManager:
             status="ready",
         )
 
+    def prepare_official_instance(
+        self,
+        *,
+        repo: str,
+        instance_id: str,
+        base_commit: str,
+        instance_image_key: str,
+        repo_path: str,
+        source_reference: str,
+        run_id: str | None = None,
+    ) -> TaskSandbox:
+        """Prepare a task container from an official-style instance image."""
+        base_image = BaseImage(
+            repo=repo,
+            image=instance_image_key,
+            repo_path=repo_path,
+            official_compatible=True,
+            compatibility_source=source_reference,
+        )
+        return self.prepare(
+            base_image=base_image,
+            instance_id=instance_id,
+            base_commit=base_commit,
+            run_id=run_id,
+        )
+
     def stop(self, sandbox: TaskSandbox) -> None:
         """停止并删除任务容器。
 

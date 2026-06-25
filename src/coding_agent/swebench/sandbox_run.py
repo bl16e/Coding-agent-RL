@@ -14,23 +14,35 @@ from coding_agent.model_backends.base import ModelBackend
 from coding_agent.models import (
     BaseImage,
     BenchmarkTask,
+    PreparedEnvironmentStatus,
+    PreparedTaskEnvironment,
     Prediction,
     PreparedSandboxSummary,
     RunBudget,
     RunStatus,
     RunSummary,
+    RuntimeLineage,
     SandboxMetadata,
     TaskSandbox,
     ValidationTestSet,
+    EvalReport,
     utc_now,
 )
 from coding_agent.sandbox.docker_cli import DockerCli
 from coding_agent.sandbox.manager import TaskSandboxManager
 from coding_agent.sandbox.registry import SandboxRegistryError, load_base_image_from_registry as registry_load_base_image
 from coding_agent.sandbox.tools import ContainerToolExecutor
-from coding_agent.swebench.dataset import SwebenchTaskRecord, load_task_records
-from coding_agent.swebench.prediction import write_prediction_jsonl, write_predictions_jsonl
-from coding_agent.swebench.validation import ValidationMetadataError, build_validation_test_set
+from coding_agent.swebench.dataset import SwebenchTaskRecord, load_task_record, load_task_records, normalize_benchmark_task_record
+from coding_agent.swebench.grading import EvalOutputParseError, parse_eval_report
+from coding_agent.swebench.images import build_missing_images, inspect_image_graph
+from coding_agent.swebench.prediction import (
+    export_prepared_environment_patch,
+    write_prediction_from_patch,
+    write_prediction_jsonl,
+    write_predictions_jsonl,
+)
+from coding_agent.swebench.testspec import build_adapted_testspec
+from coding_agent.swebench.validation import ValidationMetadataError, build_official_validation_set, build_validation_test_set
 from coding_agent.trajectory.converter import convert_trajectory_to_summary_format
 from coding_agent.trajectory.summary import write_summary
 
@@ -65,6 +77,7 @@ def _sandbox_payload(
     validation: ValidationTestSet,
     *,
     status: str,
+    runtime_path: str = "legacy_registry",
     test_patch_applied: bool = False,
     test_patch_staged: bool = False,
     ready_checks: Mapping[str, Any] | None = None,
@@ -81,6 +94,11 @@ def _sandbox_payload(
         "container_name": sandbox.container_name,
         "repo_path": sandbox.repo_path,
         "status": status,
+        "runtime_path": runtime_path,
+        "runtime": {
+            "path": runtime_path,
+            "official_style": runtime_path == "official_style",
+        },
         "test_patch_applied": test_patch_applied,
         "test_patch_staged": test_patch_staged,
         "ready_checks": dict(ready_checks or {}),
@@ -108,6 +126,7 @@ def _write_sandbox_json(
     validation: ValidationTestSet,
     *,
     status: str,
+    runtime_path: str = "legacy_registry",
     test_patch_applied: bool = False,
     test_patch_staged: bool = False,
     ready_checks: Mapping[str, Any] | None = None,
@@ -119,6 +138,7 @@ def _write_sandbox_json(
                 sandbox,
                 validation,
                 status=status,
+                runtime_path=runtime_path,
                 test_patch_applied=test_patch_applied,
                 test_patch_staged=test_patch_staged,
                 ready_checks=ready_checks,
@@ -127,6 +147,709 @@ def _write_sandbox_json(
         ),
         encoding="utf-8",
     )
+
+
+def _official_sandbox_payload(
+    *,
+    prepared: PreparedTaskEnvironment,
+    status: PreparedEnvironmentStatus,
+    ready_checks: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    lineage = prepared.runtime_lineage
+    return {
+        "instance_id": prepared.instance_id,
+        "repo": prepared.repo,
+        "version": prepared.version,
+        "base_commit": prepared.base_commit,
+        "container_name": prepared.container_name,
+        "repo_path": prepared.repo_path,
+        "status": status.value,
+        "runtime_path": lineage.runtime_path,
+        "runtime": {
+            "path": lineage.runtime_path,
+            "base_image_key": lineage.base_image_key,
+            "env_image_key": lineage.env_image_key,
+            "instance_image_key": lineage.instance_image_key,
+            "platform": lineage.platform,
+            "build_missing": lineage.build_missing,
+            "built_images": list(lineage.built_images),
+            "reused_images": list(lineage.reused_images),
+            "metadata_sources": list(lineage.metadata_sources),
+        },
+        "ready_checks": dict(ready_checks or {}),
+    }
+
+
+def _read_active_prepared_index(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"prepared_environments": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxedRunInputError(str(exc)) from exc
+    payload.setdefault("prepared_environments", {})
+    return payload
+
+
+def _write_active_prepared_index(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+
+
+def _assert_prepared_slot_available(index_path: Path, instance_id: str, *, replace_existing: bool) -> dict[str, Any]:
+    payload = _read_active_prepared_index(index_path)
+    if instance_id in payload.get("prepared_environments", {}) and not replace_existing:
+        raise ValueError(f"{instance_id} already has an active prepared environment")
+    return payload
+
+
+def _save_active_prepared_environment(index_path: Path, prepared: PreparedTaskEnvironment) -> None:
+    payload = _read_active_prepared_index(index_path)
+    payload.setdefault("prepared_environments", {})[prepared.instance_id] = {
+        "instance_id": prepared.instance_id,
+        "container_name": prepared.container_name,
+        "repo": prepared.repo,
+        "version": prepared.version,
+        "base_commit": prepared.base_commit,
+        "repo_path": prepared.repo_path,
+        "sandbox_json": str(prepared.sandbox_json),
+        "status": prepared.status.value,
+        "ready_checks": dict(prepared.ready_checks),
+        "runtime_lineage": {
+            "runtime_path": prepared.runtime_lineage.runtime_path,
+            "base_image_key": prepared.runtime_lineage.base_image_key,
+            "env_image_key": prepared.runtime_lineage.env_image_key,
+            "instance_image_key": prepared.runtime_lineage.instance_image_key,
+            "platform": prepared.runtime_lineage.platform,
+            "build_missing": prepared.runtime_lineage.build_missing,
+            "built_images": list(prepared.runtime_lineage.built_images),
+            "reused_images": list(prepared.runtime_lineage.reused_images),
+            "metadata_sources": list(prepared.runtime_lineage.metadata_sources),
+        },
+    }
+    _write_active_prepared_index(index_path, payload)
+
+
+def _runtime_lineage_from_payload(payload: Mapping[str, Any]) -> RuntimeLineage:
+    return RuntimeLineage(
+        runtime_path=str(payload["runtime_path"]),
+        base_image_key=str(payload["base_image_key"]),
+        env_image_key=str(payload["env_image_key"]),
+        instance_image_key=str(payload["instance_image_key"]),
+        platform=str(payload["platform"]),
+        build_missing=bool(payload.get("build_missing", False)),
+        built_images=tuple(str(item) for item in payload.get("built_images", ())),
+        reused_images=tuple(str(item) for item in payload.get("reused_images", ())),
+        metadata_sources=tuple(str(item) for item in payload.get("metadata_sources", ())),
+    )
+
+
+def _prepared_environment_from_index(entry: Mapping[str, Any]) -> PreparedTaskEnvironment:
+    return PreparedTaskEnvironment(
+        instance_id=str(entry["instance_id"]),
+        repo=str(entry["repo"]),
+        version=str(entry["version"]),
+        base_commit=str(entry["base_commit"]),
+        container_name=str(entry["container_name"]),
+        repo_path=str(entry["repo_path"]),
+        runtime_lineage=_runtime_lineage_from_payload(entry["runtime_lineage"]),
+        status=PreparedEnvironmentStatus(str(entry["status"])),
+        ready_checks=dict(entry.get("ready_checks", {})),
+        sandbox_json=Path(str(entry["sandbox_json"])) if entry.get("sandbox_json") else None,
+    )
+
+
+def _load_active_prepared_environment(index_path: Path, instance_id: str) -> PreparedTaskEnvironment:
+    payload = _read_active_prepared_index(index_path)
+    entry = payload.get("prepared_environments", {}).get(instance_id)
+    if not entry:
+        raise SandboxedRunInputError(
+            f"active prepared environment not found for {instance_id}; run swebench prepare --replace-existing"
+        )
+    prepared = _prepared_environment_from_index(entry)
+    if prepared.status is not PreparedEnvironmentStatus.READY:
+        raise SandboxedRunInputError(
+            f"active prepared environment for {instance_id} is {prepared.status.value}; "
+            "run swebench prepare --replace-existing"
+        )
+    return prepared
+
+
+def _remove_active_prepared_environment(index_path: Path, instance_id: str) -> None:
+    payload = _read_active_prepared_index(index_path)
+    payload.setdefault("prepared_environments", {}).pop(instance_id, None)
+    _write_active_prepared_index(index_path, payload)
+
+
+def _task_sandbox_from_prepared(prepared: PreparedTaskEnvironment) -> TaskSandbox:
+    source = next(iter(prepared.runtime_lineage.metadata_sources), None)
+    return TaskSandbox(
+        container_name=prepared.container_name,
+        base_image=BaseImage(
+            repo=prepared.repo,
+            image=prepared.runtime_lineage.instance_image_key,
+            repo_path=prepared.repo_path,
+            official_compatible=True,
+            compatibility_source=source,
+        ),
+        instance_id=prepared.instance_id,
+        repo=prepared.repo,
+        base_commit=prepared.base_commit,
+        repo_path=prepared.repo_path,
+        status=prepared.status.value,
+    )
+
+
+def prepare_official_swebench_runtime(
+    *,
+    dataset_path: str | Path,
+    instance_id: str,
+    docker: DockerCli,
+    output_dir: str | Path,
+    active_index_path: str | Path = ".coding-agent/active-sandboxes.json",
+    build_missing: bool = False,
+    replace_existing: bool = False,
+    arch: str = "x86_64",
+) -> PreparedTaskEnvironment:
+    """Prepare an official-style SWE-Bench task runtime without starting the agent."""
+    output_path = Path(output_dir)
+    index_path = Path(active_index_path)
+    index_payload = _assert_prepared_slot_available(index_path, instance_id, replace_existing=replace_existing)
+    old_entry = index_payload.get("prepared_environments", {}).get(instance_id)
+
+    task_record = normalize_benchmark_task_record(load_task_record(dataset_path, instance_id))
+    testspec = build_adapted_testspec(task_record, arch=arch)
+    image_plan = inspect_image_graph(testspec, docker=docker, build_missing=build_missing)
+    built_images = build_missing_images(testspec, docker=docker, plan=image_plan) if image_plan.missing_images else ()
+    if old_entry and replace_existing and old_entry.get("container_name"):
+        docker.stop_container(str(old_entry["container_name"]))
+        docker.remove_container(str(old_entry["container_name"]))
+
+    lineage = RuntimeLineage(
+        runtime_path="official_style",
+        base_image_key=testspec.base_image_key,
+        env_image_key=testspec.env_image_key,
+        instance_image_key=testspec.instance_image_key,
+        platform=testspec.platform,
+        build_missing=build_missing,
+        built_images=built_images,
+        reused_images=image_plan.reused_images,
+        metadata_sources=(testspec.repo_version_source,),
+    )
+    sandbox = TaskSandboxManager(docker=docker).prepare_official_instance(
+        repo=task_record.repo,
+        instance_id=task_record.instance_id,
+        base_commit=task_record.base_commit,
+        instance_image_key=testspec.instance_image_key,
+        repo_path=testspec.repo_path,
+        source_reference=testspec.repo_version_source,
+        run_id=str(uuid.uuid4()),
+    )
+    sandbox_json_path = output_path / "sandbox.json"
+    ready_checks = {
+        "container_exec": {"ok": True},
+        "task_identity": {"ok": True, "instance_id": task_record.instance_id},
+        "base_commit": {"ok": True, "base_commit": task_record.base_commit},
+        "validation_source": {"ok": True, "source": testspec.repo_version_source},
+    }
+    prepared = PreparedTaskEnvironment(
+        instance_id=task_record.instance_id,
+        repo=task_record.repo,
+        version=task_record.version or "",
+        base_commit=task_record.base_commit,
+        container_name=sandbox.container_name,
+        repo_path=testspec.repo_path,
+        runtime_lineage=lineage,
+        status=PreparedEnvironmentStatus.READY,
+        ready_checks=ready_checks,
+        sandbox_json=sandbox_json_path,
+    )
+    output_path.mkdir(parents=True, exist_ok=True)
+    sandbox_json_path.write_text(
+        json.dumps(_official_sandbox_payload(prepared=prepared, status=prepared.status, ready_checks=ready_checks), indent=2),
+        encoding="utf-8",
+    )
+    _save_active_prepared_environment(index_path, prepared)
+    return prepared
+
+
+def _eval_report_payload(report: EvalReport | None) -> dict[str, Any] | None:
+    if report is None:
+        return None
+    return {
+        "resolved": report.resolved,
+        "fail_to_pass_success": list(report.fail_to_pass_success),
+        "fail_to_pass_failure": list(report.fail_to_pass_failure),
+        "pass_to_pass_success": list(report.pass_to_pass_success),
+        "pass_to_pass_failure": list(report.pass_to_pass_failure),
+        "raw_output_artifact": report.raw_output_artifact,
+    }
+
+
+def _artifact_locations(output_path: Path) -> dict[str, str]:
+    return {
+        "trajectory": str(output_path / "trajectory.jsonl"),
+        "trajectory_json": str(output_path / "trajectory.json"),
+        "summary": str(output_path / "summary.json"),
+        "final_patch": str(output_path / "final.patch"),
+        "prediction": str(output_path / "prediction.jsonl"),
+        "sandbox": str(output_path / "sandbox.json"),
+    }
+
+
+def _runtime_metadata(
+    *,
+    prepared: PreparedTaskEnvironment,
+    validation: ValidationTestSet,
+    status_transition: Sequence[str],
+    output_path: Path,
+    cleanup_requested: bool,
+    cleanup_action: str,
+    active_index_result: str,
+    eval_report: EvalReport | None = None,
+) -> dict[str, Any]:
+    lineage = prepared.runtime_lineage
+    artifacts = _artifact_locations(output_path)
+    validation_payload: dict[str, Any] = {
+        "source": validation.command_source,
+        "mode": "fail_to_pass_plus_pass_to_pass" if validation.include_pass_to_pass else "fail_to_pass",
+        "eval_script": validation.eval_script,
+        "allowed_commands": list(validation.allowed_commands),
+        "fail_to_pass": list(validation.fail_to_pass),
+        "pass_to_pass": list(validation.pass_to_pass),
+    }
+    eval_payload = _eval_report_payload(eval_report)
+    if eval_payload is not None:
+        validation_payload["eval_report"] = eval_payload
+    return {
+        "runtime": {
+            "path": lineage.runtime_path,
+            "base_image_key": lineage.base_image_key,
+            "env_image_key": lineage.env_image_key,
+            "instance_image_key": lineage.instance_image_key,
+            "platform": lineage.platform,
+            "build_missing": lineage.build_missing,
+            "built_images": list(lineage.built_images),
+            "reused_images": list(lineage.reused_images),
+            "metadata_sources": list(lineage.metadata_sources),
+        },
+        "prepared_environment": {
+            "instance_id": prepared.instance_id,
+            "repo": prepared.repo,
+            "version": prepared.version,
+            "base_commit": prepared.base_commit,
+            "container_name": prepared.container_name,
+            "repo_path": prepared.repo_path,
+            "status_transition": list(status_transition),
+        },
+        "validation": validation_payload,
+        "cleanup": {
+            "requested": cleanup_requested,
+            "action": cleanup_action,
+            "active_index_result": active_index_result,
+        },
+        "active_index": {
+            "result": active_index_result,
+        },
+        "artifacts": artifacts,
+    }
+
+
+def _write_official_sandbox_json(
+    *,
+    output_path: Path,
+    prepared: PreparedTaskEnvironment,
+    validation: ValidationTestSet,
+    status: PreparedEnvironmentStatus,
+    status_transition: Sequence[str],
+    cleanup_requested: bool,
+    cleanup_action: str,
+    active_index_result: str,
+    eval_report: EvalReport | None = None,
+) -> None:
+    validation_payload: dict[str, Any] = {
+        "source": validation.command_source,
+        "mode": "fail_to_pass_plus_pass_to_pass" if validation.include_pass_to_pass else "fail_to_pass",
+        "eval_script": validation.eval_script,
+        "allowed_commands": list(validation.allowed_commands),
+        "fail_to_pass": list(validation.fail_to_pass),
+        "pass_to_pass": list(validation.pass_to_pass),
+    }
+    eval_payload = _eval_report_payload(eval_report)
+    if eval_payload is not None:
+        validation_payload["eval_report"] = eval_payload
+    payload = _official_sandbox_payload(prepared=prepared, status=status, ready_checks=prepared.ready_checks)
+    payload.update(
+        {
+            "prepared_environment": {
+                "status_transition": list(status_transition),
+                "sandbox_json": str(output_path / "sandbox.json"),
+            },
+            "validation": validation_payload,
+            "cleanup": {
+                "requested": cleanup_requested,
+                "action": cleanup_action,
+                "active_index_result": active_index_result,
+            },
+            "active_index": {
+                "result": active_index_result,
+            },
+            "artifacts": _artifact_locations(output_path),
+        }
+    )
+    (output_path / "sandbox.json").write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+
+
+def _write_official_summary(
+    *,
+    output_path: Path,
+    summary: RunSummary,
+    prepared: PreparedTaskEnvironment,
+    validation: ValidationTestSet,
+    patch: str,
+    status_transition: Sequence[str],
+    cleanup_requested: bool,
+    cleanup_action: str,
+    active_index_result: str,
+    eval_report: EvalReport | None = None,
+) -> RunSummary:
+    rewritten = RunSummary(
+        run_id=summary.run_id,
+        instance_id=summary.instance_id,
+        model_name=summary.model_name,
+        status=summary.status,
+        budget=summary.budget,
+        changed_files=_changed_files_from_patch(patch) if patch else summary.changed_files,
+        test_summary=summary.test_summary,
+        error=summary.error,
+        last_successful_tool_call=summary.last_successful_tool_call,
+        artifacts=_artifact_locations(output_path),
+        metadata=_runtime_metadata(
+            prepared=prepared,
+            validation=validation,
+            status_transition=status_transition,
+            output_path=output_path,
+            cleanup_requested=cleanup_requested,
+            cleanup_action=cleanup_action,
+            active_index_result=active_index_result,
+            eval_report=eval_report,
+        ),
+    )
+    write_summary(output_path / "summary.json", rewritten)
+    return rewritten
+
+
+def _ensure_trajectory_json(*, output_path: Path, task_record: Any, patch: str, resolved: bool) -> None:
+    jsonl_path = output_path / "trajectory.jsonl"
+    if not jsonl_path.exists():
+        jsonl_path.write_text("", encoding="utf-8")
+    convert_trajectory_to_summary_format(
+        trajectory_jsonl=jsonl_path,
+        task_id=task_record.instance_id,
+        issue=task_record.problem_statement,
+        final_diff=patch,
+        resolved=resolved,
+        output_path=output_path / "trajectory.json",
+    )
+
+
+def _cleanup_prepared_environment(docker: DockerCli, prepared: PreparedTaskEnvironment) -> None:
+    TaskSandboxManager(docker=docker).stop(_task_sandbox_from_prepared(prepared))
+
+
+def _validate_active_prepared_environment(prepared: PreparedTaskEnvironment, task_record: Any) -> None:
+    if prepared.instance_id != task_record.instance_id:
+        raise SandboxedRunInputError("active prepared environment instance id does not match requested task")
+    if prepared.repo != task_record.repo:
+        raise SandboxedRunInputError("active prepared environment repo does not match requested task")
+    if prepared.version != (task_record.version or ""):
+        raise SandboxedRunInputError("active prepared environment repo version does not match requested task")
+    if prepared.base_commit != task_record.base_commit:
+        raise SandboxedRunInputError("active prepared environment base commit does not match requested task")
+    if prepared.runtime_lineage.runtime_path != "official_style":
+        raise SandboxedRunInputError("active prepared environment is not official_style")
+
+
+def _validation_patch_files(test_patch: str) -> set[str]:
+    return set(_changed_files_from_patch(test_patch)) if test_patch.strip() else set()
+
+
+def filter_validation_patch_changes(final_patch: str, test_patch: str) -> str:
+    """Remove validation-only files from an exported final diff."""
+    validation_files = _validation_patch_files(test_patch)
+    if not validation_files or not final_patch.strip():
+        return final_patch
+    kept_blocks: list[list[str]] = []
+    current: list[str] = []
+    current_file: str | None = None
+    for line in final_patch.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            if current and current_file not in validation_files:
+                kept_blocks.append(current)
+            current = [line]
+            parts = line.split()
+            current_file = parts[3][2:] if len(parts) >= 4 and parts[3].startswith("b/") else None
+            continue
+        current.append(line)
+    if current and current_file not in validation_files:
+        kept_blocks.append(current)
+    return "".join("".join(block) for block in kept_blocks)
+
+
+def _apply_validation_test_patch(docker: DockerCli, prepared: PreparedTaskEnvironment, test_patch: str) -> bool:
+    if not test_patch.strip():
+        return False
+    docker.exec(
+        prepared.container_name,
+        ["sh", "-lc", f"git -C {prepared.repo_path} apply --whitespace=nowarn -"],
+        stdin=test_patch,
+    )
+    return True
+
+
+def _revert_validation_test_patch(docker: DockerCli, prepared: PreparedTaskEnvironment, test_patch: str) -> None:
+    if not test_patch.strip():
+        return
+    docker.exec(
+        prepared.container_name,
+        ["sh", "-lc", f"git -C {prepared.repo_path} apply -R --whitespace=nowarn -"],
+        stdin=test_patch,
+    )
+
+
+def _failure_eval_report(validation: ValidationTestSet, raw_output_artifact: str) -> EvalReport:
+    return EvalReport(
+        resolved=False,
+        fail_to_pass_failure=validation.fail_to_pass,
+        pass_to_pass_failure=validation.pass_to_pass,
+        raw_output_artifact=raw_output_artifact,
+    )
+
+
+def _run_final_eval(
+    *,
+    docker: DockerCli,
+    prepared: PreparedTaskEnvironment,
+    validation: ValidationTestSet,
+    test_patch: str,
+    output_path: Path,
+    timeout_seconds: int,
+) -> EvalReport:
+    eval_log = output_path / "eval.log"
+    applied = _apply_validation_test_patch(docker, prepared, test_patch)
+    try:
+        result = docker.exec(
+            prepared.container_name,
+            ["sh", "-lc", f"cd {prepared.repo_path} && {validation.allowed_commands[0]}"],
+            timeout_seconds=timeout_seconds,
+        )
+        raw_output = (result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr).strip()
+        eval_log.write_text(raw_output, encoding="utf-8")
+        try:
+            return parse_eval_report(
+                raw_output,
+                fail_to_pass=validation.fail_to_pass,
+                pass_to_pass=validation.pass_to_pass,
+                raw_output_artifact=str(eval_log),
+            )
+        except EvalOutputParseError:
+            return _failure_eval_report(validation, str(eval_log))
+    finally:
+        if applied:
+            _revert_validation_test_patch(docker, prepared, test_patch)
+
+
+def run_prepared_swebench_runtime(
+    *,
+    dataset_path: str | Path,
+    instance_id: str,
+    docker: DockerCli,
+    backend: ModelBackend,
+    budget: RunBudget,
+    model_name: str,
+    output_dir: str | Path,
+    active_index_path: str | Path = ".coding-agent/active-sandboxes.json",
+    include_pass_to_pass: bool = False,
+    cleanup: bool = False,
+    arch: str = "x86_64",
+) -> RunSummary:
+    """Run the host-owned agent through an active official-style prepared environment."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    index_path = Path(active_index_path)
+    task_record = normalize_benchmark_task_record(load_task_record(dataset_path, instance_id))
+    testspec = build_adapted_testspec(task_record, arch=arch)
+    validation = build_official_validation_set(testspec, include_pass_to_pass=include_pass_to_pass)
+    prepared = _load_active_prepared_environment(index_path, instance_id)
+    _validate_active_prepared_environment(prepared, task_record)
+
+    running = replace(prepared, status=PreparedEnvironmentStatus.RUNNING, sandbox_json=output_path / "sandbox.json")
+    _save_active_prepared_environment(index_path, running)
+    status_transition: list[str] = [PreparedEnvironmentStatus.READY.value, PreparedEnvironmentStatus.RUNNING.value]
+    _write_official_sandbox_json(
+        output_path=output_path,
+        prepared=running,
+        validation=validation,
+        status=PreparedEnvironmentStatus.RUNNING,
+        status_transition=status_transition,
+        cleanup_requested=cleanup,
+        cleanup_action="none",
+        active_index_result="updated",
+    )
+
+    host_workspace = output_path / "_workspace_snapshot"
+    host_workspace.mkdir(parents=True, exist_ok=True)
+    task = BenchmarkTask(
+        instance_id=task_record.instance_id,
+        workspace=host_workspace,
+        problem_statement=task_record.problem_statement,
+        allowed_test_commands=validation.allowed_commands,
+        repo=task_record.repo,
+        base_commit=task_record.base_commit,
+    )
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name=prepared.container_name,
+        repo_path=prepared.repo_path,
+        allowed_test_commands=validation.allowed_commands,
+        test_timeout_seconds=budget.test_timeout_seconds,
+    )
+    run_id = str(uuid.uuid4())
+    try:
+        summary = run_task(
+            task=task,
+            budget=budget,
+            backend=backend,
+            model_name=model_name,
+            output_dir=output_path,
+            run_id=run_id,
+            tool_executor=executor,
+        )
+    except ArtifactPersistenceError:
+        raise
+    except Exception as exc:
+        error_prepared = replace(prepared, status=PreparedEnvironmentStatus.ERROR, sandbox_json=output_path / "sandbox.json")
+        status_transition.append(PreparedEnvironmentStatus.ERROR.value)
+        if cleanup:
+            _cleanup_prepared_environment(docker, error_prepared)
+            _remove_active_prepared_environment(index_path, instance_id)
+            cleanup_action = "stop_remove"
+            active_index_result = "removed"
+        else:
+            _save_active_prepared_environment(index_path, error_prepared)
+            cleanup_action = "none"
+            active_index_result = "retained_error"
+        (output_path / "final.patch").write_text("", encoding="utf-8")
+        write_prediction_from_patch(output_path / "prediction.jsonl", instance_id=task_record.instance_id, model_name=model_name, patch="")
+        _ensure_trajectory_json(output_path=output_path, task_record=task_record, patch="", resolved=False)
+        failure_summary = RunSummary(
+            run_id=run_id,
+            instance_id=task_record.instance_id,
+            model_name=model_name,
+            status=RunStatus.ERRORED,
+            budget=budget,
+            error=str(exc),
+            artifacts=_artifact_locations(output_path),
+        )
+        failure_summary = _write_official_summary(
+            output_path=output_path,
+            summary=failure_summary,
+            prepared=error_prepared,
+            validation=validation,
+            patch="",
+            status_transition=status_transition,
+            cleanup_requested=cleanup,
+            cleanup_action=cleanup_action,
+            active_index_result=active_index_result,
+        )
+        _write_official_sandbox_json(
+            output_path=output_path,
+            prepared=error_prepared,
+            validation=validation,
+            status=PreparedEnvironmentStatus.ERROR,
+            status_transition=status_transition,
+            cleanup_requested=cleanup,
+            cleanup_action=cleanup_action,
+            active_index_result=active_index_result,
+        )
+        return failure_summary
+
+    eval_report = _run_final_eval(
+        docker=docker,
+        prepared=prepared,
+        validation=validation,
+        test_patch=task_record.test_patch,
+        output_path=output_path,
+        timeout_seconds=budget.test_timeout_seconds,
+    )
+    container_patch = export_prepared_environment_patch(
+        docker,
+        container_name=prepared.container_name,
+        repo_path=prepared.repo_path,
+    )
+    final_patch = filter_validation_patch_changes(container_patch, task_record.test_patch)
+    (output_path / "final.patch").write_text(final_patch, encoding="utf-8")
+    write_prediction_from_patch(
+        output_path / "prediction.jsonl",
+        instance_id=task_record.instance_id,
+        model_name=model_name,
+        patch=final_patch,
+    )
+    _ensure_trajectory_json(
+        output_path=output_path,
+        task_record=task_record,
+        patch=final_patch,
+        resolved=eval_report.resolved,
+    )
+
+    terminal_status = (
+        PreparedEnvironmentStatus.ERROR
+        if summary.status is RunStatus.ERRORED
+        else PreparedEnvironmentStatus.USED
+    )
+    status_transition.append(terminal_status.value)
+    terminal_prepared = replace(prepared, status=terminal_status, sandbox_json=output_path / "sandbox.json")
+    if cleanup and terminal_status is PreparedEnvironmentStatus.USED:
+        status_transition.append(PreparedEnvironmentStatus.STOPPED.value)
+        terminal_prepared = replace(terminal_prepared, status=PreparedEnvironmentStatus.STOPPED)
+        _cleanup_prepared_environment(docker, terminal_prepared)
+        _remove_active_prepared_environment(index_path, instance_id)
+        cleanup_action = "stop_remove"
+        active_index_result = "removed"
+    elif cleanup:
+        _cleanup_prepared_environment(docker, terminal_prepared)
+        _remove_active_prepared_environment(index_path, instance_id)
+        cleanup_action = "stop_remove"
+        active_index_result = "removed"
+    else:
+        _save_active_prepared_environment(index_path, terminal_prepared)
+        cleanup_action = "none"
+        active_index_result = "retained_" + terminal_status.value
+
+    summary = _write_official_summary(
+        output_path=output_path,
+        summary=summary,
+        prepared=terminal_prepared,
+        validation=validation,
+        patch=final_patch,
+        status_transition=status_transition,
+        cleanup_requested=cleanup,
+        cleanup_action=cleanup_action,
+        active_index_result=active_index_result,
+        eval_report=eval_report,
+    )
+    _write_official_sandbox_json(
+        output_path=output_path,
+        prepared=terminal_prepared,
+        validation=validation,
+        status=terminal_prepared.status,
+        status_transition=status_transition,
+        cleanup_requested=cleanup,
+        cleanup_action=cleanup_action,
+        active_index_result=active_index_result,
+        eval_report=eval_report,
+    )
+    return summary
 
 
 def _changed_files_from_patch(patch: str) -> list[str]:

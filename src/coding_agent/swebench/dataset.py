@@ -6,9 +6,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from coding_agent.models import BenchmarkTaskRecord
+from coding_agent.swebench.repo_specs import DEFAULT_REPO_SPECS, MissingRepoSpecError
+
 
 class SwebenchDatasetError(ValueError):
     """Raised when local SWE-Bench task data is missing or invalid."""
+
+
+class SwebenchMetadataError(SwebenchDatasetError):
+    """Raised when a task record lacks source-backed runtime metadata."""
 
 
 def _normalize_list(value: Any, field_name: str) -> tuple[str, ...]:
@@ -126,3 +133,34 @@ def load_task_records(dataset_path: str | Path, instance_ids: Sequence[str]) -> 
     if missing:
         raise SwebenchDatasetError("instance not found: " + ", ".join(missing))
     return tuple(SwebenchTaskRecord.from_row(rows_by_id[instance_id]) for instance_id in requested)
+
+
+def require_source_metadata(record: SwebenchTaskRecord) -> SwebenchTaskRecord:
+    """Validate metadata fields required before official-style runtime planning."""
+    if not record.version:
+        raise SwebenchMetadataError(f"repo version is required for {record.instance_id}")
+    return record
+
+
+def normalize_benchmark_task_record(record: SwebenchTaskRecord) -> BenchmarkTaskRecord:
+    """Normalize a loaded parquet row into the source-backed runtime task model."""
+    require_source_metadata(record)
+    try:
+        DEFAULT_REPO_SPECS.require(record.repo, record.version or "")
+    except MissingRepoSpecError as exc:
+        supported_repo = any(spec.repo == record.repo for spec in DEFAULT_REPO_SPECS._specs.values())
+        if not supported_repo:
+            raise SwebenchMetadataError(f"unsupported repository: {record.repo}") from exc
+        raise SwebenchMetadataError(str(exc)) from exc
+    return BenchmarkTaskRecord(
+        instance_id=record.instance_id,
+        repo=record.repo,
+        version=record.version,
+        base_commit=record.base_commit,
+        problem_statement=record.problem_statement,
+        fail_to_pass=record.fail_to_pass,
+        pass_to_pass=record.pass_to_pass,
+        test_patch=record.test_patch,
+        environment_setup_commit=record.environment_setup_commit,
+        eval_script=record.eval_script,
+    )

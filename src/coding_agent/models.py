@@ -47,6 +47,27 @@ class TestStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class RepoSpecReviewStatus(str, Enum):
+    SOURCE_BACKED = "source_backed"
+    UNSUPPORTED = "unsupported"
+    NEEDS_REVIEW = "needs_review"
+
+
+class PreparedEnvironmentStatus(str, Enum):
+    PENDING = "pending"
+    READY = "ready"
+    RUNNING = "running"
+    USED = "used"
+    STOPPED = "stopped"
+    ERROR = "error"
+
+
+class UnsupportedLegacySurface(str, Enum):
+    REGISTRY_OPTION = "registry_option"
+    SANDBOX_COMMAND = "sandbox_command"
+    BATCH_COMMAND = "batch_command"
+
+
 def utc_now() -> datetime:
     """统一生成带 UTC 时区的时间戳，避免持久化时出现 naive datetime。"""
     return datetime.now(timezone.utc)
@@ -71,6 +92,239 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     return value
+
+
+def _tuple_of_str(value: tuple[str, ...] | list[str], field_name: str) -> tuple[str, ...]:
+    normalized = tuple(str(item) for item in value if str(item))
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty")
+    return normalized
+
+
+@dataclass(frozen=True)
+class BenchmarkTaskRecord:
+    """Source-backed SWE-Bench task record used by the new runtime path."""
+
+    instance_id: str
+    repo: str
+    version: str | None
+    base_commit: str
+    problem_statement: str
+    fail_to_pass: tuple[str, ...]
+    pass_to_pass: tuple[str, ...] = ()
+    test_patch: str = ""
+    environment_setup_commit: str | None = None
+    eval_script: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("instance_id", "repo", "base_commit", "problem_statement"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} is required")
+        object.__setattr__(self, "fail_to_pass", _tuple_of_str(self.fail_to_pass, "fail_to_pass"))
+        object.__setattr__(self, "pass_to_pass", tuple(str(item) for item in self.pass_to_pass if str(item)))
+
+
+@dataclass(frozen=True)
+class RepoVersionSpec:
+    """Source-backed repository/version metadata boundary."""
+
+    repo: str
+    version: str
+    language: str
+    test_command: str
+    source_reference: str
+    review_status: RepoSpecReviewStatus
+    python_version: str | None = None
+    packages: tuple[str, ...] = ()
+    pip_packages: tuple[str, ...] = ()
+    install_commands: tuple[str, ...] = ()
+    docker_specs: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for field_name in ("repo", "version", "language", "test_command", "source_reference"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} is required")
+        if not isinstance(self.review_status, RepoSpecReviewStatus):
+            object.__setattr__(self, "review_status", RepoSpecReviewStatus(self.review_status))
+        object.__setattr__(self, "packages", tuple(str(item) for item in self.packages if str(item)))
+        object.__setattr__(self, "pip_packages", tuple(str(item) for item in self.pip_packages if str(item)))
+        object.__setattr__(self, "install_commands", tuple(str(item) for item in self.install_commands if str(item)))
+
+
+@dataclass(frozen=True)
+class AdaptedTestSpec:
+    """Internal official-style TestSpec contract for one task."""
+
+    instance_id: str
+    repo: str
+    version: str
+    base_commit: str
+    repo_path: str
+    env_name: str
+    fail_to_pass: tuple[str, ...]
+    repo_script: str
+    env_script: str
+    eval_script: str
+    language: str
+    arch: str
+    platform: str
+    base_image_key: str
+    env_image_key: str
+    instance_image_key: str
+    repo_version_source: str
+    pass_to_pass: tuple[str, ...] = ()
+    test_patch: str = ""
+
+    def __post_init__(self) -> None:
+        required = (
+            "instance_id",
+            "repo",
+            "version",
+            "base_commit",
+            "repo_path",
+            "env_name",
+            "repo_script",
+            "env_script",
+            "eval_script",
+            "language",
+            "arch",
+            "platform",
+            "base_image_key",
+            "env_image_key",
+            "instance_image_key",
+            "repo_version_source",
+        )
+        for field_name in required:
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} is required")
+        object.__setattr__(self, "fail_to_pass", _tuple_of_str(self.fail_to_pass, "fail_to_pass"))
+        object.__setattr__(self, "pass_to_pass", tuple(str(item) for item in self.pass_to_pass if str(item)))
+
+
+@dataclass(frozen=True)
+class RuntimeLineage:
+    runtime_path: str
+    base_image_key: str
+    env_image_key: str
+    instance_image_key: str
+    platform: str
+    build_missing: bool
+    built_images: tuple[str, ...] = ()
+    reused_images: tuple[str, ...] = ()
+    metadata_sources: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.runtime_path != "official_style":
+            raise ValueError("runtime_path must be official_style")
+        for field_name in ("base_image_key", "env_image_key", "instance_image_key", "platform"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} is required")
+        object.__setattr__(self, "built_images", tuple(self.built_images))
+        object.__setattr__(self, "reused_images", tuple(self.reused_images))
+        object.__setattr__(self, "metadata_sources", tuple(self.metadata_sources))
+
+
+@dataclass(frozen=True)
+class PreparedTaskEnvironment:
+    instance_id: str
+    repo: str
+    version: str
+    base_commit: str
+    container_name: str
+    repo_path: str
+    runtime_lineage: RuntimeLineage
+    status: PreparedEnvironmentStatus
+    ready_checks: dict[str, Any] = field(default_factory=dict)
+    sandbox_json: Path | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("instance_id", "repo", "version", "base_commit", "container_name", "repo_path"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} is required")
+        if not isinstance(self.status, PreparedEnvironmentStatus):
+            object.__setattr__(self, "status", PreparedEnvironmentStatus(self.status))
+
+
+@dataclass(frozen=True)
+class ValidationSet:
+    fail_to_pass: tuple[str, ...]
+    pass_to_pass: tuple[str, ...] = ()
+    include_pass_to_pass: bool = False
+    command_source: str = "official_testspec"
+    eval_script: str = ""
+    allowed_commands: tuple[str, ...] = ()
+    test_patch_reset_commands: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fail_to_pass", _tuple_of_str(self.fail_to_pass, "fail_to_pass"))
+        object.__setattr__(self, "pass_to_pass", tuple(str(item) for item in self.pass_to_pass if str(item)))
+        object.__setattr__(self, "allowed_commands", tuple(str(item) for item in self.allowed_commands if str(item)))
+        object.__setattr__(
+            self,
+            "test_patch_reset_commands",
+            tuple(str(item) for item in self.test_patch_reset_commands if str(item)),
+        )
+        if self.command_source not in {"official_testspec", "source_backed_repo_spec"}:
+            raise ValueError("command_source must be official_testspec or source_backed_repo_spec")
+        if not self.eval_script:
+            raise ValueError("eval_script is required")
+
+
+@dataclass(frozen=True)
+class EvalReport:
+    resolved: bool
+    fail_to_pass_success: tuple[str, ...] = ()
+    fail_to_pass_failure: tuple[str, ...] = ()
+    pass_to_pass_success: tuple[str, ...] = ()
+    pass_to_pass_failure: tuple[str, ...] = ()
+    raw_output_artifact: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fail_to_pass_success", tuple(self.fail_to_pass_success))
+        object.__setattr__(self, "fail_to_pass_failure", tuple(self.fail_to_pass_failure))
+        object.__setattr__(self, "pass_to_pass_success", tuple(self.pass_to_pass_success))
+        object.__setattr__(self, "pass_to_pass_failure", tuple(self.pass_to_pass_failure))
+
+
+@dataclass(frozen=True)
+class AgentRunArtifactSet:
+    trajectory_jsonl: Path
+    trajectory_json: Path
+    summary_json: Path
+    final_patch: Path
+    prediction_jsonl: Path
+    sandbox_json: Path
+
+
+@dataclass(frozen=True)
+class ActivePreparedEnvironmentIndex:
+    instance_id: str
+    container_name: str
+    repo: str
+    version: str
+    base_commit: str
+    sandbox_json: Path
+    runtime_lineage: RuntimeLineage
+    status: PreparedEnvironmentStatus
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, PreparedEnvironmentStatus):
+            object.__setattr__(self, "status", PreparedEnvironmentStatus(self.status))
+
+
+@dataclass(frozen=True)
+class UnsupportedLegacyOperation:
+    operation_name: str
+    legacy_surface: UnsupportedLegacySurface
+    replacement: str | None
+    error_message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.legacy_surface, UnsupportedLegacySurface):
+            object.__setattr__(self, "legacy_surface", UnsupportedLegacySurface(self.legacy_surface))
+        for field_name in ("operation_name", "error_message"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} is required")
 
 
 @dataclass(frozen=True)
@@ -336,9 +590,14 @@ class RunSummary:
     last_successful_tool_call: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
     sandbox: SandboxMetadata | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return _json_value(self)
+        payload = _json_value(self)
+        metadata = payload.pop("metadata", {}) or {}
+        if isinstance(metadata, dict):
+            payload.update(metadata)
+        return payload
 
 
 @dataclass(frozen=True)

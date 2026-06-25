@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from coding_agent.models import Prediction
+from coding_agent.sandbox.docker_cli import DockerCli
 
 
 def prediction_to_dict(prediction: Prediction) -> dict[str, str]:
@@ -40,6 +41,20 @@ def write_predictions_jsonl(path: str | Path, predictions: list[Prediction] | tu
     with destination.open("w", encoding="utf-8") as handle:
         for prediction in predictions:
             handle.write(json.dumps(prediction_to_dict(prediction), ensure_ascii=True) + "\n")
+
+
+def write_prediction_from_patch(path: str | Path, *, instance_id: str, model_name: str, patch: str) -> Prediction:
+    """Write a SWE-Bench prediction record from an exported repository diff."""
+
+    prediction = Prediction(instance_id, model_name, patch)
+    write_prediction_jsonl(path, prediction)
+    return prediction
+
+
+def export_prepared_environment_patch(docker: DockerCli, *, container_name: str, repo_path: str) -> str:
+    """Export the final repository diff from an official-style prepared environment."""
+
+    return docker.exec(container_name, ["git", "-C", repo_path, "diff", "--binary"]).stdout
 
 
 def export_prediction_from_run(run_dir: str | Path, model_name: str, output: str | Path) -> None:

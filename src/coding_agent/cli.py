@@ -13,7 +13,7 @@ from coding_agent.model_backends.openai_compatible import (
     OpenAICompatibleBackend,
     load_model_config,
 )
-from coding_agent.models import RunBudget, RunStatus
+from coding_agent.models import RunBudget, RunStatus, UnsupportedLegacyOperation, UnsupportedLegacySurface
 from coding_agent.sandbox.docker_cli import DockerCli
 from coding_agent.sandbox.registry import SandboxRegistry, SandboxRegistryError, register_base_image
 from coding_agent.swebench.dataset import SwebenchDatasetError, load_task_record
@@ -24,14 +24,60 @@ from coding_agent.swebench.sandbox_run import (
     load_active_sandbox,
     load_base_image_from_registry,
     parse_instance_id_file,
+    prepare_official_swebench_runtime,
     prepare_swebench_sandboxes,
     prepare_swebench_sandbox,
+    run_prepared_swebench_runtime,
     run_swebench_task,
     run_swebench_tasks,
     solve_swebench_sandboxes,
     solve_prepared_sandbox,
 )
 from coding_agent.trajectory.summary import load_summary, load_trajectory, render_inspect_report
+
+
+LEGACY_SWEBENCH_OPERATIONS = {
+    "prepare-sandbox": UnsupportedLegacyOperation(
+        operation_name="prepare-sandbox",
+        legacy_surface=UnsupportedLegacySurface.SANDBOX_COMMAND,
+        replacement="prepare",
+        error_message=(
+            "unsupported SWE-Bench runtime operation 'prepare-sandbox'; "
+            "use 'coding-agent swebench prepare' to prepare environments and "
+            "'coding-agent swebench run' to run the agent"
+        ),
+    ),
+    "solve-sandbox": UnsupportedLegacyOperation(
+        operation_name="solve-sandbox",
+        legacy_surface=UnsupportedLegacySurface.SANDBOX_COMMAND,
+        replacement="run",
+        error_message=(
+            "unsupported SWE-Bench runtime operation 'solve-sandbox'; "
+            "use 'coding-agent swebench prepare' to prepare environments and "
+            "'coding-agent swebench run' to run the agent"
+        ),
+    ),
+    "prepare-sandboxes": UnsupportedLegacyOperation(
+        operation_name="prepare-sandboxes",
+        legacy_surface=UnsupportedLegacySurface.BATCH_COMMAND,
+        replacement="prepare",
+        error_message=(
+            "unsupported batch SWE-Bench runtime operation 'prepare-sandboxes'; "
+            "use 'coding-agent swebench prepare' to prepare one task environment and "
+            "'coding-agent swebench run' to run the agent"
+        ),
+    ),
+    "solve-sandboxes": UnsupportedLegacyOperation(
+        operation_name="solve-sandboxes",
+        legacy_surface=UnsupportedLegacySurface.BATCH_COMMAND,
+        replacement="run",
+        error_message=(
+            "unsupported batch SWE-Bench runtime operation 'solve-sandboxes'; "
+            "use 'coding-agent swebench prepare' to prepare one task environment and "
+            "'coding-agent swebench run' to run the agent"
+        ),
+    ),
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,72 +120,27 @@ def build_parser() -> argparse.ArgumentParser:
     sandbox_list_parser.add_argument("--registry", default=".coding-agent/sandboxes.json")
     swebench_parser = subparsers.add_parser("swebench", help="SWE-Bench commands")
     swebench_subparsers = swebench_parser.add_subparsers(dest="swebench_command")
-    swebench_run_parser = swebench_subparsers.add_parser("run", help="run SWE-Bench task(s) in Docker")
+    swebench_official_prepare_parser = swebench_subparsers.add_parser(
+        "prepare",
+        help="prepare official-style SWE-Bench runtime layers and task environment",
+    )
+    swebench_official_prepare_parser.add_argument("--dataset", required=True)
+    swebench_official_prepare_parser.add_argument("--instance-id", required=True)
+    swebench_official_prepare_parser.add_argument("--output-dir", required=True)
+    swebench_official_prepare_parser.add_argument("--build-missing", action="store_true")
+    swebench_official_prepare_parser.add_argument("--replace-existing", action="store_true")
+    swebench_official_prepare_parser.add_argument("--arch", choices=("x86_64", "arm64"), default="x86_64")
+    swebench_run_parser = swebench_subparsers.add_parser("run", help="run a prepared official-style SWE-Bench task")
     swebench_run_parser.add_argument("--dataset", required=True)
-    instance_source = swebench_run_parser.add_mutually_exclusive_group(required=True)
-    instance_source.add_argument("--instance-id", action="append", dest="instance_ids")
-    instance_source.add_argument("--instance-id-file")
-    swebench_run_parser.add_argument("--registry", required=True)
-    swebench_run_parser.add_argument("--jobs", type=int, default=1)
+    swebench_run_parser.add_argument("--instance-id", required=True)
     swebench_run_parser.add_argument("--max-steps", type=int, required=True)
     swebench_run_parser.add_argument("--timeout-seconds", type=int, required=True)
     swebench_run_parser.add_argument("--test-timeout-seconds", type=int, required=True)
     swebench_run_parser.add_argument("--output-dir", required=True)
     swebench_run_parser.add_argument("--include-pass-to-pass", action="store_true")
+    swebench_run_parser.add_argument("--cleanup", action="store_true")
     swebench_run_parser.add_argument("--model")
     swebench_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
-    swebench_prepare_parser = swebench_subparsers.add_parser("prepare-sandbox", help="prepare and keep a SWE-Bench Docker sandbox")
-    swebench_prepare_parser.add_argument("--dataset", required=True)
-    swebench_prepare_parser.add_argument("--instance-id", required=True)
-    swebench_prepare_parser.add_argument("--registry", required=True)
-    swebench_prepare_parser.add_argument("--output-dir", required=True)
-    swebench_prepare_parser.add_argument("--include-pass-to-pass", action="store_true")
-    swebench_prepare_parser.add_argument("--replace-existing", action="store_true")
-    swebench_solve_parser = swebench_subparsers.add_parser("solve-sandbox", help="solve using an active prepared SWE-Bench sandbox")
-    swebench_solve_parser.add_argument("--dataset", required=True)
-    swebench_solve_parser.add_argument("--instance-id", required=True)
-    swebench_solve_parser.add_argument("--registry", required=True)
-    swebench_solve_parser.add_argument("--max-steps", type=int, required=True)
-    swebench_solve_parser.add_argument("--timeout-seconds", type=int, required=True)
-    swebench_solve_parser.add_argument("--test-timeout-seconds", type=int, required=True)
-    swebench_solve_parser.add_argument("--output-dir", required=True)
-    swebench_solve_parser.add_argument("--include-pass-to-pass", action="store_true")
-    swebench_solve_parser.add_argument("--cleanup", action="store_true")
-    swebench_solve_parser.add_argument("--model")
-    swebench_solve_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
-    swebench_prepare_batch_parser = swebench_subparsers.add_parser(
-        "prepare-sandboxes",
-        help="prepare multiple SWE-Bench Docker sandboxes with a resumable state table",
-    )
-    swebench_prepare_batch_parser.add_argument("--dataset", required=True)
-    prepare_batch_source = swebench_prepare_batch_parser.add_mutually_exclusive_group(required=True)
-    prepare_batch_source.add_argument("--instance-id", action="append", dest="instance_ids")
-    prepare_batch_source.add_argument("--instance-id-file")
-    swebench_prepare_batch_parser.add_argument("--registry", required=True)
-    swebench_prepare_batch_parser.add_argument("--jobs", type=int, default=1)
-    swebench_prepare_batch_parser.add_argument("--output-dir", required=True)
-    swebench_prepare_batch_parser.add_argument("--state")
-    swebench_prepare_batch_parser.add_argument("--include-pass-to-pass", action="store_true")
-    swebench_prepare_batch_parser.add_argument("--replace-existing", action="store_true")
-    swebench_solve_batch_parser = swebench_subparsers.add_parser(
-        "solve-sandboxes",
-        help="solve multiple active prepared SWE-Bench sandboxes with a resumable state table",
-    )
-    swebench_solve_batch_parser.add_argument("--dataset", required=True)
-    solve_batch_source = swebench_solve_batch_parser.add_mutually_exclusive_group(required=True)
-    solve_batch_source.add_argument("--instance-id", action="append", dest="instance_ids")
-    solve_batch_source.add_argument("--instance-id-file")
-    swebench_solve_batch_parser.add_argument("--registry", required=True)
-    swebench_solve_batch_parser.add_argument("--jobs", type=int, default=1)
-    swebench_solve_batch_parser.add_argument("--max-steps", type=int, required=True)
-    swebench_solve_batch_parser.add_argument("--timeout-seconds", type=int, required=True)
-    swebench_solve_batch_parser.add_argument("--test-timeout-seconds", type=int, required=True)
-    swebench_solve_batch_parser.add_argument("--output-dir", required=True)
-    swebench_solve_batch_parser.add_argument("--state")
-    swebench_solve_batch_parser.add_argument("--include-pass-to-pass", action="store_true")
-    swebench_solve_batch_parser.add_argument("--cleanup", action="store_true")
-    swebench_solve_batch_parser.add_argument("--model")
-    swebench_solve_batch_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
     return parser
 
 
@@ -255,7 +256,7 @@ def _sandbox_list_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _swebench_run_command(args: argparse.Namespace) -> int:
+def _legacy_swebench_run_command(args: argparse.Namespace) -> int:
     """运行一个 parquet 数据集里的 SWE-Bench 实例。
 
     这个子命令把数据集、注册表、模型后端和 Docker CLI 拼接起来；具体容器生命周期
@@ -325,6 +326,31 @@ def _swebench_run_command(args: argparse.Namespace) -> int:
     except SandboxedRunRuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 4
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    return 0
+
+
+def _swebench_prepare_command(args: argparse.Namespace) -> int:
+    """Prepare official-style SWE-Bench runtime layers and one task environment."""
+    try:
+        prepare_official_swebench_runtime(
+            dataset_path=args.dataset,
+            instance_id=args.instance_id,
+            docker=DockerCli(),
+            output_dir=Path(args.output_dir),
+            active_index_path=Path(".coding-agent/active-sandboxes.json"),
+            build_missing=args.build_missing,
+            replace_existing=args.replace_existing,
+            arch=args.arch,
+        )
+    except (ValueError, SwebenchDatasetError, SandboxedRunInputError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 4
@@ -469,8 +495,63 @@ def _swebench_solve_sandboxes_command(args: argparse.Namespace) -> int:
         return 4
 
 
+def _swebench_run_command(args: argparse.Namespace) -> int:
+    """Run one SWE-Bench task through an active official-style prepared environment."""
+    try:
+        budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
+        if args.backend == "mock":
+            backend = MockBackend()
+            model_name = args.model or "mock-model"
+        else:
+            config = load_model_config(model_override=args.model)
+            backend = OpenAICompatibleBackend(config)
+            model_name = config.model
+        summary = run_prepared_swebench_runtime(
+            dataset_path=args.dataset,
+            instance_id=args.instance_id,
+            docker=DockerCli(),
+            backend=backend,
+            budget=budget,
+            model_name=model_name,
+            output_dir=Path(args.output_dir),
+            active_index_path=Path(".coding-agent/active-sandboxes.json"),
+            include_pass_to_pass=args.include_pass_to_pass,
+            cleanup=args.cleanup,
+        )
+        if summary.status is RunStatus.ERRORED:
+            print(summary.error or "sandboxed run failed", file=sys.stderr)
+            return 4
+    except (ValueError, SwebenchDatasetError, SandboxedRunInputError, MissingModelConfigError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ArtifactPersistenceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except SandboxedRunRuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    return 0
+
+
+def _reject_legacy_swebench_operation(argv: Sequence[str] | None) -> int | None:
+    args = tuple(sys.argv[1:] if argv is None else argv)
+    if len(args) < 2 or args[0] != "swebench":
+        return None
+    legacy_operation = LEGACY_SWEBENCH_OPERATIONS.get(args[1])
+    if legacy_operation is None:
+        return None
+    print(legacy_operation.error_message, file=sys.stderr)
+    return 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 入口，返回退出码而不是直接 sys.exit，方便测试。"""
+    legacy_exit_code = _reject_legacy_swebench_operation(argv)
+    if legacy_exit_code is not None:
+        return legacy_exit_code
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
@@ -493,16 +574,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("sandbox subcommand is required")
         return 2
     if args.command == "swebench":
+        if getattr(args, "swebench_command", None) == "prepare":
+            return _swebench_prepare_command(args)
         if getattr(args, "swebench_command", None) == "run":
             return _swebench_run_command(args)
-        if getattr(args, "swebench_command", None) == "prepare-sandbox":
-            return _swebench_prepare_sandbox_command(args)
-        if getattr(args, "swebench_command", None) == "solve-sandbox":
-            return _swebench_solve_sandbox_command(args)
-        if getattr(args, "swebench_command", None) == "prepare-sandboxes":
-            return _swebench_prepare_sandboxes_command(args)
-        if getattr(args, "swebench_command", None) == "solve-sandboxes":
-            return _swebench_solve_sandboxes_command(args)
         parser.error("swebench subcommand is required")
         return 2
     parser.error(f"command {args.command!r} is not implemented yet")

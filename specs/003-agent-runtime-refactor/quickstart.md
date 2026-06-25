@@ -221,3 +221,39 @@ Expected:
 - Unit, contract, and integration tests pass.
 - Real Docker checks remain opt-in/manual unless explicitly marked for the
   local environment.
+
+## 11. Implementation Compliance Checklist
+
+Before considering implementation complete, review changed runtime files for:
+
+- No branches on current test names, fixture instance ids, or expected outputs.
+- No per-instance image-key tables; instance image keys are computed from the
+  selected task record.
+- Static repo/version mappings exist only as source-backed domain metadata and
+  include a source reference plus review status.
+- Production code does not import the local `SWE-bench/` checkout at runtime.
+- Missing repo/version metadata fails before agent execution instead of using
+  guessed defaults.
+- `prepare` is the only operation allowed to build missing runtime layers.
+- `run` consumes only prepared environment metadata and does not build images.
+
+## 12. Phase 7 Verification Record
+
+Recorded on 2026-06-23 after completing the refactored runtime phases:
+
+- Focused unit verification:
+  `python -m pytest tests\unit\test_swebench_testspec.py tests\unit\test_swebench_repo_specs.py tests\unit\test_swebench_script_builders.py tests\unit\test_swebench_images.py tests\unit\test_swebench_grading.py tests\unit\test_container_tools.py tests\unit\test_sandbox_manager.py -q`
+  -> `32 passed`.
+- Focused contract verification:
+  `python -m pytest tests\contract\test_cli_swebench_run_contract.py tests\contract\test_cli_swebench_runtime_contract.py -q`
+  -> `14 passed`.
+- Focused integration verification:
+  `python -m pytest tests\integration -q`
+  -> `36 passed`.
+- Full verification:
+  `python -m pytest -q`
+  -> `198 passed`.
+- Compliance scan:
+  no runtime import from the local `SWE-bench/` checkout, no known fixture
+  instance-id or test-name branches, no expected-output shortcuts, and no
+  legacy SWE-Bench runtime parser/dispatch registrations.

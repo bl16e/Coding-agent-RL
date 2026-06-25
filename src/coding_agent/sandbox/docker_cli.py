@@ -97,6 +97,9 @@ class DockerCli:
     def remove_container(self, name: str) -> DockerResult:
         return self.run(["rm", "-f", name], check=False)
 
+    def build_image(self, *, image: str, dockerfile: str, context: str = ".") -> DockerResult:
+        return self.run(["build", "-t", image, "-f", "-", context], stdin=dockerfile)
+
     def exec(
         self,
         container: str,

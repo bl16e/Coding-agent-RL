@@ -101,3 +101,26 @@ def test_prepare_appends_short_run_id_to_container_name():
     )
 
     assert sandbox.container_name == "coding-agent-django__django-11099-12345678"
+
+
+def test_prepare_official_instance_uses_instance_image_and_source_backed_repo_path():
+    docker = RecordingDocker()
+    manager = TaskSandboxManager(docker=docker)
+
+    sandbox = manager.prepare_official_instance(
+        repo="django/django",
+        instance_id="django__django-11099",
+        base_commit="abc123",
+        instance_image_key="sweb.eval.x86_64.django__django-11099:latest",
+        repo_path="/testbed",
+        source_reference="specs/003-agent-runtime-refactor/runtime-image-audit.md",
+        run_id="12345678-90ab-cdef-1234-567890abcdef",
+    )
+
+    assert sandbox.base_image.image == "sweb.eval.x86_64.django__django-11099:latest"
+    assert sandbox.repo_path == "/testbed"
+    assert sandbox.base_image.compatibility_source == "specs/003-agent-runtime-refactor/runtime-image-audit.md"
+    assert docker.calls[0] == (
+        "create",
+        ("coding-agent-django__django-11099-12345678", "sweb.eval.x86_64.django__django-11099:latest"),
+    )

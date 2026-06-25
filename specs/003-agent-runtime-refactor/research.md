@@ -226,3 +226,49 @@ implementation proves otherwise.
 - `data/test-00000-of-00001.parquet`
 - `specs/003-agent-runtime-refactor/runtime-image-audit.md`
 - Docker CLI documentation for image build and container lifecycle commands
+
+## Implementation Reference Index
+
+Use these exact source sections while implementing the runtime refactor. They
+are reference inputs only; production code must not import the local
+`SWE-bench/` checkout at runtime.
+
+| Concern | Source section to consult | Implementation use |
+|---------|---------------------------|--------------------|
+| Adapted task spec fields and image keys | `SWE-bench/swebench/harness/test_spec/test_spec.py`: `TestSpec`, `base_image_key`, `env_image_key`, `instance_image_key`, `make_test_spec` | Derive this project's adapted spec shape and deterministic Base/Env/Instance image keys. |
+| Repo/version metadata lookup | `SWE-bench/swebench/harness/constants/__init__.py`: `MAP_REPO_VERSION_TO_SPECS`, `MAP_REPO_TO_EXT`; `SWE-bench/swebench/harness/constants/python.py`: `MAP_REPO_VERSION_TO_SPECS_PY` | Populate only source-backed repo/version metadata and reject missing entries. |
+| Repo, environment, and eval scripts | `SWE-bench/swebench/harness/test_spec/create_scripts.py`: `make_repo_script_list`, `make_env_script_list`, `make_eval_script_list`; `SWE-bench/swebench/harness/test_spec/python.py`: `get_test_directives`, `make_repo_script_list_py`, `make_env_script_list_py`, `make_eval_script_list_py` | Build source-derived setup scripts, allowed validation metadata, and adapted `eval_script`. |
+| Docker image build ordering | `SWE-bench/swebench/harness/docker_build.py`: `build_base_images`, `build_env_images`, `build_instance_images`, `build_instance_image` | Preserve base -> env -> instance planning, reuse detection, and explicit build behavior. |
+| Official-style grading | `SWE-bench/swebench/harness/grading.py`: `get_eval_report`, `get_resolution_status`, `FAIL_TO_PASS`, `PASS_TO_PASS` handling | Parse final `eval_script` output into fix-verification and regression results. |
+| Current dataset boundary | `src/coding_agent/swebench/dataset.py`: `SwebenchTaskRecord.from_row`, `load_task_record`, `load_task_records` | Extend existing normalization without bypassing the parquet-backed task record path. |
+| Current Docker wrapper boundary | `src/coding_agent/sandbox/docker_cli.py`: `DockerCli.run`, `image_exists`, `container_exists`, `create_container`, `exec`; `src/coding_agent/sandbox/manager.py`: `TaskSandboxManager.prepare`, `stop` | Keep Docker subprocess behavior inside the sandbox package. |
+| Docker CLI command semantics | Docker CLI reference: `docker image build`, `docker image inspect`, `docker container create`, `docker container start`, `docker container exec`, `docker container cp`, `docker container rm` | Match supported command shapes and lifecycle semantics when adding wrapper helpers. |
+
+## Phase 7 Implementation Review Notes
+
+- `src/coding_agent/swebench/repo_specs.py` loads supported repo/version pairs
+  from `specs/003-agent-runtime-refactor/runtime-image-audit.md` and assigns
+  `RepoSpecReviewStatus.SOURCE_BACKED` plus the same audit file as
+  `source_reference`; it does not embed per-test fixture branches.
+- `src/coding_agent/swebench/images.py` derives base and instance image keys
+  from source-backed TestSpec inputs and reads env image keys from the audit
+  document. There is no per-instance image table in production code.
+- `src/coding_agent/swebench/testspec.py` builds the adapted TestSpec from a
+  normalized dataset task record and a `RepoVersionSpec`; missing metadata
+  fails through the repository spec boundary instead of using guessed defaults.
+- `src/coding_agent/swebench/script_builders.py` constructs setup and eval
+  scripts from `RepoVersionSpec` and selected task validation identifiers. The
+  fallback behavior is explicit missing-metadata failure.
+- `src/coding_agent/swebench/validation.py` provides the new
+  `build_official_validation_set` path for prepared-runtime runs without
+  registry-template fallback; the older registered-template helper remains only
+  for legacy lower-level helpers and is not wired to the new `prepare`/`run`
+  benchmark CLI surface.
+- `src/coding_agent/swebench/sandbox_run.py` now contains both the new
+  official-style prepare/run orchestration and older helper functions retained
+  for internal compatibility. The public benchmark CLI is restricted in
+  `src/coding_agent/cli.py` to `swebench prepare` and `swebench run`, and old
+  sandbox/batch benchmark commands are rejected before agent execution.
+- Compliance scans for this phase check for runtime imports from the local
+  `SWE-bench/` checkout, known fixture instance IDs, test-name branches,
+  expected-output shortcuts, and unsupported legacy CLI parser registrations.

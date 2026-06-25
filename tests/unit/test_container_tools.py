@@ -159,3 +159,22 @@ def test_container_executor_rejects_unallowed_test_command():
     result = executor.execute(ToolName.RUN_TESTS, {"command": "python -m pytest"})
 
     assert result.status is Outcome.REJECTED
+
+
+def test_container_executor_confines_official_prepared_environment_to_repo_path():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="official-task",
+        repo_path="/testbed",
+        allowed_test_commands=("python -m pytest tests/test_issue.py",),
+        test_timeout_seconds=30,
+    )
+
+    ok = executor.execute(ToolName.READ_FILE, {"path": "README.md"})
+    escaped = executor.execute(ToolName.READ_FILE, {"path": "../outside.txt"})
+
+    assert ok.status is Outcome.OK
+    assert "/testbed/README.md" in docker.calls[0][1]
+    assert escaped.status is Outcome.REJECTED
+    assert len(docker.calls) == 1

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from coding_agent.models import BaseImage, ValidationTestSet
+from coding_agent.models import AdaptedTestSpec, BaseImage, ValidationTestSet
 from coding_agent.swebench.dataset import SwebenchTaskRecord
 
 
@@ -40,6 +40,33 @@ def _command_from_template(template: str, tests: tuple[str, ...]) -> str:
     if "{tests}" not in template:
         raise ValidationMetadataError("validation command template must contain {tests}")
     return template.replace("{tests}", " ".join(tests))
+
+
+def build_official_validation_set(
+    testspec: AdaptedTestSpec,
+    *,
+    include_pass_to_pass: bool = False,
+) -> ValidationTestSet:
+    """Build validation commands from the adapted TestSpec, without registry-template fallback."""
+    fail_to_pass = normalize_test_identifiers(testspec.fail_to_pass, "FAIL_TO_PASS")
+    if not fail_to_pass:
+        raise ValidationMetadataError("FAIL_TO_PASS must not be empty")
+    pass_to_pass = normalize_test_identifiers(testspec.pass_to_pass, "PASS_TO_PASS") if include_pass_to_pass else ()
+    selected_tests = fail_to_pass + pass_to_pass
+    if "{tests}" in testspec.eval_script:
+        command = _command_from_template(testspec.eval_script, selected_tests)
+    elif all(test in testspec.eval_script for test in selected_tests):
+        command = testspec.eval_script
+    else:
+        raise ValidationMetadataError("official eval_script must contain selected validation tests")
+    return ValidationTestSet(
+        fail_to_pass=fail_to_pass,
+        pass_to_pass=pass_to_pass,
+        command_source="official_testspec",
+        eval_script=testspec.eval_script,
+        allowed_commands=(command,),
+        include_pass_to_pass=include_pass_to_pass,
+    )
 
 
 def build_validation_test_set(

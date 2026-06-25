@@ -20,16 +20,16 @@
 
 **Purpose**: Establish the refactor workspace, source references, and test scaffolding without changing runtime behavior.
 
-- [ ] T001 Read the source-backed implementation references and record exact source sections to consult in `specs/003-agent-runtime-refactor/research.md`
-- [ ] T002 [P] Create the new runtime contract test file skeleton in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T003 [P] Create the official-style runtime integration test file skeleton in `tests/integration/test_swebench_official_runtime.py`
-- [ ] T004 [P] Create the adapted TestSpec unit test file skeleton in `tests/unit/test_swebench_testspec.py`
-- [ ] T005 [P] Create the source-backed repo metadata unit test file skeleton in `tests/unit/test_swebench_repo_specs.py`
-- [ ] T006 [P] Create the script builder unit test file skeleton in `tests/unit/test_swebench_script_builders.py`
-- [ ] T007 [P] Create the image graph unit test file skeleton in `tests/unit/test_swebench_images.py`
-- [ ] T008 [P] Create the grading unit test file skeleton in `tests/unit/test_swebench_grading.py`
-- [ ] T009 [P] Add official-runtime fake Docker helpers in `tests/unit/fakes/test_swebench_runtime_fakes.py`
-- [ ] T010 [P] Add shared SWE-Bench parquet fixture builders in `tests/helpers/swebench_fixtures.py`
+- [X] T001 Read the source-backed implementation references and record exact source sections to consult in `specs/003-agent-runtime-refactor/research.md`
+- [X] T002 [P] Create the new runtime contract test file skeleton in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [X] T003 [P] Create the official-style runtime integration test file skeleton in `tests/integration/test_swebench_official_runtime.py`
+- [X] T004 [P] Create the adapted TestSpec unit test file skeleton in `tests/unit/test_swebench_testspec.py`
+- [X] T005 [P] Create the source-backed repo metadata unit test file skeleton in `tests/unit/test_swebench_repo_specs.py`
+- [X] T006 [P] Create the script builder unit test file skeleton in `tests/unit/test_swebench_script_builders.py`
+- [X] T007 [P] Create the image graph unit test file skeleton in `tests/unit/test_swebench_images.py`
+- [X] T008 [P] Create the grading unit test file skeleton in `tests/unit/test_swebench_grading.py`
+- [X] T009 [P] Add official-runtime fake Docker helpers in `tests/unit/fakes/test_swebench_runtime_fakes.py`
+- [X] T010 [P] Add shared SWE-Bench parquet fixture builders in `tests/helpers/swebench_fixtures.py`
 
 ---
 
@@ -39,16 +39,16 @@
 
 **CRITICAL**: No user story implementation can begin until this phase is complete.
 
-- [ ] T011 Add source-backed runtime dataclasses for benchmark task records, adapted specs, runtime lineage, prepared environments, validation sets, eval reports, and unsupported legacy operations in `src/coding_agent/models.py`
-- [ ] T012 Extend SWE-Bench dataset normalization with repo version, environment setup commit, eval script, test patch, and explicit metadata errors in `src/coding_agent/swebench/dataset.py`
-- [ ] T013 [P] Create source-backed repo/version metadata lookup boundaries and review-status types in `src/coding_agent/swebench/repo_specs.py`
-- [ ] T014 [P] Create adapted TestSpec construction interfaces without production metadata values in `src/coding_agent/swebench/testspec.py`
-- [ ] T015 [P] Create source-derived setup/eval script builder interfaces in `src/coding_agent/swebench/script_builders.py`
-- [ ] T016 [P] Create image graph planning interfaces for base, env, and instance layers in `src/coding_agent/swebench/images.py`
-- [ ] T017 [P] Create official-style grading parser interfaces in `src/coding_agent/swebench/grading.py`
-- [ ] T018 Update SWE-Bench package exports for new modules in `src/coding_agent/swebench/__init__.py`
-- [ ] T019 Add explicit official-style runtime path metadata to sandbox metadata serialization in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T020 Add an implementation compliance checklist for source-backed mappings and no test gaming in `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T011 Add source-backed runtime dataclasses for benchmark task records, adapted specs, runtime lineage, prepared environments, validation sets, eval reports, and unsupported legacy operations in `src/coding_agent/models.py`
+- [X] T012 Extend SWE-Bench dataset normalization with repo version, environment setup commit, eval script, test patch, and explicit metadata errors in `src/coding_agent/swebench/dataset.py`
+- [X] T013 [P] Create source-backed repo/version metadata lookup boundaries and review-status types in `src/coding_agent/swebench/repo_specs.py`
+- [X] T014 [P] Create adapted TestSpec construction interfaces without production metadata values in `src/coding_agent/swebench/testspec.py`
+- [X] T015 [P] Create source-derived setup/eval script builder interfaces in `src/coding_agent/swebench/script_builders.py`
+- [X] T016 [P] Create image graph planning interfaces for base, env, and instance layers in `src/coding_agent/swebench/images.py`
+- [X] T017 [P] Create official-style grading parser interfaces in `src/coding_agent/swebench/grading.py`
+- [X] T018 Update SWE-Bench package exports for new modules in `src/coding_agent/swebench/__init__.py`
+- [X] T019 Add explicit official-style runtime path metadata to sandbox metadata serialization in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T020 Add an implementation compliance checklist for source-backed mappings and no test gaming in `specs/003-agent-runtime-refactor/quickstart.md`
 
 **Checkpoint**: Foundational types and module boundaries exist; story work can proceed in priority order or in parallel if staffed.
 
@@ -62,30 +62,30 @@
 
 ### Tests for User Story 1
 
-- [ ] T021 [P] [US1] Add contract tests for `coding-agent swebench prepare` argument parsing, `--registry` rejection, and `--build-missing` handling in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T022 [P] [US1] Add contract tests for `coding-agent swebench prepare` active index options, `--replace-existing` behavior, readiness output, and missing image failures in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T023 [P] [US1] Add dataset normalization tests for supported repo, unsupported repo, and missing source-backed metadata in `tests/unit/test_swebench_dataset.py`
-- [ ] T024 [P] [US1] Add source-backed repo metadata tests that reject fixture-only mappings and require source references in `tests/unit/test_swebench_repo_specs.py`
-- [ ] T025 [P] [US1] Add adapted TestSpec tests for deterministic repo path, env name, validation metadata, and image keys in `tests/unit/test_swebench_testspec.py`
-- [ ] T026 [P] [US1] Add script builder tests for repo setup, environment setup, eval script derivation, and missing metadata errors in `tests/unit/test_swebench_script_builders.py`
-- [ ] T027 [P] [US1] Add image graph tests for base -> env -> instance ordering, reuse detection, and no-build failure in `tests/unit/test_swebench_images.py`
-- [ ] T028 [P] [US1] Add fake-Docker integration tests for prepare readiness metadata and active environment indexing in `tests/integration/test_swebench_official_runtime.py`
+- [X] T021 [P] [US1] Add contract tests for `coding-agent swebench prepare` argument parsing, `--registry` rejection, and `--build-missing` handling in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [X] T022 [P] [US1] Add contract tests for `coding-agent swebench prepare` active index options, `--replace-existing` behavior, readiness output, and missing image failures in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [X] T023 [P] [US1] Add dataset normalization tests for supported repo, unsupported repo, and missing source-backed metadata in `tests/unit/test_swebench_dataset.py`
+- [X] T024 [P] [US1] Add source-backed repo metadata tests that reject fixture-only mappings and require source references in `tests/unit/test_swebench_repo_specs.py`
+- [X] T025 [P] [US1] Add adapted TestSpec tests for deterministic repo path, env name, validation metadata, and image keys in `tests/unit/test_swebench_testspec.py`
+- [X] T026 [P] [US1] Add script builder tests for repo setup, environment setup, eval script derivation, and missing metadata errors in `tests/unit/test_swebench_script_builders.py`
+- [X] T027 [P] [US1] Add image graph tests for base -> env -> instance ordering, reuse detection, and no-build failure in `tests/unit/test_swebench_images.py`
+- [X] T028 [P] [US1] Add fake-Docker integration tests for prepare readiness metadata and active environment indexing in `tests/integration/test_swebench_official_runtime.py`
 
 ### Implementation for User Story 1
 
-- [ ] T029 [US1] Implement source-backed local SWE-Bench Lite repo/version metadata from `specs/003-agent-runtime-refactor/runtime-image-audit.md` with source references and review status in `src/coding_agent/swebench/repo_specs.py`
-- [ ] T030 [US1] Implement `BenchmarkTaskRecord` normalization from parquet rows, including repo version and validation fields, in `src/coding_agent/swebench/dataset.py`
-- [ ] T031 [US1] Implement adapted TestSpec creation from `BenchmarkTaskRecord` plus `RepoVersionSpec` in `src/coding_agent/swebench/testspec.py`
-- [ ] T032 [US1] Implement repo setup, environment setup, instance setup, and eval script builders from adapted TestSpec in `src/coding_agent/swebench/script_builders.py`
-- [ ] T033 [US1] Implement deterministic base, env, and instance image key derivation matching `specs/003-agent-runtime-refactor/runtime-image-audit.md` in `src/coding_agent/swebench/images.py`
-- [ ] T034 [US1] Implement Docker image existence checks and missing-image planning in `src/coding_agent/swebench/images.py`
-- [ ] T035 [US1] Implement opt-in image builds in base -> env -> instance order with built/reused image recording in `src/coding_agent/swebench/images.py`
-- [ ] T036 [US1] Add Docker CLI build, inspect, create, copy, and exec helpers needed by official-style image preparation in `src/coding_agent/sandbox/docker_cli.py`
-- [ ] T037 [US1] Update task environment creation to use the official-style instance image and source-backed repo path in `src/coding_agent/sandbox/manager.py`
-- [ ] T038 [US1] Implement `prepare` orchestration that resolves task specs, checks/builds images, creates an active prepared environment, and writes `sandbox.json` in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T039 [US1] Implement active prepared environment indexing, readiness checks, and replace-existing behavior for `prepare` in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T040 [US1] Wire the `swebench prepare` CLI command with exit-code mapping in `src/coding_agent/cli.py`
-- [ ] T041 [US1] Run the US1 red/green checks from `specs/003-agent-runtime-refactor/quickstart.md` and update any command drift in `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T029 [US1] Implement source-backed local SWE-Bench Lite repo/version metadata from `specs/003-agent-runtime-refactor/runtime-image-audit.md` with source references and review status in `src/coding_agent/swebench/repo_specs.py`
+- [X] T030 [US1] Implement `BenchmarkTaskRecord` normalization from parquet rows, including repo version and validation fields, in `src/coding_agent/swebench/dataset.py`
+- [X] T031 [US1] Implement adapted TestSpec creation from `BenchmarkTaskRecord` plus `RepoVersionSpec` in `src/coding_agent/swebench/testspec.py`
+- [X] T032 [US1] Implement repo setup, environment setup, instance setup, and eval script builders from adapted TestSpec in `src/coding_agent/swebench/script_builders.py`
+- [X] T033 [US1] Implement deterministic base, env, and instance image key derivation matching `specs/003-agent-runtime-refactor/runtime-image-audit.md` in `src/coding_agent/swebench/images.py`
+- [X] T034 [US1] Implement Docker image existence checks and missing-image planning in `src/coding_agent/swebench/images.py`
+- [X] T035 [US1] Implement opt-in image builds in base -> env -> instance order with built/reused image recording in `src/coding_agent/swebench/images.py`
+- [X] T036 [US1] Add Docker CLI build, inspect, create, copy, and exec helpers needed by official-style image preparation in `src/coding_agent/sandbox/docker_cli.py`
+- [X] T037 [US1] Update task environment creation to use the official-style instance image and source-backed repo path in `src/coding_agent/sandbox/manager.py`
+- [X] T038 [US1] Implement `prepare` orchestration that resolves task specs, checks/builds images, creates an active prepared environment, and writes `sandbox.json` in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T039 [US1] Implement active prepared environment indexing, readiness checks, and replace-existing behavior for `prepare` in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T040 [US1] Wire the `swebench prepare` CLI command with exit-code mapping in `src/coding_agent/cli.py`
+- [X] T041 [US1] Run the US1 red/green checks from `specs/003-agent-runtime-refactor/quickstart.md` and update any command drift in `specs/003-agent-runtime-refactor/quickstart.md`
 
 **Checkpoint**: User Story 1 is independently usable as the MVP.
 
@@ -99,24 +99,24 @@
 
 ### Tests for User Story 2
 
-- [ ] T042 [P] [US2] Update `swebench run` contract tests to reject `--registry` and assert official-style runtime dispatch in `tests/contract/test_cli_swebench_run_contract.py`
-- [ ] T043 [P] [US2] Add `swebench run` contract tests for active index lookup, ready-only status enforcement, cleanup active-index removal, absence of `--build-missing`, and no image build behavior in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T044 [P] [US2] Add integration tests for run artifact creation from a prepared environment with the mock backend and fake Docker, including self-contained `summary.json` and `sandbox.json` review fields, in `tests/integration/test_swebench_official_runtime.py`
-- [ ] T045 [P] [US2] Add integration tests for prepare then run using the active environment index in `tests/integration/test_swebench_official_runtime.py`
-- [ ] T046 [P] [US2] Add runtime failure diagnostic tests that preserve partial artifacts after agent start and verify `--cleanup` records `running -> error` plus active-index removal in `tests/integration/test_errored_run_diagnostics.py`
-- [ ] T047 [P] [US2] Add container tool confinement tests for official-style prepared environments in `tests/unit/test_container_tools.py`
+- [X] T042 [P] [US2] Update `swebench run` contract tests to reject `--registry` and assert official-style runtime dispatch in `tests/contract/test_cli_swebench_run_contract.py`
+- [X] T043 [P] [US2] Add `swebench run` contract tests for active index lookup, ready-only status enforcement, cleanup active-index removal, absence of `--build-missing`, and no image build behavior in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [X] T044 [P] [US2] Add integration tests for run artifact creation from a prepared environment with the mock backend and fake Docker, including self-contained `summary.json` and `sandbox.json` review fields, in `tests/integration/test_swebench_official_runtime.py`
+- [X] T045 [P] [US2] Add integration tests for prepare then run using the active environment index in `tests/integration/test_swebench_official_runtime.py`
+- [X] T046 [P] [US2] Add runtime failure diagnostic tests that preserve partial artifacts after agent start and verify `--cleanup` records `running -> error` plus active-index removal in `tests/integration/test_errored_run_diagnostics.py`
+- [X] T047 [P] [US2] Add container tool confinement tests for official-style prepared environments in `tests/unit/test_container_tools.py`
 
 ### Implementation for User Story 2
 
-- [ ] T048 [US2] Refactor `run_swebench_task` orchestration to require an active prepared environment and remove default legacy registry dependency in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T049 [US2] Implement `run_prepared` orchestration with active environment metadata validation in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T050 [US2] Update active prepared environment index load/save metadata for repo version, runtime lineage, sandbox JSON paths, used-status retention without cleanup, and active-index removal with cleanup in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T051 [US2] Inject `ContainerToolExecutor` using the prepared environment repo path and official validation set in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T052 [US2] Preserve post-start failure artifacts including `summary.json`, `trajectory.jsonl`, `trajectory.json`, `prediction.jsonl`, `final.patch`, and `sandbox.json` in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T053 [US2] Export final container diff and prediction JSONL from the official-style prepared environment in `src/coding_agent/swebench/prediction.py`
-- [ ] T054 [US2] Add runtime lineage, prepared-environment status transition, cleanup action, active-index result, validation source, selected validation mode, and artifact locations to run summaries in `src/coding_agent/trajectory/summary.py`
-- [ ] T055 [US2] Wire the `swebench run` CLI command to official-style prepared-environment orchestration and exit-code mapping in `src/coding_agent/cli.py`
-- [ ] T056 [US2] Run the US2 prepare-then-run checks from `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T048 [US2] Refactor `run_swebench_task` orchestration to require an active prepared environment and remove default legacy registry dependency in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T049 [US2] Implement `run_prepared` orchestration with active environment metadata validation in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T050 [US2] Update active prepared environment index load/save metadata for repo version, runtime lineage, sandbox JSON paths, used-status retention without cleanup, and active-index removal with cleanup in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T051 [US2] Inject `ContainerToolExecutor` using the prepared environment repo path and official validation set in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T052 [US2] Preserve post-start failure artifacts including `summary.json`, `trajectory.jsonl`, `trajectory.json`, `prediction.jsonl`, `final.patch`, and `sandbox.json` in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T053 [US2] Export final container diff and prediction JSONL from the official-style prepared environment in `src/coding_agent/swebench/prediction.py`
+- [X] T054 [US2] Add runtime lineage, prepared-environment status transition, cleanup action, active-index result, validation source, selected validation mode, and artifact locations to run summaries in `src/coding_agent/trajectory/summary.py`
+- [X] T055 [US2] Wire the `swebench run` CLI command to official-style prepared-environment orchestration and exit-code mapping in `src/coding_agent/cli.py`
+- [X] T056 [US2] Run the US2 prepare-then-run checks from `specs/003-agent-runtime-refactor/quickstart.md`
 
 **Checkpoint**: User Stories 1 and 2 both work independently with the mock backend and fake Docker tests.
 
@@ -130,21 +130,21 @@
 
 ### Tests for User Story 3
 
-- [ ] T057 [P] [US3] Add validation set tests for default `FAIL_TO_PASS`, opt-in `PASS_TO_PASS`, and source-backed command provenance in `tests/unit/test_swebench_validation.py`
-- [ ] T058 [P] [US3] Add official-style `eval_script` output grading tests for fixed checks, regression checks, missing output, and unparsable output in `tests/unit/test_swebench_grading.py`
-- [ ] T059 [P] [US3] Add disallowed validation command rejection tests for the container test tool in `tests/unit/test_tool_run_tests.py`
-- [ ] T060 [P] [US3] Add final patch exclusion tests for validation-only task files and patches in `tests/unit/test_patch.py`
-- [ ] T061 [P] [US3] Add integration tests for validation patch apply/reset behavior in `tests/integration/test_swebench_validation_integration.py`
+- [X] T057 [P] [US3] Add validation set tests for default `FAIL_TO_PASS`, opt-in `PASS_TO_PASS`, and source-backed command provenance in `tests/unit/test_swebench_validation.py`
+- [X] T058 [P] [US3] Add official-style `eval_script` output grading tests for fixed checks, regression checks, missing output, and unparsable output in `tests/unit/test_swebench_grading.py`
+- [X] T059 [P] [US3] Add disallowed validation command rejection tests for the container test tool in `tests/unit/test_tool_run_tests.py`
+- [X] T060 [P] [US3] Add final patch exclusion tests for validation-only task files and patches in `tests/unit/test_patch.py`
+- [X] T061 [P] [US3] Add integration tests for validation patch apply/reset behavior in `tests/integration/test_swebench_validation_integration.py`
 
 ### Implementation for User Story 3
 
-- [ ] T062 [US3] Replace registered-template default validation with adapted TestSpec validation and reject legacy registry-template validation for new benchmark runs in `src/coding_agent/swebench/validation.py`
-- [ ] T063 [US3] Implement validation command allow-list construction and disallowed command recording in `src/coding_agent/swebench/validation.py`
-- [ ] T064 [US3] Implement official-style adapted TestSpec `eval_script` output parsing into `EvalReport` in `src/coding_agent/swebench/grading.py`
-- [ ] T065 [US3] Integrate final `eval_script` execution and grading into run summaries and sandbox metadata in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T066 [US3] Ensure test patches are applied only for validation and reset or excluded before final diff export in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T067 [US3] Update container-backed `run_tests` enforcement to reject commands outside the selected validation set in `src/coding_agent/tools/run_tests.py`
-- [ ] T068 [US3] Run the US3 validation checks from `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T062 [US3] Replace registered-template default validation with adapted TestSpec validation and reject legacy registry-template validation for new benchmark runs in `src/coding_agent/swebench/validation.py`
+- [X] T063 [US3] Implement validation command allow-list construction and disallowed command recording in `src/coding_agent/swebench/validation.py`
+- [X] T064 [US3] Implement official-style adapted TestSpec `eval_script` output parsing into `EvalReport` in `src/coding_agent/swebench/grading.py`
+- [X] T065 [US3] Integrate final `eval_script` execution and grading into run summaries and sandbox metadata in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T066 [US3] Ensure test patches are applied only for validation and reset or excluded before final diff export in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T067 [US3] Update container-backed `run_tests` enforcement to reject commands outside the selected validation set in `src/coding_agent/tools/run_tests.py`
+- [X] T068 [US3] Run the US3 validation checks from `specs/003-agent-runtime-refactor/quickstart.md`
 
 **Checkpoint**: User Stories 1, 2, and 3 provide an official-style single-task benchmark runtime path with source-backed validation.
 
@@ -158,19 +158,19 @@
 
 ### Tests for User Story 4
 
-- [ ] T069 [P] [US4] Add CLI help/parse contract tests proving only `swebench prepare` and `swebench run` are supported benchmark runtime operations in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T070 [P] [US4] Add contract tests rejecting legacy `--registry` input on new `prepare` and `run` commands in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T071 [P] [US4] Add contract tests rejecting old `prepare-sandbox` and `solve-sandbox` SWE-Bench runtime commands in `tests/contract/test_cli_swebench_runtime_contract.py`
-- [ ] T072 [P] [US4] Add contract tests rejecting old `prepare-sandboxes` and `solve-sandboxes` batch benchmark commands in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [X] T069 [P] [US4] Add CLI help/parse contract tests proving only `swebench prepare` and `swebench run` are supported benchmark runtime operations in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [X] T070 [P] [US4] Add contract tests rejecting legacy `--registry` input on new `prepare` and `run` commands in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [X] T071 [P] [US4] Add contract tests rejecting old `prepare-sandbox` and `solve-sandbox` SWE-Bench runtime commands in `tests/contract/test_cli_swebench_runtime_contract.py`
+- [X] T072 [P] [US4] Add contract tests rejecting old `prepare-sandboxes` and `solve-sandboxes` batch benchmark commands in `tests/contract/test_cli_swebench_runtime_contract.py`
 
 ### Implementation for User Story 4
 
-- [ ] T073 [US4] Remove or reject legacy SWE-Bench runtime subcommands from `src/coding_agent/cli.py` so the supported benchmark runtime surface is only `prepare` and `run`
-- [ ] T074 [US4] Remove `--registry` parsing and registry-based dispatch from new SWE-Bench `prepare` and `run` flows in `src/coding_agent/cli.py`
-- [ ] T075 [US4] Remove default `SandboxRegistry` lookup/fallback from new SWE-Bench runtime orchestration in `src/coding_agent/swebench/sandbox_run.py`
-- [ ] T076 [US4] Add unsupported-operation errors for legacy sandbox and batch benchmark runtime requests in `src/coding_agent/cli.py`
-- [ ] T077 [US4] Update CLI help and developer-facing messages to direct benchmark users to `swebench prepare` and `swebench run` only in `src/coding_agent/cli.py`
-- [ ] T078 [US4] Run the US4 legacy-operation rejection checks from `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T073 [US4] Remove or reject legacy SWE-Bench runtime subcommands from `src/coding_agent/cli.py` so the supported benchmark runtime surface is only `prepare` and `run`
+- [X] T074 [US4] Remove `--registry` parsing and registry-based dispatch from new SWE-Bench `prepare` and `run` flows in `src/coding_agent/cli.py`
+- [X] T075 [US4] Remove default `SandboxRegistry` lookup/fallback from new SWE-Bench runtime orchestration in `src/coding_agent/swebench/sandbox_run.py`
+- [X] T076 [US4] Add unsupported-operation errors for legacy sandbox and batch benchmark runtime requests in `src/coding_agent/cli.py`
+- [X] T077 [US4] Update CLI help and developer-facing messages to direct benchmark users to `swebench prepare` and `swebench run` only in `src/coding_agent/cli.py`
+- [X] T078 [US4] Run the US4 legacy-operation rejection checks from `specs/003-agent-runtime-refactor/quickstart.md`
 
 **Checkpoint**: The benchmark runtime command surface exposes only `prepare` and `run`; old registry, sandbox, and batch SWE-Bench runtime operations fail before agent execution.
 
@@ -180,19 +180,19 @@
 
 **Purpose**: Validate the whole refactor, tighten documentation, and check for constitution compliance.
 
-- [ ] T079 [P] Update developer-facing runtime notes and command examples in `README.md`
-- [ ] T080 [P] Update source-backed metadata documentation and review status notes in `specs/003-agent-runtime-refactor/research.md`
-- [ ] T081 Run focused unit tests listed in `specs/003-agent-runtime-refactor/quickstart.md`
-- [ ] T082 Run focused contract tests listed in `specs/003-agent-runtime-refactor/quickstart.md`
-- [ ] T083 Run focused integration tests listed in `specs/003-agent-runtime-refactor/quickstart.md`
-- [ ] T084 Run full verification command `python -m pytest -q` and record the result in `specs/003-agent-runtime-refactor/quickstart.md`
-- [ ] T085 Review `src/coding_agent/swebench/repo_specs.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
-- [ ] T086 Review `src/coding_agent/swebench/testspec.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
-- [ ] T087 Review `src/coding_agent/swebench/script_builders.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
-- [ ] T088 Review `src/coding_agent/swebench/images.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
-- [ ] T089 Review `src/coding_agent/swebench/validation.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
-- [ ] T090 Review `src/coding_agent/swebench/sandbox_run.py` for broad coupling and split helper functions if responsibilities exceed the plan boundaries
-- [ ] T091 Run `git diff --check -- specs/003-agent-runtime-refactor src tests README.md` and fix whitespace issues in changed files
+- [X] T079 [P] Update developer-facing runtime notes and command examples in `README.md`
+- [X] T080 [P] Update source-backed metadata documentation and review status notes in `specs/003-agent-runtime-refactor/research.md`
+- [X] T081 Run focused unit tests listed in `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T082 Run focused contract tests listed in `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T083 Run focused integration tests listed in `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T084 Run full verification command `python -m pytest -q` and record the result in `specs/003-agent-runtime-refactor/quickstart.md`
+- [X] T085 Review `src/coding_agent/swebench/repo_specs.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
+- [X] T086 Review `src/coding_agent/swebench/testspec.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
+- [X] T087 Review `src/coding_agent/swebench/script_builders.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
+- [X] T088 Review `src/coding_agent/swebench/images.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
+- [X] T089 Review `src/coding_agent/swebench/validation.py` for undocumented static mappings, fixture-only branches, and expected-output shortcuts
+- [X] T090 Review `src/coding_agent/swebench/sandbox_run.py` for broad coupling and split helper functions if responsibilities exceed the plan boundaries
+- [X] T091 Run `git diff --check -- specs/003-agent-runtime-refactor src tests README.md` and fix whitespace issues in changed files
 
 ---
 

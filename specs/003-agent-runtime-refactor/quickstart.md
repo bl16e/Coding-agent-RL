@@ -210,15 +210,16 @@ Expected:
 ## 10. Full Verification
 
 ```powershell
-python -m pytest tests\unit -q
-python -m pytest tests\contract -q
-python -m pytest tests\integration -q
+python -m pytest tests\unit\test_swebench_repo_specs.py tests\unit\test_swebench_script_builders.py tests\unit\test_swebench_images.py tests\unit\test_swebench_grading.py -q
+python -m pytest tests\integration\test_swebench_official_runtime.py tests\integration\test_errored_run_diagnostics.py -q
+python -m pytest tests\contract\test_cli_swebench_runtime_contract.py tests\contract\test_cli_swebench_run_contract.py -q
 python -m pytest -q
 ```
 
 Expected:
 
-- Unit, contract, and integration tests pass.
+- Focused runtime remediation unit, integration, and contract tests pass.
+- The full test suite passes.
 - Real Docker checks remain opt-in/manual unless explicitly marked for the
   local environment.
 

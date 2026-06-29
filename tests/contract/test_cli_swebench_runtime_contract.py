@@ -4,7 +4,7 @@ from pathlib import Path
 
 from coding_agent.cli import main
 from coding_agent.models import PreparedTaskEnvironment, PreparedEnvironmentStatus, RunStatus, RuntimeLineage
-from tests.helpers.swebench_fixtures import write_swebench_parquet
+from tests.helpers.swebench_fixtures import swebench_row, write_swebench_parquet
 
 
 LEGACY_SANDBOX_COMMANDS = ("prepare-sandbox", "solve-sandbox")
@@ -195,6 +195,29 @@ def test_swebench_prepare_reports_missing_images_before_agent_execution(tmp_path
 
     assert exit_code == 2
     assert "missing runtime images" in capsys.readouterr().err
+
+
+def test_swebench_prepare_rejects_missing_source_backed_repo_metadata(tmp_path: Path, capsys):
+    dataset = write_swebench_parquet(
+        tmp_path / "dataset.parquet",
+        rows=[swebench_row(repo="django/django", version="0.0")],
+    )
+
+    exit_code = main(
+        [
+            "swebench",
+            "prepare",
+            "--dataset",
+            str(dataset),
+            "--instance-id",
+            "django__django-11099",
+            "--output-dir",
+            str(tmp_path / "prepare"),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "missing source-backed metadata" in capsys.readouterr().err
 
 
 def test_swebench_run_rejects_build_missing_argument(tmp_path: Path, capsys):

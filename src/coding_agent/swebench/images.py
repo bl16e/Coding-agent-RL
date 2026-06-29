@@ -87,12 +87,55 @@ def inspect_image_graph(testspec: AdaptedTestSpec, *, docker, build_missing: boo
     return plan_image_graph(testspec, existing_images=existing, build_missing=build_missing)
 
 
+def base_dockerfile(testspec: AdaptedTestSpec) -> str:
+    return "\n".join(
+        [
+            "FROM ubuntu:22.04",
+            "ENV DEBIAN_FRONTEND=noninteractive",
+            "RUN apt-get update && apt-get install -y git curl ca-certificates bash && rm -rf /var/lib/apt/lists/*",
+            "",
+        ]
+    )
+
+
+def env_dockerfile(testspec: AdaptedTestSpec) -> str:
+    return "\n".join(
+        [
+            f"FROM {testspec.base_image_key}",
+            'SHELL ["/bin/bash", "-lc"]',
+            "RUN cat > /tmp/setup_env.sh <<'EOF_ENV'",
+            testspec.env_script,
+            "EOF_ENV",
+            "RUN bash /tmp/setup_env.sh",
+            "",
+        ]
+    )
+
+
+def instance_dockerfile(testspec: AdaptedTestSpec) -> str:
+    return "\n".join(
+        [
+            f"FROM {testspec.env_image_key}",
+            'SHELL ["/bin/bash", "-lc"]',
+            "RUN cat > /tmp/setup_repo.sh <<'EOF_REPO'",
+            testspec.repo_script,
+            "EOF_REPO",
+            "RUN bash /tmp/setup_repo.sh",
+            "RUN cat > /opt/swebench_eval.sh <<'EOF_EVAL'",
+            testspec.eval_script,
+            "EOF_EVAL",
+            "RUN chmod +x /opt/swebench_eval.sh",
+            "",
+        ]
+    )
+
+
 def build_missing_images(testspec: AdaptedTestSpec, *, docker, plan: ImageGraphPlan) -> tuple[str, ...]:
     built: list[str] = []
     dockerfiles = {
-        testspec.base_image_key: "base Dockerfile",
-        testspec.env_image_key: "env Dockerfile",
-        testspec.instance_image_key: "instance Dockerfile",
+        testspec.base_image_key: base_dockerfile(testspec),
+        testspec.env_image_key: env_dockerfile(testspec),
+        testspec.instance_image_key: instance_dockerfile(testspec),
     }
     for image in plan.ordered_image_keys:
         if image not in plan.missing_images:

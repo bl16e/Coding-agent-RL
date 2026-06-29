@@ -13,26 +13,28 @@ from coding_agent.swebench.images import (
 )
 
 
-def _testspec() -> AdaptedTestSpec:
-    return AdaptedTestSpec(
-        instance_id="django__django-11099",
-        repo="django/django",
-        version="3.0",
-        base_commit="abc123",
-        repo_path="/testbed",
-        env_name="testbed",
-        fail_to_pass=("tests/test_issue.py::test_fix",),
-        repo_script="repo setup",
-        env_script="env setup",
-        eval_script="python -m pytest {tests}",
-        language="py",
-        arch="x86_64",
-        platform="linux/x86_64",
-        base_image_key="sweb.base.py.x86_64:latest",
-        env_image_key="sweb.env.py.x86_64.hash:latest",
-        instance_image_key="sweb.eval.x86_64.django__django-11099:latest",
-        repo_version_source="SWE-bench/swebench/harness/constants/python.py",
-    )
+def _testspec(**overrides) -> AdaptedTestSpec:
+    values = {
+        "instance_id": "django__django-11099",
+        "repo": "django/django",
+        "version": "3.0",
+        "base_commit": "abc123",
+        "repo_path": "/testbed",
+        "env_name": "testbed",
+        "fail_to_pass": ("tests/test_issue.py::test_fix",),
+        "repo_script": "repo setup",
+        "env_script": "env setup",
+        "eval_script": "python -m pytest {tests}",
+        "language": "py",
+        "arch": "x86_64",
+        "platform": "linux/x86_64",
+        "base_image_key": "sweb.base.py.x86_64:latest",
+        "env_image_key": "sweb.env.py.x86_64.hash:latest",
+        "instance_image_key": "sweb.eval.x86_64.django__django-11099:latest",
+        "repo_version_source": "SWE-bench/swebench/harness/constants/python.py",
+    }
+    values.update(overrides)
+    return AdaptedTestSpec(**values)
 
 
 def test_image_graph_records_reuse_and_missing_layers_in_order():
@@ -80,3 +82,24 @@ def test_build_missing_images_runs_base_env_instance_order():
         "sweb.eval.x86_64.django__django-11099:latest",
     )
     assert [call[0] for call in docker.calls] == ["build_image", "build_image", "build_image"]
+
+
+def test_build_missing_images_uses_testspec_scripts_in_dockerfiles():
+    docker = FakeOfficialRuntimeDocker()
+    plan = plan_image_graph(_testspec(), existing_images=set(), build_missing=True)
+
+    build_missing_images(
+        _testspec(
+            repo_script="git clone repo",
+            env_script="conda create -n testbed python=3.11 -y",
+            eval_script="echo eval",
+        ),
+        docker=docker,
+        plan=plan,
+    )
+
+    dockerfiles = {call[1][0]: call[1][1] for call in docker.calls if call[0] == "build_image"}
+    assert "FROM ubuntu" in dockerfiles["sweb.base.py.x86_64:latest"]
+    assert "conda create -n testbed python=3.11 -y" in dockerfiles["sweb.env.py.x86_64.hash:latest"]
+    assert "git clone repo" in dockerfiles["sweb.eval.x86_64.django__django-11099:latest"]
+    assert "echo eval" in dockerfiles["sweb.eval.x86_64.django__django-11099:latest"]

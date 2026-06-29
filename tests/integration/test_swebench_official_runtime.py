@@ -179,7 +179,15 @@ class EvalRecordingDocker(FakeOfficialRuntimeDocker):
             )
         if command[:2] == ["sh", "-lc"] and "pytest" in command[-1]:
             return type(super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin))(
-                '{"tests_status": {"tests/test_issue.py::test_fix": "PASSED", "tests/test_regression.py::test_old": "PASSED"}}',
+                "\n".join(
+                    [
+                        "setup text",
+                        ">>>>> Start Test Output",
+                        "tests/test_issue.py::test_fix PASSED",
+                        "tests/test_regression.py::test_old PASSED",
+                        ">>>>> End Test Output",
+                    ]
+                ),
                 "",
                 0,
             )

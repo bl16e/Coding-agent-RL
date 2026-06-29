@@ -648,6 +648,8 @@ def _run_final_eval(
         try:
             return parse_eval_report(
                 raw_output,
+                repo=prepared.repo,
+                version=prepared.version,
                 fail_to_pass=validation.fail_to_pass,
                 pass_to_pass=validation.pass_to_pass,
                 raw_output_artifact=str(eval_log),

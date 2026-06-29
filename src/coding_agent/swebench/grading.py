@@ -10,6 +10,10 @@ class EvalOutputParseError(ValueError):
     """Raised when final eval output cannot be translated into a status map."""
 
 
+START_TEST_OUTPUT = ">>>>> Start Test Output"
+END_TEST_OUTPUT = ">>>>> End Test Output"
+
+
 def build_eval_report_contract(
     *,
     fail_to_pass: tuple[str, ...],
@@ -40,9 +44,34 @@ def _status_map_from_json(payload: object) -> dict[str, str]:
     return {str(test): str(status).upper() for test, status in status_map.items()}
 
 
+def _extract_official_test_output(output: str) -> str:
+    if START_TEST_OUTPUT not in output or END_TEST_OUTPUT not in output:
+        raise EvalOutputParseError("missing official eval markers")
+    return output.split(START_TEST_OUTPUT, 1)[1].split(END_TEST_OUTPUT, 1)[0]
+
+
+def _parse_pytest_statuses(test_output: str) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    terminal_statuses = {"PASSED", "FAILED", "ERROR", "XFAIL", "XPASS", "SKIPPED"}
+    for line in test_output.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[-1] in terminal_statuses:
+            statuses[parts[0]] = parts[-1]
+    return statuses
+
+
+def _status_map_from_official_output(output: str, *, repo: str, version: str) -> dict[str, str]:
+    test_output = _extract_official_test_output(output)
+    if repo == "django/django" or repo.startswith("pytest-dev/"):
+        return _parse_pytest_statuses(test_output)
+    raise EvalOutputParseError(f"unsupported eval output parser for {repo}@{version}")
+
+
 def parse_eval_report(
     output: str,
     *,
+    repo: str,
+    version: str,
     fail_to_pass: tuple[str, ...],
     pass_to_pass: tuple[str, ...] = (),
     raw_output_artifact: str | None = None,
@@ -55,10 +84,13 @@ def parse_eval_report(
             passed_tests=set(),
             raw_output_artifact=raw_output_artifact,
         )
-    try:
-        status_map = _status_map_from_json(json.loads(output))
-    except json.JSONDecodeError as exc:
-        raise EvalOutputParseError("eval output is not JSON") from exc
+    if output.lstrip().startswith("{"):
+        try:
+            status_map = _status_map_from_json(json.loads(output))
+        except json.JSONDecodeError as exc:
+            raise EvalOutputParseError("eval output is not valid JSON") from exc
+    else:
+        status_map = _status_map_from_official_output(output, repo=repo, version=version)
     passed = {
         test
         for test, status in status_map.items()

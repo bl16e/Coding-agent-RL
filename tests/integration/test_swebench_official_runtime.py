@@ -9,8 +9,10 @@ from coding_agent.model_backends.base import AgentAction, AgentActionType
 from coding_agent.model_backends.mock import MockBackend
 from coding_agent.models import BaseImage, ValidationTestSet
 from coding_agent.models import RunBudget
+from coding_agent.sandbox.docker_cli import DockerResult
 from coding_agent.swebench import sandbox_run
 from coding_agent.swebench.sandbox_run import (
+    SandboxedRunInputError,
     _sandbox_payload,
     prepare_official_swebench_runtime,
 )
@@ -120,6 +122,27 @@ def test_prepare_official_runtime_rejects_duplicate_active_entry_before_containe
     assert not any(call[0] == "create" for call in docker.calls)
 
 
+def test_prepare_fails_when_workspace_is_dirty(tmp_path: Path):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    docker = FakeOfficialRuntimeDocker(
+        present_images=set(PRESENT_IMAGES),
+        exec_results={
+            ("git", "-C", "/testbed", "status", "--porcelain"): DockerResult("M app.py\n", "", 0),
+        },
+    )
+
+    with pytest.raises(SandboxedRunInputError, match="workspace is not clean"):
+        prepare_official_swebench_runtime(
+            dataset_path=dataset,
+            instance_id="django__django-11099",
+            docker=docker,
+            output_dir=tmp_path / "prepare",
+            active_index_path=tmp_path / ".coding-agent" / "active-sandboxes.json",
+        )
+
+    assert not (tmp_path / ".coding-agent" / "active-sandboxes.json").exists()
+
+
 def test_run_prepared_official_runtime_writes_artifacts_and_review_metadata(tmp_path: Path):
     dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
     docker = FakeOfficialRuntimeDocker(
@@ -167,18 +190,47 @@ def test_run_prepared_official_runtime_writes_artifacts_and_review_metadata(tmp_
     assert not any(call[0] == "build_image" for call in docker.calls)
 
 
+def test_run_fails_before_agent_when_container_is_not_running(tmp_path: Path):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    docker = FakeOfficialRuntimeDocker(present_images=set(PRESENT_IMAGES))
+    index_path = tmp_path / ".coding-agent" / "active-sandboxes.json"
+    prepare_official_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        output_dir=tmp_path / "prepare",
+        active_index_path=index_path,
+    )
+    assert docker.running_containers is not None
+    docker.running_containers.clear()
+
+    with pytest.raises(SandboxedRunInputError, match="container is not ready"):
+        sandbox_run.run_prepared_swebench_runtime(
+            dataset_path=dataset,
+            instance_id="django__django-11099",
+            docker=docker,
+            backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+            budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
+            model_name="mock-model",
+            output_dir=tmp_path / "run",
+            active_index_path=index_path,
+        )
+
+    assert not (tmp_path / "run" / "trajectory.jsonl").exists()
+
+
 class EvalRecordingDocker(FakeOfficialRuntimeDocker):
     def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None):
         self.calls.append(("exec", (container, tuple(command), timeout_seconds)))
         self.stdin_by_call.append(stdin)
         if command[:2] == ["git", "-C"] and "diff" in command:
-            return type(super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin))(
+            return DockerResult(
                 self.diff_output,
                 "",
                 0,
             )
         if command[:2] == ["sh", "-lc"] and "pytest" in command[-1]:
-            return type(super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin))(
+            return DockerResult(
                 "\n".join(
                     [
                         "setup text",
@@ -191,7 +243,9 @@ class EvalRecordingDocker(FakeOfficialRuntimeDocker):
                 "",
                 0,
             )
-        return type(super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin))("", "", 0)
+        self.calls.pop()
+        self.stdin_by_call.pop()
+        return super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin)
 
 
 def test_run_executes_final_eval_and_excludes_validation_patch_from_final_diff(tmp_path: Path):

@@ -300,6 +300,47 @@ def _task_sandbox_from_prepared(prepared: PreparedTaskEnvironment) -> TaskSandbo
     )
 
 
+def _exec_ready_command(docker: DockerCli, prepared: PreparedTaskEnvironment, command: list[str]) -> Any:
+    try:
+        result = docker.exec(prepared.container_name, command)
+    except Exception as exc:
+        raise SandboxedRunInputError("container is not ready") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        message = "container is not ready" + (f": {detail}" if detail else "")
+        raise SandboxedRunInputError(message)
+    return result
+
+
+def _official_ready_checks(
+    docker: DockerCli,
+    prepared: PreparedTaskEnvironment,
+    testspec: Any,
+) -> dict[str, Any]:
+    _exec_ready_command(docker, prepared, ["true"])
+    head = _exec_ready_command(
+        docker,
+        prepared,
+        ["git", "-C", prepared.repo_path, "rev-parse", "HEAD"],
+    ).stdout.strip()
+    if head != prepared.base_commit:
+        raise SandboxedRunInputError("prepared environment base commit does not match requested task")
+    status = _exec_ready_command(
+        docker,
+        prepared,
+        ["git", "-C", prepared.repo_path, "status", "--porcelain"],
+    ).stdout.strip()
+    if status:
+        raise SandboxedRunInputError("prepared workspace is not clean")
+    return {
+        "container_exec": {"ok": True},
+        "task_identity": {"ok": True, "instance_id": prepared.instance_id},
+        "base_commit": {"ok": True, "base_commit": head},
+        "workspace_clean": {"ok": True},
+        "validation_source": {"ok": True, "source": testspec.repo_version_source},
+    }
+
+
 def prepare_official_swebench_runtime(
     *,
     dataset_path: str | Path,
@@ -346,12 +387,7 @@ def prepare_official_swebench_runtime(
         run_id=str(uuid.uuid4()),
     )
     sandbox_json_path = output_path / "sandbox.json"
-    ready_checks = {
-        "container_exec": {"ok": True},
-        "task_identity": {"ok": True, "instance_id": task_record.instance_id},
-        "base_commit": {"ok": True, "base_commit": task_record.base_commit},
-        "validation_source": {"ok": True, "source": testspec.repo_version_source},
-    }
+    ready_checks: dict[str, Any] = {}
     prepared = PreparedTaskEnvironment(
         instance_id=task_record.instance_id,
         repo=task_record.repo,
@@ -364,6 +400,8 @@ def prepare_official_swebench_runtime(
         ready_checks=ready_checks,
         sandbox_json=sandbox_json_path,
     )
+    ready_checks = _official_ready_checks(docker, prepared, testspec)
+    prepared = replace(prepared, ready_checks=ready_checks)
     output_path.mkdir(parents=True, exist_ok=True)
     sandbox_json_path.write_text(
         json.dumps(_official_sandbox_payload(prepared=prepared, status=prepared.status, ready_checks=ready_checks), indent=2),
@@ -684,6 +722,8 @@ def run_prepared_swebench_runtime(
     validation = build_official_validation_set(testspec, include_pass_to_pass=include_pass_to_pass)
     prepared = _load_active_prepared_environment(index_path, instance_id)
     _validate_active_prepared_environment(prepared, task_record)
+    ready_checks = _official_ready_checks(docker, prepared, testspec)
+    prepared = replace(prepared, ready_checks=ready_checks)
 
     running = replace(prepared, status=PreparedEnvironmentStatus.RUNNING, sandbox_json=output_path / "sandbox.json")
     _save_active_prepared_environment(index_path, running)

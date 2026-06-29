@@ -92,7 +92,7 @@ def base_dockerfile(testspec: AdaptedTestSpec) -> str:
         [
             "FROM ubuntu:22.04",
             "ENV DEBIAN_FRONTEND=noninteractive",
-            "RUN apt-get update && apt-get install -y git curl ca-certificates bash && rm -rf /var/lib/apt/lists/*",
+            "RUN apt-get update && apt-get install -y git curl ca-certificates bash python3 python3-pip python-is-python3 && rm -rf /var/lib/apt/lists/*",
             "",
         ]
     )

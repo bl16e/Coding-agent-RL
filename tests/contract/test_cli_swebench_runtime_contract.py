@@ -213,6 +213,7 @@ def test_swebench_prepare_rejects_missing_source_backed_repo_metadata(tmp_path: 
             "django__django-11099",
             "--output-dir",
             str(tmp_path / "prepare"),
+            "--replace-existing",
         ]
     )
 

@@ -115,6 +115,28 @@ def test_official_validation_set_includes_pass_to_pass_only_when_requested():
     )
 
 
+def test_official_validation_accepts_generated_eval_script_without_literal_pass_to_pass_tests():
+    eval_script = "\n".join(
+        [
+            "set -euxo pipefail",
+            "cd /testbed",
+            "# FAIL_TO_PASS tests/test_issue.py::test_fix",
+            "git apply -v - <<'EOF_114329324912'",
+            "diff --git a/tests/test_issue.py b/tests/test_issue.py",
+            "EOF_114329324912",
+            ": '>>>>> Start Test Output'",
+            "python -m pytest tests/test_issue.py",
+            ": '>>>>> End Test Output'",
+            "",
+        ]
+    )
+
+    validation = build_official_validation_set(_testspec(eval_script=eval_script), include_pass_to_pass=True)
+
+    assert validation.pass_to_pass == ("tests/test_regression.py::test_old",)
+    assert validation.allowed_commands == (eval_script,)
+
+
 def test_new_official_validation_does_not_fallback_to_registered_template():
     validation = build_official_validation_set(_testspec(eval_script="python -m pytest {tests} --official"))
 

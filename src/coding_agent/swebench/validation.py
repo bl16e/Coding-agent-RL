@@ -11,6 +11,10 @@ class ValidationMetadataError(ValueError):
     """Raised when SWE-Bench validation metadata cannot produce commands."""
 
 
+START_TEST_OUTPUT = ">>>>> Start Test Output"
+END_TEST_OUTPUT = ">>>>> End Test Output"
+
+
 def normalize_test_identifiers(value: Any, field_name: str) -> tuple[str, ...]:
     """规范化测试标识符列表。
 
@@ -42,6 +46,10 @@ def _command_from_template(template: str, tests: tuple[str, ...]) -> str:
     return template.replace("{tests}", " ".join(tests))
 
 
+def _is_official_marker_eval_script(script: str) -> bool:
+    return START_TEST_OUTPUT in script and END_TEST_OUTPUT in script
+
+
 def build_official_validation_set(
     testspec: AdaptedTestSpec,
     *,
@@ -55,6 +63,8 @@ def build_official_validation_set(
     selected_tests = fail_to_pass + pass_to_pass
     if "{tests}" in testspec.eval_script:
         command = _command_from_template(testspec.eval_script, selected_tests)
+    elif _is_official_marker_eval_script(testspec.eval_script):
+        command = testspec.eval_script
     elif all(test in testspec.eval_script for test in selected_tests):
         command = testspec.eval_script
     else:

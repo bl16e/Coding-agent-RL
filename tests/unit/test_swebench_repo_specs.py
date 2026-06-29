@@ -46,3 +46,25 @@ def test_default_repo_specs_include_audit_source_for_supported_lite_pair():
     assert spec.language == "py"
     assert "runtime-image-audit.md" in spec.source_reference
     assert spec.test_command
+
+
+def test_repo_specs_preserve_django_test_command_from_upstream_constants():
+    spec = DEFAULT_REPO_SPECS.require("django/django", "3.0")
+
+    assert spec.test_command.startswith("./tests/runtests.py")
+    assert "--settings=test_sqlite" in spec.test_command
+    assert spec.source_reference.endswith("SWE-bench/swebench/harness/constants/python.py")
+    assert spec.review_status is RepoSpecReviewStatus.SOURCE_BACKED
+
+
+def test_repo_specs_preserve_pytest_command_shape():
+    spec = DEFAULT_REPO_SPECS.require("pytest-dev/pytest", "6.0")
+
+    assert spec.test_command.startswith("pytest")
+    assert "-rA" in spec.test_command
+    assert spec.test_command != "python -m pytest"
+
+
+def test_repo_specs_do_not_claim_source_backed_when_version_missing():
+    with pytest.raises(MissingRepoSpecError, match="missing source-backed metadata"):
+        DEFAULT_REPO_SPECS.require("django/django", "0.0")

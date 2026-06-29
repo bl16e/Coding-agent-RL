@@ -229,7 +229,7 @@ class EvalRecordingDocker(FakeOfficialRuntimeDocker):
                 "",
                 0,
             )
-        if command[:2] == ["sh", "-lc"] and "pytest" in command[-1]:
+        if command[:2] == ["bash", "-lc"] and "pytest" in command[-1]:
             return DockerResult(
                 "\n".join(
                     [
@@ -323,6 +323,8 @@ def test_run_executes_final_eval_and_excludes_validation_patch_from_final_diff(t
     assert sandbox_payload["validation"]["eval_report"]["pass_to_pass_success"] == ["tests/test_regression.py::test_old"]
     assert any(call[0] == "exec" and "git -C /testbed apply --whitespace=nowarn -" in call[1][1][-1] for call in docker.calls)
     assert any(call[0] == "exec" and "git -C /testbed apply -R --whitespace=nowarn -" in call[1][1][-1] for call in docker.calls)
+    assert any(call[0] == "exec" and call[1][1][:2] == ("bash", "-lc") for call in docker.calls)
+    assert not any(call[0] == "exec" and call[1][1][:2] == ("sh", "-lc") and "pytest" in call[1][1][-1] for call in docker.calls)
 
 
 def test_prepare_then_run_with_cleanup_removes_active_index_entry(tmp_path: Path):

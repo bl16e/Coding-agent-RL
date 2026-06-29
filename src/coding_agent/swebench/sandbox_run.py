@@ -678,7 +678,7 @@ def _run_final_eval(
     try:
         result = docker.exec(
             prepared.container_name,
-            ["sh", "-lc", f"cd {prepared.repo_path} && {validation.allowed_commands[0]}"],
+            ["bash", "-lc", f"cd {prepared.repo_path} && {validation.allowed_commands[0]}"],
             timeout_seconds=timeout_seconds,
         )
         raw_output = (result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr).strip()

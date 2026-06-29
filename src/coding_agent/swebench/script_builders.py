@@ -17,17 +17,20 @@ _NON_TEST_EXTENSIONS = (".md", ".txt", ".rst", ".json", ".yml", ".yaml", ".toml"
 def build_repo_script_contract(repo_spec: RepoVersionSpec, *, base_commit: str, repo_path: str = "/testbed") -> str:
     if not base_commit:
         raise ScriptMetadataError("base_commit is required")
-    commands = [f"cd {repo_path}", f"git checkout {base_commit}"]
+    commands = [
+        f"rm -rf {repo_path}",
+        f"git clone https://github.com/{repo_spec.repo}.git {repo_path}",
+        f"cd {repo_path}",
+        f"git checkout {base_commit}",
+    ]
     commands.extend(repo_spec.install_commands)
     return "\n".join(commands)
 
 
 def build_env_script_contract(repo_spec: RepoVersionSpec) -> str:
-    if repo_spec.install_commands:
-        return "\n".join(repo_spec.install_commands)
     if repo_spec.pip_packages:
         return "python -m pip install " + " ".join(repo_spec.pip_packages)
-    raise ScriptMetadataError("source-backed environment setup metadata is required")
+    return ":"
 
 
 def _diff_paths(test_patch: str) -> tuple[str, ...]:

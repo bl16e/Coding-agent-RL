@@ -27,8 +27,14 @@ def _repo_spec() -> RepoVersionSpec:
 def test_script_contract_builders_use_source_backed_repo_spec_fields():
     spec = _repo_spec()
 
-    assert "git checkout abc123" in build_repo_script_contract(spec, base_commit="abc123")
-    assert "python -m pip install -e ." in build_env_script_contract(spec)
+    repo_script = build_repo_script_contract(spec, base_commit="abc123")
+    env_script = build_env_script_contract(spec)
+
+    assert "git clone https://github.com/django/django.git /testbed" in repo_script
+    assert "cd /testbed" in repo_script
+    assert "git checkout abc123" in repo_script
+    assert "python -m pip install -e ." in repo_script
+    assert "python -m pip install -e ." not in env_script
     script = build_eval_script_contract(
         spec,
         ("tests/model_fields/test_jsonfield.py::TestJSONField::test_key_transform",),
@@ -38,6 +44,15 @@ def test_script_contract_builders_use_source_backed_repo_spec_fields():
     )
     assert "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1" in script
     assert "model_fields.test_jsonfield" in script
+
+
+def test_env_script_does_not_run_repo_editable_install_before_repo_exists():
+    spec = _repo_spec()
+
+    script = build_env_script_contract(spec)
+
+    assert script == ":"
+    assert "-e ." not in script
 
 
 def test_eval_script_contract_requires_tests():

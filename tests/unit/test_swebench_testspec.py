@@ -63,3 +63,23 @@ def test_build_adapted_testspec_derives_deterministic_image_keys_from_audit():
     assert spec.env_image_key == "sweb.env.py.x86_64.2baaea72acc974f6c02079:latest"
     assert spec.instance_image_key == "sweb.eval.x86_64.django__django-11099:latest"
     assert "runtime-image-audit.md" in spec.repo_version_source
+
+
+def test_build_adapted_testspec_uses_official_style_eval_script_from_test_patch():
+    task = BenchmarkTaskRecord(
+        instance_id="django__django-11099",
+        repo="django/django",
+        version="3.0",
+        base_commit="abc123",
+        problem_statement="Fix it.",
+        fail_to_pass=("tests/model_fields/test_jsonfield.py::TestJSONField::test_key_transform",),
+        test_patch="diff --git a/tests/model_fields/test_jsonfield.py b/tests/model_fields/test_jsonfield.py\n",
+    )
+
+    spec = build_adapted_testspec(task)
+
+    assert "git apply -v -" in spec.eval_script
+    assert ">>>>> Start Test Output" in spec.eval_script
+    assert ">>>>> End Test Output" in spec.eval_script
+    assert "git checkout abc123 tests/model_fields/test_jsonfield.py" in spec.eval_script
+    assert "model_fields.test_jsonfield" in spec.eval_script

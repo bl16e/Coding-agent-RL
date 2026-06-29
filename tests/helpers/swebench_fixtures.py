@@ -15,7 +15,17 @@ def swebench_row(**overrides: Any) -> dict[str, Any]:
         "problem_statement": "Fix the issue.",
         "FAIL_TO_PASS": ["tests/test_issue.py::test_fix"],
         "PASS_TO_PASS": [],
-        "test_patch": "",
+        "test_patch": "\n".join(
+            [
+                "diff --git a/tests/test_issue.py b/tests/test_issue.py",
+                "--- a/tests/test_issue.py",
+                "+++ b/tests/test_issue.py",
+                "@@ -1 +1 @@",
+                "-old test",
+                "+new test",
+                "",
+            ]
+        ),
         "environment_setup_commit": "",
     }
     row.update(overrides)
@@ -29,4 +39,3 @@ def write_swebench_parquet(path: Path, rows: list[dict[str, Any]] | None = None)
     columns = {key: [row.get(key) for row in selected_rows] for key in selected_rows[0]}
     parquet.write_table(pyarrow.table(columns), path)
     return path
-

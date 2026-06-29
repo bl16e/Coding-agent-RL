@@ -58,9 +58,16 @@ def build_adapted_testspec(
     arch: str = "x86_64",
 ) -> AdaptedTestSpec:
     spec = repo_spec or DEFAULT_REPO_SPECS.require(task_record.repo, task_record.version or "")
-    repo_script = build_repo_script_contract(spec, base_commit=task_record.base_commit, repo_path="/testbed")
+    repo_path = "/testbed"
+    repo_script = build_repo_script_contract(spec, base_commit=task_record.base_commit, repo_path=repo_path)
     env_script = build_env_script_contract(spec)
-    eval_script = task_record.eval_script or build_eval_script_contract(spec, task_record.fail_to_pass)
+    eval_script = task_record.eval_script or build_eval_script_contract(
+        spec,
+        task_record.fail_to_pass,
+        test_patch=task_record.test_patch,
+        repo_path=repo_path,
+        base_commit=task_record.base_commit,
+    )
     build_instance_script(repo_script=repo_script, eval_script=eval_script)
     return build_testspec_contract(
         task_record=task_record,
@@ -71,5 +78,6 @@ def build_adapted_testspec(
         base_image_key=derive_base_image_key(language=spec.language, arch=arch),
         env_image_key=audit_env_image_key(task_record.repo, task_record.version or ""),
         instance_image_key=derive_instance_image_key(instance_id=task_record.instance_id, arch=arch),
+        repo_path=repo_path,
         arch=arch,
     )

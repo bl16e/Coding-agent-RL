@@ -18,7 +18,7 @@ def _repo_spec() -> RepoVersionSpec:
         version="3.0",
         language="py",
         install_commands=("python -m pip install -e .",),
-        test_command="python -m pytest",
+        test_command="./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
         source_reference="SWE-bench/swebench/harness/test_spec/python.py",
         review_status=RepoSpecReviewStatus.SOURCE_BACKED,
     )
@@ -29,21 +29,62 @@ def test_script_contract_builders_use_source_backed_repo_spec_fields():
 
     assert "git checkout abc123" in build_repo_script_contract(spec, base_commit="abc123")
     assert "python -m pip install -e ." in build_env_script_contract(spec)
-    assert build_eval_script_contract(spec, ("tests/test_issue.py::test_fix",)) == (
-        "python -m pytest tests/test_issue.py::test_fix"
+    script = build_eval_script_contract(
+        spec,
+        ("tests/model_fields/test_jsonfield.py::TestJSONField::test_key_transform",),
+        test_patch="diff --git a/tests/model_fields/test_jsonfield.py b/tests/model_fields/test_jsonfield.py\n",
+        repo_path="/testbed",
+        base_commit="abc123",
     )
+    assert "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1" in script
+    assert "model_fields.test_jsonfield" in script
 
 
 def test_eval_script_contract_requires_tests():
     with pytest.raises(ScriptMetadataError, match="FAIL_TO_PASS"):
-        build_eval_script_contract(_repo_spec(), ())
+        build_eval_script_contract(
+            _repo_spec(),
+            (),
+            test_patch="diff --git a/tests/test_issue.py b/tests/test_issue.py\n",
+            repo_path="/testbed",
+            base_commit="abc123",
+        )
+
+
+def test_eval_script_for_django_uses_runtests_directives_and_markers():
+    test_patch = "diff --git a/tests/model_fields/test_jsonfield.py b/tests/model_fields/test_jsonfield.py\n"
+
+    script = build_eval_script_contract(
+        _repo_spec(),
+        ("tests/model_fields/test_jsonfield.py::TestJSONField::test_key_transform",),
+        test_patch=test_patch,
+        repo_path="/testbed",
+        base_commit="abc123",
+    )
+
+    assert ">>>>> Start Test Output" in script
+    assert ">>>>> End Test Output" in script
+    assert "git apply -v -" in script
+    assert "git checkout abc123 tests/model_fields/test_jsonfield.py" in script
+    assert "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1" in script
+
+
+def test_eval_script_rejects_empty_test_patch_when_directives_cannot_be_derived():
+    with pytest.raises(ScriptMetadataError, match="test_patch"):
+        build_eval_script_contract(
+            _repo_spec(),
+            ("tests/test_issue.py::test_fix",),
+            test_patch="",
+            repo_path="/testbed",
+            base_commit="abc123",
+        )
 
 
 def test_instance_script_includes_repo_setup_and_eval_script():
     script = build_instance_script(
         repo_script="git checkout abc123",
-        eval_script="python -m pytest tests/test_issue.py::test_fix",
+        eval_script="./tests/runtests.py tests.test_issue",
     )
 
     assert "git checkout abc123" in script
-    assert "python -m pytest tests/test_issue.py::test_fix" in script
+    assert "./tests/runtests.py tests.test_issue" in script

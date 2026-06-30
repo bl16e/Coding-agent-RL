@@ -145,7 +145,7 @@ def test_prepare_fails_when_workspace_is_dirty(tmp_path: Path):
 
 def test_run_prepared_official_runtime_writes_artifacts_and_review_metadata(tmp_path: Path):
     dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
-    docker = FakeOfficialRuntimeDocker(
+    docker = EvalRecordingDocker(
         present_images=set(PRESENT_IMAGES),
         diff_output="diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n",
     )
@@ -229,7 +229,7 @@ class EvalRecordingDocker(FakeOfficialRuntimeDocker):
                 "",
                 0,
             )
-        if command[:2] == ["bash", "-lc"] and "pytest" in command[-1]:
+        if command[:2] == ["bash", "-lc"]:
             return DockerResult(
                 "\n".join(
                     [
@@ -471,7 +471,58 @@ def test_official_eval_resolution_overrides_agent_incomplete_status(tmp_path: Pa
     summary_payload = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
     assert summary.status.value == "solved"
     assert summary_payload["status"] == "solved"
+    assert summary_payload["agent_status"] == "incomplete"
+    assert "unresolved tool failure" in summary_payload["agent_error"]
     assert summary_payload["validation"]["eval_report"]["resolved"] is True
+
+
+class FailingEvalDocker(EvalRecordingDocker):
+    def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None):
+        if command[:2] == ["bash", "-lc"]:
+            return DockerResult(
+                "\n".join(
+                    [
+                        ">>>>> Start Test Output",
+                        "tests/test_issue.py::test_fix FAILED",
+                        ">>>>> End Test Output",
+                    ]
+                ),
+                "",
+                0,
+            )
+        return super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin)
+
+
+def test_agent_solved_does_not_override_failed_official_eval(tmp_path: Path):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    docker = FailingEvalDocker(
+        present_images=set(PRESENT_IMAGES),
+        diff_output="diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n",
+    )
+    index_path = tmp_path / ".coding-agent" / "active-sandboxes.json"
+    prepare_official_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        output_dir=tmp_path / "prepare",
+        active_index_path=index_path,
+    )
+
+    sandbox_run.run_prepared_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+        budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+        active_index_path=index_path,
+    )
+
+    payload = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
+    assert payload["status"] != "solved"
+    assert payload["agent_status"] == "solved"
+    assert payload["validation"]["eval_report"]["resolved"] is False
 
 
 def test_prepare_then_run_with_cleanup_removes_active_index_entry(tmp_path: Path):

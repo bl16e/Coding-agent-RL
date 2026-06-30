@@ -560,29 +560,37 @@ def _write_official_summary(
     active_index_result: str,
     eval_report: EvalReport | None = None,
 ) -> RunSummary:
-    status = RunStatus.SOLVED if eval_report is not None and eval_report.resolved else summary.status
-    error = None if status is RunStatus.SOLVED else summary.error
+    if eval_report is not None and eval_report.resolved:
+        benchmark_status = RunStatus.SOLVED
+    elif eval_report is not None and summary.status is RunStatus.SOLVED:
+        benchmark_status = RunStatus.INCOMPLETE
+    else:
+        benchmark_status = summary.status
+    benchmark_error = None if benchmark_status is RunStatus.SOLVED else summary.error
+    metadata = _runtime_metadata(
+        prepared=prepared,
+        validation=validation,
+        status_transition=status_transition,
+        output_path=output_path,
+        cleanup_requested=cleanup_requested,
+        cleanup_action=cleanup_action,
+        active_index_result=active_index_result,
+        eval_report=eval_report,
+    )
+    metadata["agent_status"] = summary.status.value
+    metadata["agent_error"] = summary.error
     rewritten = RunSummary(
         run_id=summary.run_id,
         instance_id=summary.instance_id,
         model_name=summary.model_name,
-        status=status,
+        status=benchmark_status,
         budget=summary.budget,
         changed_files=_changed_files_from_patch(patch) if patch else summary.changed_files,
         test_summary=summary.test_summary,
-        error=error,
+        error=benchmark_error,
         last_successful_tool_call=summary.last_successful_tool_call,
         artifacts=_artifact_locations(output_path),
-        metadata=_runtime_metadata(
-            prepared=prepared,
-            validation=validation,
-            status_transition=status_transition,
-            output_path=output_path,
-            cleanup_requested=cleanup_requested,
-            cleanup_action=cleanup_action,
-            active_index_result=active_index_result,
-            eval_report=eval_report,
-        ),
+        metadata=metadata,
     )
     write_summary(output_path / "summary.json", rewritten)
     return rewritten

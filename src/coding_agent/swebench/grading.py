@@ -60,9 +60,35 @@ def _parse_pytest_statuses(test_output: str) -> dict[str, str]:
     return statuses
 
 
+def _parse_unittest_statuses(test_output: str) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    status_aliases = {
+        "ok": "PASSED",
+        "FAIL": "FAILED",
+        "ERROR": "ERROR",
+        "skipped": "SKIPPED",
+    }
+    pending_test: str | None = None
+    for line in test_output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("test_") and " (" in stripped and " ... " not in stripped:
+            pending_test = stripped
+            continue
+        if " ... " not in stripped:
+            continue
+        test_name, status = stripped.rsplit(" ... ", 1)
+        mapped = status_aliases.get(status.split()[0])
+        if mapped:
+            statuses[pending_test or test_name] = mapped
+        pending_test = None
+    return statuses
+
+
 def _status_map_from_official_output(output: str, *, repo: str, version: str) -> dict[str, str]:
     test_output = _extract_official_test_output(output)
-    if repo == "django/django" or repo.startswith("pytest-dev/"):
+    if repo == "django/django":
+        return {**_parse_pytest_statuses(test_output), **_parse_unittest_statuses(test_output)}
+    if repo.startswith("pytest-dev/"):
         return _parse_pytest_statuses(test_output)
     raise EvalOutputParseError(f"unsupported eval output parser for {repo}@{version}")
 

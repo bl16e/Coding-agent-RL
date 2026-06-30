@@ -4,9 +4,12 @@ from pathlib import Path
 import pytest
 
 from coding_agent.agent import create_task_from_paths, run_task
-from coding_agent.models import RunBudget, RunStatus
+from coding_agent.models import FileModification, Outcome, RunBudget, RunStatus, TestResult as ModelTestResult
+from coding_agent.models import TestStatus as ModelTestStatus
+from coding_agent.models import ToolName
 from coding_agent.model_backends.base import AgentAction, AgentActionType
 from coding_agent.model_backends.mock import MockBackend
+from coding_agent.tools import ToolExecutionResult, ToolExecutor
 
 
 class CapturingBackend:
@@ -59,6 +62,16 @@ class NativeToolCallCapturingBackend:
         return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
 
 
+class ScriptedExecutor(ToolExecutor):
+    def __init__(self, results: list[ToolExecutionResult]) -> None:
+        self.results = results
+        self.calls: list[tuple[ToolName, dict]] = []
+
+    def execute(self, tool_name: ToolName, tool_input: dict) -> ToolExecutionResult:
+        self.calls.append((tool_name, tool_input))
+        return self.results.pop(0)
+
+
 def test_agent_run_moves_from_pending_to_terminal_status(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -91,6 +104,96 @@ def test_agent_run_moves_from_pending_to_terminal_status(tmp_path: Path):
     )
 
     assert summary.status is RunStatus.SOLVED
+
+
+def test_agent_summary_classifies_self_authored_existing_and_diagnostic_self_tests(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    problem = tmp_path / "problem.txt"
+    problem.write_text("Fix it.", encoding="utf-8")
+    task = create_task_from_paths(
+        instance_id="example__repo-1",
+        workspace=workspace,
+        problem_statement_file=problem,
+        allowed_test_commands=("pytest ...",),
+    )
+    executor = ScriptedExecutor(
+        [
+            ToolExecutionResult(
+                ToolName.APPLY_PATCH,
+                Outcome.OK,
+                "applied edit",
+                modifications=[FileModification("tests/test_issue.py", "ok")],
+            ),
+            ToolExecutionResult(
+                ToolName.RUN_TESTS,
+                Outcome.OK,
+                "passed",
+                test_result=ModelTestResult(
+                    "python -m pytest tests/test_issue.py::test_new",
+                    ModelTestStatus.PASSED,
+                    0.1,
+                    0,
+                    "passed",
+                ),
+            ),
+            ToolExecutionResult(
+                ToolName.RUN_TESTS,
+                Outcome.OK,
+                "passed",
+                test_result=ModelTestResult(
+                    "python -m pytest tests/test_existing.py::test_old",
+                    ModelTestStatus.PASSED,
+                    0.1,
+                    0,
+                    "passed",
+                ),
+            ),
+            ToolExecutionResult(
+                ToolName.RUN_TESTS,
+                Outcome.OK,
+                "passed",
+                test_result=ModelTestResult(
+                    "python -c \"print('diagnostic')\"",
+                    ModelTestStatus.PASSED,
+                    0.1,
+                    0,
+                    "passed",
+                ),
+            ),
+        ]
+    )
+
+    summary = run_task(
+        task=task,
+        budget=RunBudget(max_steps=5, timeout_seconds=60, test_timeout_seconds=10),
+        backend=MockBackend(
+            [
+                AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={"path": "tests/test_issue.py"}),
+                AgentAction(
+                    action=AgentActionType.RUN_TESTS,
+                    tool_input={"command": "python -m pytest tests/test_issue.py::test_new"},
+                ),
+                AgentAction(
+                    action=AgentActionType.RUN_TESTS,
+                    tool_input={"command": "python -m pytest tests/test_existing.py::test_old"},
+                ),
+                AgentAction(
+                    action=AgentActionType.RUN_TESTS,
+                    tool_input={"command": "python -c \"print('diagnostic')\""},
+                ),
+                AgentAction(action=AgentActionType.FINAL, final_status="solved"),
+            ]
+        ),
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+        tool_executor=executor,
+    )
+
+    coverage = summary.metadata["self_test_coverage"]
+    assert coverage["self_authored_tests"]["passed"] == 1
+    assert coverage["existing_tests"]["passed"] == 1
+    assert coverage["diagnostics"]["passed"] == 1
 
 
 def test_agent_prompt_describes_action_json_schema_and_allowed_tests(tmp_path: Path):

@@ -28,7 +28,7 @@ from coding_agent.models import (
     EvalReport,
     utc_now,
 )
-from coding_agent.sandbox.docker_cli import DockerCli
+from coding_agent.sandbox.docker_cli import DockerCli, DockerCommandError, DockerCommandTimeout
 from coding_agent.sandbox.manager import TaskSandboxManager
 from coding_agent.sandbox.registry import SandboxRegistryError, load_base_image_from_registry as registry_load_base_image
 from coding_agent.sandbox.tools import ContainerToolExecutor
@@ -577,6 +577,8 @@ def _write_official_summary(
         active_index_result=active_index_result,
         eval_report=eval_report,
     )
+    if "self_test_coverage" in summary.metadata:
+        metadata["self_test_coverage"] = summary.metadata["self_test_coverage"]
     metadata["agent_status"] = summary.status.value
     metadata["agent_error"] = summary.error
     rewritten = RunSummary(
@@ -693,11 +695,22 @@ def _run_final_eval(
     timeout_seconds: int,
 ) -> EvalReport:
     eval_log = output_path / "eval.log"
-    result = docker.exec(
-        prepared.container_name,
-        ["bash", "-lc", f"cd {prepared.repo_path} && {validation.allowed_commands[0]}"],
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        result = docker.exec(
+            prepared.container_name,
+            ["bash", "-lc", f"cd {prepared.repo_path} && {validation.allowed_commands[0]}"],
+            timeout_seconds=timeout_seconds,
+        )
+    except DockerCommandError as exc:
+        result = exc.result
+    except DockerCommandTimeout as exc:
+        raw_output = f"official eval command timed out: {exc}"
+        eval_log.write_text(raw_output, encoding="utf-8")
+        return _failure_eval_report(validation, str(eval_log))
+    except Exception as exc:
+        raw_output = f"official eval command failed: {exc}"
+        eval_log.write_text(raw_output, encoding="utf-8")
+        return _failure_eval_report(validation, str(eval_log))
     raw_output = (result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr).strip()
     eval_log.write_text(raw_output, encoding="utf-8")
     try:

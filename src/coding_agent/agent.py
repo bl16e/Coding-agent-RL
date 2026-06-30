@@ -18,6 +18,7 @@ from coding_agent.models import (
     TrajectoryStep,
     ToolCall,
     ToolName,
+    TestStatus,
     utc_now,
 )
 from coding_agent.swebench.prediction import write_prediction_jsonl
@@ -69,6 +70,9 @@ def _system_prompt(task: BenchmarkTask) -> str:
         "Examples of allowed self-test commands:\n"
         f"{allowed_tests}\n\n"
         "Final benchmark validation is run automatically after you finish.\n\n"
+        "Before claiming solved, compare your implementation with nearby project contracts, especially exact "
+        "error messages, exception types, warnings, check IDs, and CLI output. Tests you add yourself are useful, "
+        "but they are not enough on their own; also run existing adjacent tests or focused diagnostics when possible.\n\n"
         "Work systematically: read relevant files, understand the issue, make changes, and verify with tests. "
         "Call the 'final' tool when you have solved the issue or determined it cannot be solved."
     )
@@ -225,6 +229,47 @@ def _changed_files(before: dict[str, str], after: dict[str, str]) -> list[str]:
     return sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
 
 
+def _empty_self_test_coverage() -> dict[str, dict[str, int]]:
+    statuses = {status.value: 0 for status in TestStatus}
+    return {
+        "self_authored_tests": dict(statuses),
+        "existing_tests": dict(statuses),
+        "diagnostics": dict(statuses),
+    }
+
+
+def _is_test_path(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    return normalized.startswith("tests/") or name.startswith("test_") or name.endswith("_test.py")
+
+
+def _test_path_identifiers(path: str) -> set[str]:
+    normalized = path.replace("\\", "/")
+    identifiers = {normalized}
+    if normalized.startswith("tests/"):
+        identifiers.add(normalized[len("tests/") :])
+    if normalized.endswith(".py"):
+        stem = normalized[:-3]
+        identifiers.add(stem.replace("/", "."))
+        if stem.startswith("tests/"):
+            identifiers.add(stem[len("tests/") :].replace("/", "."))
+    return identifiers
+
+
+def _is_diagnostic_test_command(command: str) -> bool:
+    stripped = command.strip()
+    return stripped.startswith('python -c "') or stripped.startswith("python -c '") or stripped.startswith("python3 -c ")
+
+
+def _self_test_category(command: str, authored_test_identifiers: set[str]) -> str:
+    if _is_diagnostic_test_command(command):
+        return "diagnostics"
+    if any(identifier and identifier in command for identifier in authored_test_identifiers):
+        return "self_authored_tests"
+    return "existing_tests"
+
+
 def _write_artifacts(
     *,
     output_dir: Path,
@@ -300,6 +345,8 @@ def run_task(
     agent_run.start()
     final_error: str | None = None
     test_summary: dict[str, int] = {}
+    self_test_coverage = _empty_self_test_coverage()
+    authored_test_identifiers: set[str] = set()
     last_successful_tool_call: str | None = None
     unresolved_tool_failure = False
     trajectory_index = 0
@@ -340,11 +387,16 @@ def run_task(
             last_successful_tool_call = result.tool_name.value
         else:
             unresolved_tool_failure = True
+        for modification in result.modifications:
+            if result.status is Outcome.OK and _is_test_path(modification.path):
+                authored_test_identifiers.update(_test_path_identifiers(modification.path))
         if result.test_result is not None:
             # summary 只保留测试状态计数；完整输出保存在对应的 trajectory tool_result，
             # 避免 summary.json 变成大日志文件。
             key = result.test_result.status.value
             test_summary[key] = test_summary.get(key, 0) + 1
+            category = _self_test_category(result.test_result.command, authored_test_identifiers)
+            self_test_coverage[category][key] = self_test_coverage[category].get(key, 0) + 1
             if key == "passed":
                 unresolved_tool_failure = False
         try:
@@ -379,6 +431,7 @@ def run_task(
         error=final_error,
         last_successful_tool_call=last_successful_tool_call,
         artifacts=artifacts,
+        metadata={"self_test_coverage": self_test_coverage},
     )
     prediction = Prediction(task.instance_id, model_name, final_patch)
     _write_artifacts(output_dir=output_path, summary=summary, prediction=prediction, final_patch=final_patch, task=task)

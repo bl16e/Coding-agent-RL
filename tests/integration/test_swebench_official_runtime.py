@@ -9,6 +9,7 @@ from coding_agent.model_backends.base import AgentAction, AgentActionType
 from coding_agent.model_backends.mock import MockBackend
 from coding_agent.models import BaseImage, ValidationTestSet
 from coding_agent.models import RunBudget
+from coding_agent.sandbox.docker_cli import DockerCommandError
 from coding_agent.sandbox.docker_cli import DockerResult
 from coding_agent.swebench import sandbox_run
 from coding_agent.swebench.sandbox_run import (
@@ -183,6 +184,7 @@ def test_run_prepared_official_runtime_writes_artifacts_and_review_metadata(tmp_
     assert summary_payload["runtime"]["path"] == "official_style"
     assert summary_payload["prepared_environment"]["status_transition"] == ["ready", "running", "used"]
     assert summary_payload["validation"]["mode"] == "fail_to_pass"
+    assert summary_payload["self_test_coverage"]["existing_tests"]["passed"] == 0
     assert summary_payload["artifacts"]["sandbox"].endswith("sandbox.json")
     assert sandbox["runtime"]["instance_image_key"] == "sweb.eval.x86_64.django__django-11099:latest"
     assert sandbox["prepared_environment"]["status_transition"] == ["ready", "running", "used"]
@@ -493,6 +495,26 @@ class FailingEvalDocker(EvalRecordingDocker):
         return super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin)
 
 
+class RaisingFailingEvalDocker(EvalRecordingDocker):
+    def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None):
+        if command[:2] == ["bash", "-lc"]:
+            raise DockerCommandError(
+                ["exec", container, *command],
+                DockerResult(
+                    "\n".join(
+                        [
+                            ">>>>> Start Test Output",
+                            "tests/test_issue.py::test_fix FAILED",
+                            ">>>>> End Test Output",
+                        ]
+                    ),
+                    "",
+                    1,
+                ),
+            )
+        return super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin)
+
+
 def test_agent_solved_does_not_override_failed_official_eval(tmp_path: Path):
     dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
     docker = FailingEvalDocker(
@@ -523,6 +545,41 @@ def test_agent_solved_does_not_override_failed_official_eval(tmp_path: Path):
     assert payload["status"] != "solved"
     assert payload["agent_status"] == "solved"
     assert payload["validation"]["eval_report"]["resolved"] is False
+
+
+def test_official_eval_command_error_still_overrides_agent_solved_summary(tmp_path: Path):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    docker = RaisingFailingEvalDocker(
+        present_images=set(PRESENT_IMAGES),
+        diff_output="diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n",
+    )
+    index_path = tmp_path / ".coding-agent" / "active-sandboxes.json"
+    prepare_official_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        output_dir=tmp_path / "prepare",
+        active_index_path=index_path,
+    )
+
+    summary = sandbox_run.run_prepared_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+        budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+        active_index_path=index_path,
+    )
+
+    payload = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
+    eval_log = (tmp_path / "run" / "eval.log").read_text(encoding="utf-8")
+    assert summary.status.value == "incomplete"
+    assert payload["status"] == "incomplete"
+    assert payload["agent_status"] == "solved"
+    assert payload["validation"]["eval_report"]["resolved"] is False
+    assert "tests/test_issue.py::test_fix FAILED" in eval_log
 
 
 def test_prepare_then_run_with_cleanup_removes_active_index_entry(tmp_path: Path):

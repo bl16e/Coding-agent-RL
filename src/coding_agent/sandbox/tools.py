@@ -7,6 +7,7 @@ from typing import Any
 
 from coding_agent.models import FileModification, Outcome, TestResult, TestStatus, ToolName
 from coding_agent.sandbox.docker_cli import DockerCli, DockerCommandError, DockerCommandTimeout
+from coding_agent.tools.test_command_policy import validate_self_test_command
 from coding_agent.tools.result import ToolExecutionResult
 
 
@@ -260,16 +261,15 @@ class ContainerToolExecutor:
         )
 
     def run_tests(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        """在容器内执行一条预先允许的测试命令。
-
-        命令必须精确匹配 validation 生成的 allowed_commands。即使最终通过 sh -lc
-        执行，也不能由模型自由构造 shell。
-        """
+        """在容器内执行测试或诊断命令。"""
         command = str(tool_input.get("command", ""))
         started = time.monotonic()
         if command not in self._allowed_test_commands:
-            test_result = TestResult(command, TestStatus.REJECTED, 0.0, output_summary="command is not allowed")
-            return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, "command is not allowed", test_result=test_result)
+            policy = validate_self_test_command(command)
+            if not policy.allowed:
+                output_summary = f"command is not allowed: {policy.reason}"
+                test_result = TestResult(command, TestStatus.REJECTED, 0.0, output_summary=output_summary)
+                return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, output_summary, test_result=test_result)
         try:
             result = self._docker.exec(
                 self._container_name,

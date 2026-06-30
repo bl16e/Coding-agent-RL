@@ -147,7 +147,7 @@ def test_container_executor_searches_with_bounded_results():
     assert result.output["matches"][0]["path"] == "app.py"
 
 
-def test_container_executor_rejects_unallowed_test_command():
+def test_container_executor_rejects_dangerous_test_command():
     executor = ContainerToolExecutor(
         docker=FakeDocker(),
         container_name="task-1",
@@ -156,9 +156,42 @@ def test_container_executor_rejects_unallowed_test_command():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.RUN_TESTS, {"command": "python -m pytest"})
+    result = executor.execute(ToolName.RUN_TESTS, {"command": "git checkout abc tests/test_issue.py"})
 
     assert result.status is Outcome.REJECTED
+    assert result.test_result is not None
+    assert "not allowed" in result.test_result.output_summary
+
+
+def test_container_run_tests_allows_policy_approved_django_test_command():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task",
+        repo_path="/testbed",
+        allowed_test_commands=("hidden official eval script",),
+        test_timeout_seconds=5,
+    )
+
+    result = executor.run_tests({"command": "./tests/runtests.py --verbosity 2 test_utils.tests"})
+
+    assert result.status is Outcome.OK
+    assert docker.calls[-1][1] == ["sh", "-lc", "cd /testbed && ./tests/runtests.py --verbosity 2 test_utils.tests"]
+
+
+def test_container_run_tests_allows_python_c_diagnostic():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task",
+        repo_path="/testbed",
+        allowed_test_commands=("hidden official eval script",),
+        test_timeout_seconds=5,
+    )
+
+    result = executor.run_tests({"command": "python -c \"print('ok')\""})
+
+    assert result.status is Outcome.OK
 
 
 def test_container_executor_confines_official_prepared_environment_to_repo_path():

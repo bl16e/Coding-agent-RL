@@ -67,8 +67,8 @@ def test_rejected_container_test_command_is_recorded_in_trajectory(tmp_path: Pat
             [
                 AgentAction(
                     action=AgentActionType.RUN_TESTS,
-                    tool_input={"command": "python -m pytest"},
-                    reasoning_summary="Try broad tests",
+                    tool_input={"command": "git checkout abc tests/test_issue.py"},
+                    reasoning_summary="Try mutating git state",
                 )
             ]
         ),

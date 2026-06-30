@@ -148,10 +148,48 @@ def test_agent_sends_tool_result_history_to_next_model_turn(tmp_path: Path):
     assert any("important context" in message["content"] for message in second_turn)
 
 
+def test_read_file_history_shows_source_text_without_json_escaping(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "validators.py").write_text("regex = r'^[\\w.@+-]+$'\n", encoding="utf-8")
+    problem = tmp_path / "problem.txt"
+    problem.write_text("Fix it.", encoding="utf-8")
+    task = create_task_from_paths(
+        instance_id="example__repo-1",
+        workspace=workspace,
+        problem_statement_file=problem,
+        allowed_test_commands=("python -m pytest",),
+    )
+
+    class ReadValidatorsBackend:
+        def __init__(self) -> None:
+            self.messages_by_call: list[list[dict[str, str]]] = []
+
+        def next_action(self, messages: list[dict[str, str]]) -> AgentAction:
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                return AgentAction(action=AgentActionType.READ_FILE, tool_input={"path": "validators.py"})
+            return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
+
+    backend = ReadValidatorsBackend()
+
+    run_task(
+        task=task,
+        budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
+        backend=backend,
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+    )
+
+    observation = backend.messages_by_call[1][-1]["content"]
+    assert "regex = r'^[\\w.@+-]+$'" in observation
+    assert "regex = r'^[\\\\w.@+-]+$'" not in observation
+
+
 def test_agent_sends_native_tool_call_and_tool_result_history(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "README.md").write_text("important context", encoding="utf-8")
+    (workspace / "README.md").write_text("important context\nregex = r'^[\\w.@+-]+$'\n", encoding="utf-8")
     problem = tmp_path / "problem.txt"
     problem.write_text("Fix it.", encoding="utf-8")
     task = create_task_from_paths(
@@ -176,6 +214,8 @@ def test_agent_sends_native_tool_call_and_tool_result_history(tmp_path: Path):
     assert second_turn[-1]["role"] == "tool"
     assert second_turn[-1]["tool_call_id"] == "call_read"
     assert "important context" in second_turn[-1]["content"]
+    assert "regex = r'^[\\w.@+-]+$'" in second_turn[-1]["content"]
+    assert "regex = r'^[\\\\w.@+-]+$'" not in second_turn[-1]["content"]
 
 
 def test_agent_run_rejects_invalid_final_status(tmp_path: Path):

@@ -59,6 +59,15 @@ class SandboxedRunRuntimeError(RuntimeError):
         super().__init__(summary.error or "sandboxed run failed")
 
 
+SELF_TEST_COMMAND_GUIDANCE = (
+    "pytest ...",
+    "python -m pytest ...",
+    "./tests/runtests.py ...",
+    'python -c "..."',
+    "python path/to/diagnostic.py",
+)
+
+
 def validation_from_task(
     task_record: SwebenchTaskRecord,
     base_image: BaseImage,
@@ -551,15 +560,17 @@ def _write_official_summary(
     active_index_result: str,
     eval_report: EvalReport | None = None,
 ) -> RunSummary:
+    status = RunStatus.SOLVED if eval_report is not None and eval_report.resolved else summary.status
+    error = None if status is RunStatus.SOLVED else summary.error
     rewritten = RunSummary(
         run_id=summary.run_id,
         instance_id=summary.instance_id,
         model_name=summary.model_name,
-        status=summary.status,
+        status=status,
         budget=summary.budget,
         changed_files=_changed_files_from_patch(patch) if patch else summary.changed_files,
         test_summary=summary.test_summary,
-        error=summary.error,
+        error=error,
         last_successful_tool_call=summary.last_successful_tool_call,
         artifacts=_artifact_locations(output_path),
         metadata=_runtime_metadata(
@@ -674,29 +685,24 @@ def _run_final_eval(
     timeout_seconds: int,
 ) -> EvalReport:
     eval_log = output_path / "eval.log"
-    applied = _apply_validation_test_patch(docker, prepared, test_patch)
+    result = docker.exec(
+        prepared.container_name,
+        ["bash", "-lc", f"cd {prepared.repo_path} && {validation.allowed_commands[0]}"],
+        timeout_seconds=timeout_seconds,
+    )
+    raw_output = (result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr).strip()
+    eval_log.write_text(raw_output, encoding="utf-8")
     try:
-        result = docker.exec(
-            prepared.container_name,
-            ["bash", "-lc", f"cd {prepared.repo_path} && {validation.allowed_commands[0]}"],
-            timeout_seconds=timeout_seconds,
+        return parse_eval_report(
+            raw_output,
+            repo=prepared.repo,
+            version=prepared.version,
+            fail_to_pass=validation.fail_to_pass,
+            pass_to_pass=validation.pass_to_pass,
+            raw_output_artifact=str(eval_log),
         )
-        raw_output = (result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr).strip()
-        eval_log.write_text(raw_output, encoding="utf-8")
-        try:
-            return parse_eval_report(
-                raw_output,
-                repo=prepared.repo,
-                version=prepared.version,
-                fail_to_pass=validation.fail_to_pass,
-                pass_to_pass=validation.pass_to_pass,
-                raw_output_artifact=str(eval_log),
-            )
-        except EvalOutputParseError:
-            return _failure_eval_report(validation, str(eval_log))
-    finally:
-        if applied:
-            _revert_validation_test_patch(docker, prepared, test_patch)
+    except EvalOutputParseError:
+        return _failure_eval_report(validation, str(eval_log))
 
 
 def run_prepared_swebench_runtime(
@@ -745,7 +751,7 @@ def run_prepared_swebench_runtime(
         instance_id=task_record.instance_id,
         workspace=host_workspace,
         problem_statement=task_record.problem_statement,
-        allowed_test_commands=validation.allowed_commands,
+        allowed_test_commands=SELF_TEST_COMMAND_GUIDANCE,
         repo=task_record.repo,
         base_commit=task_record.base_commit,
     )

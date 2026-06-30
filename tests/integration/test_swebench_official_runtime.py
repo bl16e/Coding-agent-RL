@@ -321,10 +321,157 @@ def test_run_executes_final_eval_and_excludes_validation_patch_from_final_diff(t
     assert summary_payload["validation"]["mode"] == "fail_to_pass_plus_pass_to_pass"
     assert summary_payload["validation"]["eval_report"]["resolved"] is True
     assert sandbox_payload["validation"]["eval_report"]["pass_to_pass_success"] == ["tests/test_regression.py::test_old"]
-    assert any(call[0] == "exec" and "git -C /testbed apply --whitespace=nowarn -" in call[1][1][-1] for call in docker.calls)
-    assert any(call[0] == "exec" and "git -C /testbed apply -R --whitespace=nowarn -" in call[1][1][-1] for call in docker.calls)
+    assert not any(call[0] == "exec" and "git -C /testbed apply --whitespace=nowarn -" in call[1][1][-1] for call in docker.calls)
+    assert not any(call[0] == "exec" and "git -C /testbed apply -R --whitespace=nowarn -" in call[1][1][-1] for call in docker.calls)
     assert any(call[0] == "exec" and call[1][1][:2] == ("bash", "-lc") for call in docker.calls)
     assert not any(call[0] == "exec" and call[1][1][:2] == ("sh", "-lc") and "pytest" in call[1][1][-1] for call in docker.calls)
+
+
+class OfficialEvalScriptDocker(EvalRecordingDocker):
+    def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None):
+        if command[:2] == ["sh", "-lc"] and command[-1].startswith("git -C /testbed apply"):
+            raise AssertionError("official eval_script already applies and reverts test_patch")
+        return super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin)
+
+
+class PromptCapturingBackend:
+    def __init__(self) -> None:
+        self.first_messages = None
+
+    def next_action(self, messages):
+        if self.first_messages is None:
+            self.first_messages = messages
+        return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
+
+
+def test_official_eval_script_is_not_visible_to_agent_prompt(tmp_path: Path):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    docker = EvalRecordingDocker(present_images=set(PRESENT_IMAGES))
+    index_path = tmp_path / ".coding-agent" / "active-sandboxes.json"
+    prepare_official_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        output_dir=tmp_path / "prepare",
+        active_index_path=index_path,
+    )
+    backend = PromptCapturingBackend()
+
+    sandbox_run.run_prepared_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        backend=backend,
+        budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+        active_index_path=index_path,
+    )
+
+    prompt = backend.first_messages[0]["content"]
+    assert "git apply" not in prompt
+    assert "EOF_" not in prompt
+    assert "Final benchmark validation is run automatically" in prompt
+    assert "python -c" in prompt
+
+
+def test_final_eval_does_not_apply_test_patch_outside_official_eval_script(tmp_path: Path):
+    dataset = write_swebench_parquet(
+        tmp_path / "dataset.parquet",
+        rows=[
+            swebench_row(
+                eval_script="\n".join(
+                    [
+                        "set -euxo pipefail",
+                        "cd /testbed",
+                        "git apply -v - <<'EOF_PATCH'",
+                        "diff --git a/tests/test_issue.py b/tests/test_issue.py",
+                        "--- a/tests/test_issue.py",
+                        "+++ b/tests/test_issue.py",
+                        "@@ -1 +1 @@",
+                        "-old test",
+                        "+new test",
+                        "EOF_PATCH",
+                        "python -m pytest tests/test_issue.py::test_fix",
+                        "git checkout abc123 tests/test_issue.py",
+                    ]
+                ),
+                test_patch="\n".join(
+                    [
+                        "diff --git a/tests/test_issue.py b/tests/test_issue.py",
+                        "--- a/tests/test_issue.py",
+                        "+++ b/tests/test_issue.py",
+                        "@@ -1 +1 @@",
+                        "-old test",
+                        "+new test",
+                        "",
+                    ]
+                ),
+            )
+        ],
+    )
+    docker = OfficialEvalScriptDocker(
+        present_images=set(PRESENT_IMAGES),
+        diff_output="diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n",
+    )
+    index_path = tmp_path / ".coding-agent" / "active-sandboxes.json"
+    prepare_official_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        output_dir=tmp_path / "prepare",
+        active_index_path=index_path,
+    )
+
+    sandbox_run.run_prepared_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+        budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+        active_index_path=index_path,
+    )
+
+    assert (tmp_path / "run" / "final.patch").read_text(encoding="utf-8").startswith("diff --git")
+
+
+def test_official_eval_resolution_overrides_agent_incomplete_status(tmp_path: Path):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    docker = EvalRecordingDocker(
+        present_images=set(PRESENT_IMAGES),
+        diff_output="diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n",
+    )
+    index_path = tmp_path / ".coding-agent" / "active-sandboxes.json"
+    prepare_official_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        output_dir=tmp_path / "prepare",
+        active_index_path=index_path,
+    )
+
+    summary = sandbox_run.run_prepared_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        backend=MockBackend(
+            [
+                AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": "not allowed"}),
+                AgentAction(action=AgentActionType.FINAL, final_status="solved"),
+            ]
+        ),
+        budget=RunBudget(max_steps=3, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+        active_index_path=index_path,
+    )
+
+    summary_payload = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
+    assert summary.status.value == "solved"
+    assert summary_payload["status"] == "solved"
+    assert summary_payload["validation"]["eval_report"]["resolved"] is True
 
 
 def test_prepare_then_run_with_cleanup_removes_active_index_entry(tmp_path: Path):

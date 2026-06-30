@@ -59,18 +59,16 @@ ACTION_TOOL_MAP = {
 
 
 def _system_prompt(task: BenchmarkTask) -> str:
-    """生成面向单个 SWE-Bench 任务的系统提示词。
-
-    提示词只暴露允许的测试命令，不鼓励模型发明额外命令。真正的强制校验仍在
-    run_tests 工具里完成，提示词只是让模型更容易走上正确路径。
-    """
+    """生成面向单个 SWE-Bench 任务的系统提示词。"""
     allowed_tests = "\n".join(f"  {command}" for command in task.allowed_test_commands)
     return (
         "You are a coding agent that solves repository issues by using the provided tools.\n\n"
         "Your task:\n"
         f"{task.problem_statement}\n\n"
-        "Allowed test commands (use these exact strings with run_tests):\n"
+        "You may use run_tests for focused repository tests and small diagnostics.\n"
+        "Examples of allowed self-test commands:\n"
         f"{allowed_tests}\n\n"
+        "Final benchmark validation is run automatically after you finish.\n\n"
         "Work systematically: read relevant files, understand the issue, make changes, and verify with tests. "
         "Call the 'final' tool when you have solved the issue or determined it cannot be solved."
     )
@@ -98,6 +96,8 @@ def _action_message(action: AgentAction) -> dict[str, str]:
 
 def _tool_observation_message(result: ToolExecutionResult) -> dict[str, str]:
     """为不支持原生 tool role 的后端构造普通用户观察消息。"""
+    if result.tool_name is ToolName.READ_FILE:
+        return {"role": "user", "content": _read_file_observation_content(result)}
     payload = {
         "tool_name": result.tool_name.value,
         "status": result.status.value,
@@ -106,6 +106,18 @@ def _tool_observation_message(result: ToolExecutionResult) -> dict[str, str]:
         "modifications": result.modifications,
     }
     return {"role": "user", "content": "Tool observation: " + json.dumps(payload, ensure_ascii=False, default=str)}
+
+
+def _read_file_observation_content(result: ToolExecutionResult) -> str:
+    """Format read_file output as source text, not JSON-escaped string content."""
+    header = (
+        f"Tool observation: {result.tool_name.value} {result.status.value}\n"
+        f"Summary: {result.output_summary}"
+    )
+    content = result.output.get("content")
+    if not isinstance(content, str):
+        return header
+    return f"{header}\n\n<file>\n{content}</file>"
 
 
 def _tool_history_message(action: AgentAction, result: ToolExecutionResult) -> dict[str, object]:
@@ -126,7 +138,11 @@ def _tool_history_message(action: AgentAction, result: ToolExecutionResult) -> d
         return {
             "role": "tool",
             "tool_call_id": action.tool_call_id,
-            "content": json.dumps(payload, ensure_ascii=False, default=str),
+            "content": (
+                _read_file_observation_content(result)
+                if result.tool_name is ToolName.READ_FILE
+                else json.dumps(payload, ensure_ascii=False, default=str)
+            ),
         }
     return _tool_observation_message(result)
 

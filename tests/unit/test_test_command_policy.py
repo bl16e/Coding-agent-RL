@@ -42,3 +42,11 @@ def test_self_test_policy_rejects_mutating_or_shell_commands(command):
     result = validate_self_test_command(command)
     assert result.allowed is False
     assert result.reason
+
+
+def test_self_test_policy_allows_multiline_python_c_code():
+    command = 'python -c "print(1)\nprint(2)"'
+
+    result = validate_self_test_command(command)
+
+    assert result.allowed is True

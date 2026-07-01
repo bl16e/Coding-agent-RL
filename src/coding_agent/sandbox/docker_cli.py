@@ -107,6 +107,11 @@ class DockerCli:
         *,
         timeout_seconds: float | None = None,
         stdin: str | None = None,
+        workdir: str | None = None,
     ) -> DockerResult:
         """在任务容器中执行命令。"""
-        return self.run(["exec", "-i", container, *command], timeout_seconds=timeout_seconds, stdin=stdin)
+        args = ["exec", "-i"]
+        if workdir is not None:
+            args.extend(["-w", workdir])
+        args.extend([container, *command])
+        return self.run(args, timeout_seconds=timeout_seconds, stdin=stdin)

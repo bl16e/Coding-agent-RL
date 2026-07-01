@@ -34,19 +34,32 @@ def _docker_error(tool_name: ToolName, exc: Exception) -> ToolExecutionResult:
 
 def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
     """兼容 offset/limit 和 line/end_line 两套行号参数。"""
+    if "line" in tool_input:
+        start = int(tool_input["line"])
+        if "end_line" in tool_input:
+            end = int(tool_input["end_line"])
+        elif "limit" in tool_input:
+            limit = int(tool_input["limit"])
+            if limit < 1:
+                raise ValueError("limit must be a positive integer")
+            end = start + limit - 1
+        else:
+            end = start
+        if start < 1 or end < start:
+            raise ValueError("line range must be 1-based and end_line must be >= line")
+        return start, end
     if "offset" in tool_input or "limit" in tool_input:
         start = int(tool_input.get("offset", 1))
         limit = int(tool_input.get("limit", 1))
         if start < 1 or limit < 1:
             raise ValueError("offset and limit must be 1-based positive integers")
         return start, start + limit - 1
-    if "line" not in tool_input and "end_line" not in tool_input:
+    if "end_line" not in tool_input:
         return None
-    start = int(tool_input.get("line", 1))
-    end = int(tool_input.get("end_line", start))
-    if start < 1 or end < start:
+    end = int(tool_input["end_line"])
+    if end < 1:
         raise ValueError("line range must be 1-based and end_line must be >= line")
-    return start, end
+    return 1, end
 
 
 class ContainerToolExecutor:
@@ -270,17 +283,19 @@ class ContainerToolExecutor:
         """在容器内执行测试或诊断命令。"""
         command = str(tool_input.get("command", ""))
         started = time.monotonic()
-        if command not in self._allowed_test_commands:
-            policy = validate_self_test_command(command)
-            if not policy.allowed:
-                output_summary = f"command is not allowed: {policy.reason}"
-                test_result = TestResult(command, TestStatus.REJECTED, 0.0, output_summary=output_summary)
-                return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, output_summary, test_result=test_result)
+        policy = validate_self_test_command(command)
+        use_shell = command in self._allowed_test_commands and not policy.allowed
+        if not use_shell and not policy.allowed:
+            output_summary = f"command is not allowed: {policy.reason}"
+            test_result = TestResult(command, TestStatus.REJECTED, 0.0, output_summary=output_summary)
+            return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, output_summary, test_result=test_result)
+        exec_command = ["sh", "-lc", f"cd {self._repo_path} && {command}"] if use_shell else list(policy.argv)
         try:
             result = self._docker.exec(
                 self._container_name,
-                ["sh", "-lc", f"cd {self._repo_path} && {command}"],
+                exec_command,
                 timeout_seconds=self._test_timeout_seconds,
+                workdir=None if use_shell else self._repo_path,
             )
         except DockerCommandTimeout:
             duration = time.monotonic() - started

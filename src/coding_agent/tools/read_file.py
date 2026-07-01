@@ -14,19 +14,32 @@ def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
     offset/limit 兼容分页式调用，line/end_line 兼容直接指定闭区间。内部统一返回
     1-based 闭区间，便于生成稳定的 output_summary。
     """
+    if "line" in tool_input:
+        start = int(tool_input["line"])
+        if "end_line" in tool_input:
+            end = int(tool_input["end_line"])
+        elif "limit" in tool_input:
+            limit = int(tool_input["limit"])
+            if limit < 1:
+                raise ValueError("limit must be a positive integer")
+            end = start + limit - 1
+        else:
+            end = start
+        if start < 1 or end < start:
+            raise ValueError("line range must be 1-based and end_line must be >= line")
+        return start, end
     if "offset" in tool_input or "limit" in tool_input:
         start = int(tool_input.get("offset", 1))
         limit = int(tool_input.get("limit", 1))
         if start < 1 or limit < 1:
             raise ValueError("offset and limit must be 1-based positive integers")
         return start, start + limit - 1
-    if "line" not in tool_input and "end_line" not in tool_input:
+    if "end_line" not in tool_input:
         return None
-    start = int(tool_input.get("line", 1))
-    end = int(tool_input.get("end_line", start))
-    if start < 1 or end < start:
+    end = int(tool_input["end_line"])
+    if end < 1:
         raise ValueError("line range must be 1-based and end_line must be >= line")
-    return start, end
+    return 1, end
 
 
 def _slice_lines(content: str, bounds: tuple[int, int] | None) -> tuple[str, str]:

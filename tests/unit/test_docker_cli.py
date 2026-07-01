@@ -69,3 +69,27 @@ def test_docker_cli_inspect_helpers_return_booleans():
     assert cli.image_exists("present:latest") is True
     assert cli.image_exists("missing:latest") is False
     assert cli.container_exists("container-1") is True
+
+
+def test_docker_cli_exec_can_set_workdir():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    cli = DockerCli(runner=runner)
+
+    cli.exec("container", ["python", "-c", "print('ok')"], workdir="/testbed")
+
+    assert calls[0] == [
+        "docker",
+        "exec",
+        "-i",
+        "-w",
+        "/testbed",
+        "container",
+        "python",
+        "-c",
+        "print('ok')",
+    ]

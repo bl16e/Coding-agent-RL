@@ -7,10 +7,10 @@ from coding_agent.sandbox.tools import ContainerToolExecutor
 
 class FakeDocker:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, list[str], str | None]] = []
+        self.calls: list[tuple[str, list[str], str | None, str | None]] = []
 
-    def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None) -> DockerResult:
-        self.calls.append((container, command, stdin))
+    def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None, workdir=None) -> DockerResult:
+        self.calls.append((container, command, stdin, workdir))
         joined = " ".join(command)
         if "json.dumps" in joined:
             return DockerResult(json.dumps({"matches": [{"path": "app.py", "line": 1, "text": "hello"}], "truncated": False}), "", 0)
@@ -72,6 +72,24 @@ def test_container_executor_treats_offset_limit_as_line_window():
     assert result.status is Outcome.OK
     assert result.output["content"] == "two\nthree\n"
     assert "lines 2-3" in result.output_summary
+
+
+def test_container_executor_treats_line_limit_as_line_window():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task-1",
+        repo_path="/workspace/repo",
+        allowed_test_commands=("python -m pytest tests/test_issue.py",),
+        test_timeout_seconds=30,
+    )
+
+    result = executor.execute(ToolName.READ_FILE, {"path": "README.md", "line": 2, "limit": 2})
+
+    assert result.status is Outcome.OK
+    assert result.output["content"] == "two\nthree\n"
+    assert "lines 2-3" in result.output_summary
+    assert docker.calls[0][1][-2:] == ["2", "3"]
 
 
 def test_container_executor_applies_add_file():
@@ -195,7 +213,8 @@ def test_container_run_tests_allows_policy_approved_django_test_command():
     result = executor.run_tests({"command": "./tests/runtests.py --verbosity 2 test_utils.tests"})
 
     assert result.status is Outcome.OK
-    assert docker.calls[-1][1] == ["sh", "-lc", "cd /testbed && ./tests/runtests.py --verbosity 2 test_utils.tests"]
+    assert docker.calls[-1][1] == ["./tests/runtests.py", "--verbosity", "2", "test_utils.tests"]
+    assert docker.calls[-1][3] == "/testbed"
 
 
 def test_container_run_tests_allows_python_c_diagnostic():
@@ -211,6 +230,42 @@ def test_container_run_tests_allows_python_c_diagnostic():
     result = executor.run_tests({"command": "python -c \"print('ok')\""})
 
     assert result.status is Outcome.OK
+    assert docker.calls[-1][1] == ["python", "-c", "print('ok')"]
+    assert docker.calls[-1][3] == "/testbed"
+
+
+def test_container_run_tests_executes_multiline_python_c_without_shell():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task",
+        repo_path="/testbed",
+        allowed_test_commands=("hidden official eval script",),
+        test_timeout_seconds=5,
+    )
+
+    result = executor.run_tests({"command": 'python -c "print(1)\nprint(2)"'})
+
+    assert result.status is Outcome.OK
+    assert docker.calls[-1][1] == ["python", "-c", "print(1)\nprint(2)"]
+    assert docker.calls[-1][3] == "/testbed"
+
+
+def test_container_run_tests_keeps_internal_allowlisted_script_on_shell_path():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task",
+        repo_path="/testbed",
+        allowed_test_commands=("set -euxo pipefail\n./tests/runtests.py test_utils.tests",),
+        test_timeout_seconds=5,
+    )
+
+    result = executor.run_tests({"command": "set -euxo pipefail\n./tests/runtests.py test_utils.tests"})
+
+    assert result.status is Outcome.OK
+    assert docker.calls[-1][1] == ["sh", "-lc", "cd /testbed && set -euxo pipefail\n./tests/runtests.py test_utils.tests"]
+    assert docker.calls[-1][3] is None
 
 
 def test_container_executor_confines_official_prepared_environment_to_repo_path():

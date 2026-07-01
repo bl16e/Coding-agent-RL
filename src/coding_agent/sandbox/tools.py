@@ -236,13 +236,17 @@ class ContainerToolExecutor:
             return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, "query must not be empty")
         max_results = int(tool_input.get("max_results", 20))
         script = (
-            "from pathlib import Path; import json, sys; "
+            "from pathlib import Path; import json, re, sys; "
             "root=Path(sys.argv[1]); query=sys.argv[2]; limit=int(sys.argv[3]); matches=[]; truncated=False\n"
+            "try:\n"
+            "    pattern=re.compile(query)\n"
+            "except re.error as exc:\n"
+            "    print(json.dumps({'error': f'invalid regular expression: {exc}'})); sys.exit(2)\n"
             "for path in sorted(p for p in root.rglob('*') if p.is_file()):\n"
             "    try: lines=path.read_text(encoding='utf-8').splitlines()\n"
             "    except UnicodeDecodeError: continue\n"
             "    for idx,line in enumerate(lines,1):\n"
-            "        if query in line:\n"
+            "        if pattern.search(line):\n"
             "            if len(matches) >= limit: truncated=True; break\n"
             "            matches.append({'path': path.relative_to(root).as_posix(), 'line': idx, 'text': line})\n"
             "    if truncated: break\n"
@@ -251,6 +255,8 @@ class ContainerToolExecutor:
         try:
             result = self._docker.exec(self._container_name, ["python", "-c", script, self._repo_path, query, str(max_results)])
             output = json.loads(result.stdout or '{"matches": [], "truncated": false}')
+            if isinstance(output, dict) and output.get("error"):
+                return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, str(output["error"]))
         except (DockerCommandError, DockerCommandTimeout, json.JSONDecodeError) as exc:
             return _docker_error(ToolName.SEARCH_CODE, exc)
         return ToolExecutionResult(

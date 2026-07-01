@@ -23,8 +23,27 @@ def test_search_code_reports_no_matches(tmp_path: Path):
     assert result.output["matches"] == []
 
 
+def test_search_code_treats_query_as_regular_expression(tmp_path: Path):
+    (tmp_path / "models.py").write_text("class CharField(Field):\nclass Other:\n", encoding="utf-8")
+
+    result = search_code(tmp_path, {"query": r"^class CharField\(Field\):"})
+
+    assert result.status == "ok"
+    assert result.output["matches"] == [
+        {"path": "models.py", "line": 1, "text": "class CharField(Field):"}
+    ]
+
+
+def test_search_code_rejects_invalid_regular_expression(tmp_path: Path):
+    (tmp_path / "a.py").write_text("needle\n", encoding="utf-8")
+
+    result = search_code(tmp_path, {"query": "["})
+
+    assert result.status == "rejected"
+    assert "invalid regular expression" in result.output_summary
+
+
 def test_search_code_rejects_empty_query(tmp_path: Path):
     result = search_code(tmp_path, {"query": ""})
 
     assert result.status == "rejected"
-

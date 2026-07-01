@@ -16,6 +16,7 @@ class TrajectoryWriter:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text("", encoding="utf-8")
 
     def write_step(self, step: TrajectoryStep) -> None:
         """在 agent 继续执行前持久化一个轨迹步骤。

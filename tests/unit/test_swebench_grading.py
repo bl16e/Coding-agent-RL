@@ -159,6 +159,46 @@ def test_parse_eval_report_accepts_django_unittest_output_with_docstring_lines()
     assert report.fail_to_pass_success == ("test_override_file_upload_permissions (test_utils.tests.OverrideSettingsTests)",)
 
 
+def test_parse_eval_report_accepts_django_unittest_output_with_adjacent_test_names():
+    output = "\n".join(
+        [
+            "setup text",
+            ">>>>> Start Test Output",
+            (
+                "test_choices_in_max_length (invalid_models_tests.test_ordinary_fields.CharFieldTests) ... "
+                "test_choices_named_group (invalid_models_tests.test_ordinary_fields.CharFieldTests) ... ok"
+            ),
+            "",
+            "======================================================================",
+            "FAIL: test_choices_in_max_length (invalid_models_tests.test_ordinary_fields.CharFieldTests) [field]",
+            "----------------------------------------------------------------------",
+            "AssertionError: Lists differ",
+            "",
+            "FAILED (failures=1)",
+            ">>>>> End Test Output",
+        ]
+    )
+
+    report = parse_eval_report(
+        output,
+        repo="django/django",
+        version="3.0",
+        fail_to_pass=(
+            "test_choices_in_max_length (invalid_models_tests.test_ordinary_fields.CharFieldTests)",
+            "test_choices_named_group (invalid_models_tests.test_ordinary_fields.CharFieldTests)",
+        ),
+        raw_output_artifact="eval.log",
+    )
+
+    assert report.resolved is False
+    assert report.fail_to_pass_failure == (
+        "test_choices_in_max_length (invalid_models_tests.test_ordinary_fields.CharFieldTests)",
+    )
+    assert report.fail_to_pass_success == (
+        "test_choices_named_group (invalid_models_tests.test_ordinary_fields.CharFieldTests)",
+    )
+
+
 def test_parse_eval_report_missing_markers_is_validation_failure():
     with pytest.raises(EvalOutputParseError, match="missing official eval markers"):
         parse_eval_report(

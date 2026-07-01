@@ -147,6 +147,25 @@ def test_container_executor_searches_with_bounded_results():
     assert result.output["matches"][0]["path"] == "app.py"
 
 
+def test_container_executor_search_script_uses_regular_expressions():
+    docker = FakeDocker()
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task-1",
+        repo_path="/workspace/repo",
+        allowed_test_commands=("python -m pytest tests/test_issue.py",),
+        test_timeout_seconds=30,
+    )
+
+    result = executor.execute(ToolName.SEARCH_CODE, {"query": r"^class CharField\(Field\):", "max_results": 5})
+
+    assert result.status is Outcome.OK
+    script = docker.calls[0][1][2]
+    compile(script, "<container-search-script>", "exec")
+    assert "re.compile" in script
+    assert docker.calls[0][1][-2:] == [r"^class CharField\(Field\):", "5"]
+
+
 def test_container_executor_rejects_dangerous_test_command():
     executor = ContainerToolExecutor(
         docker=FakeDocker(),

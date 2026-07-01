@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import AbstractSet
 
 from coding_agent.models import EvalReport
@@ -12,6 +13,7 @@ class EvalOutputParseError(ValueError):
 
 START_TEST_OUTPUT = ">>>>> Start Test Output"
 END_TEST_OUTPUT = ">>>>> End Test Output"
+UNITTEST_RESULT_RE = re.compile(r"(test_[^\s]+ \([^)]+\)) \.\.\. (ok|FAIL|ERROR|skipped\b.*)")
 
 
 def build_eval_report_contract(
@@ -71,6 +73,14 @@ def _parse_unittest_statuses(test_output: str) -> dict[str, str]:
     pending_test: str | None = None
     for line in test_output.splitlines():
         stripped = line.strip()
+        direct_matches = list(UNITTEST_RESULT_RE.finditer(stripped))
+        if direct_matches:
+            for match in direct_matches:
+                mapped = status_aliases.get(match.group(2).split()[0])
+                if mapped:
+                    statuses[match.group(1)] = mapped
+            pending_test = None
+            continue
         if stripped.startswith("test_") and " (" in stripped and " ... " not in stripped:
             pending_test = stripped
             continue

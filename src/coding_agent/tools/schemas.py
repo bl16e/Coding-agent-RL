@@ -98,12 +98,12 @@ TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
         ],
     },
     ToolName.SEARCH_CODE: {
-        "description": "Search repository text files for an exact text query.",
+        "description": "Search repository text files with a Python regular expression. Use regex syntax such as ^, .*, character classes, and escaped parentheses.",
         "parameters": {
             "query": {
                 "type": "string",
                 "required": True,
-                "description": "Exact text to search for.",
+                "description": "Python regular expression to search for in each line.",
             },
             "max_results": {
                 "type": "integer",
@@ -113,8 +113,8 @@ TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
             },
         },
         "examples": [
-            '{"query": "def calculate"}',
-            '{"query": "import numpy", "max_results": 50}',
+            '{"query": "^def calculate\\\\("}',
+            '{"query": "^class CharField\\\\(Field\\\\):", "max_results": 50}',
         ],
     },
     ToolName.RUN_TESTS: {

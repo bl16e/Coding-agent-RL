@@ -4,8 +4,8 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
 from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackendError
 from coding_agent.models import ModelConfig, ToolName
@@ -240,49 +240,45 @@ def parse_agent_action(payload: dict[str, Any] | str) -> AgentAction:
     )
 
 
-def map_request_error(error: HTTPError | URLError | TimeoutError) -> ModelBackendError:
-    if isinstance(error, HTTPError):
-        return ModelBackendError(f"OpenAI-compatible request failed with HTTP {error.code}: {error.reason}")
-    reason = getattr(error, "reason", str(error))
-    return ModelBackendError(f"OpenAI-compatible request failed: {reason}")
+def map_request_error(error: APIError) -> ModelBackendError:
+    if isinstance(error, RateLimitError):
+        return ModelBackendError(f"OpenAI-compatible request failed with rate limit: {error}")
+    if isinstance(error, APITimeoutError):
+        return ModelBackendError(f"OpenAI-compatible request timed out: {error}")
+    if isinstance(error, APIConnectionError):
+        return ModelBackendError(f"OpenAI-compatible request failed: {error}")
+    status_code = getattr(error, "status_code", None)
+    if status_code is not None:
+        return ModelBackendError(f"OpenAI-compatible request failed with HTTP {status_code}: {error}")
+    return ModelBackendError(f"OpenAI-compatible request failed: {error}")
 
 
 class OpenAICompatibleBackend:
-    def __init__(self, config: ModelConfig, timeout_seconds: int = 60) -> None:
+    def __init__(self, config: ModelConfig, timeout_seconds: int = 60, client: Any | None = None) -> None:
         self.config = config
         self.timeout_seconds = timeout_seconds
-
-    def build_request(self, messages: list[dict[str, Any]]) -> Request:
-        """Build a /chat/completions request using the official-style shape."""
-
-        url = self.config.base_url.rstrip("/") + "/chat/completions"
-        data = json.dumps(
-            {
-                "model": self.config.model,
-                "messages": messages,
-                "tools": tool_definitions(),
-                "tool_choice": "auto",
-            }
-        ).encode("utf-8")
-        return Request(
-            url,
-            data=data,
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        self.client = client or OpenAI(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            timeout=timeout_seconds,
         )
+
+    def request_payload(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """Build Chat Completions parameters for the official OpenAI SDK."""
+
+        return {
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tool_definitions(),
+            "tool_choice": "auto",
+        }
 
     def next_action(self, messages: list[dict[str, Any]]) -> AgentAction:
         """Request the next tool/final action from the configured model."""
 
-        request = self.build_request(messages)
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError) as exc:
+            completion = self.client.chat.completions.create(**self.request_payload(messages))
+        except APIError as exc:
             raise map_request_error(exc) from exc
-        except json.JSONDecodeError as exc:
-            raise ModelBackendError("OpenAI-compatible response body is not valid JSON") from exc
+        payload = completion.model_dump() if hasattr(completion, "model_dump") else completion
         return parse_agent_action(payload)

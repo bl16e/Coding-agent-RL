@@ -1,8 +1,8 @@
 # CLI Contract: Agent Runtime Environment Refactor
 
-This contract describes user-visible command behavior for the first version of
-the refactored benchmark runtime. The first version exposes only `prepare` and
-`run` for SWE-Bench benchmark runtime work.
+This contract describes user-visible command behavior for the refactored
+benchmark runtime. Single-task work uses `prepare` and `run`; full SWE-Bench
+Lite orchestration uses `batch-run`.
 
 ## Exit Code Contract
 
@@ -106,6 +106,47 @@ coding-agent swebench run
   plus the cleanup action, stops or removes the container when possible, and
   removes the active index entry.
 
+## `coding-agent swebench batch-run`
+
+Run all tasks from one or more SWE-Bench Lite datasets by coordinating the same
+official-style `prepare -> run` flow for each task.
+
+```text
+coding-agent swebench batch-run
+  --dataset <path>
+  [--dataset <path> ...]
+  --max-steps <n>
+  --timeout-seconds <n>
+  --test-timeout-seconds <n>
+  --output-dir <path>
+  [--jobs <n>]
+  [--build-missing]
+  [--replace-existing]
+  [--resume]
+  [--include-pass-to-pass]
+  [--cleanup | --no-cleanup]
+  [--arch <x86_64|arm64>]
+  [--model <name>]
+  [--backend <mock|openai-compatible>]
+```
+
+**Behavior**
+
+- Accepts multiple `--dataset` values and preserves dataset row order in
+  aggregate outputs.
+- Rejects duplicate instance ids across all input datasets before task start.
+- For each task, writes `<output-dir>/<instance-id>/prepare` and
+  `<output-dir>/<instance-id>/run`.
+- Runs the existing official `prepare` operation before the existing official
+  `run` operation for each task.
+- Defaults to cleanup after each task run so a full Lite run does not leave all
+  prepared containers active.
+- Writes `batch_state.json`, `batch_summary.json`, and aggregate
+  `prediction.jsonl`.
+- With `--resume`, skips tasks already recorded as `solved`, `failed`, or
+  `incomplete` in `batch_state.json`.
+- Does not use the legacy registry batch runtime.
+
 ## Unsupported Inputs
 
 Commands must fail before agent execution with exit code 2 for:
@@ -122,7 +163,8 @@ Commands must fail before agent execution with exit code 2 for:
 - legacy registry, legacy sandbox, or legacy SWE-Bench runtime options such as
   `--registry`, `prepare-sandbox`, `solve-sandbox`, `prepare-sandboxes`, or
   `solve-sandboxes`;
-- batch benchmark orchestration request.
+- invalid `batch-run` input such as no datasets, duplicate instance ids, or
+  non-positive `--jobs`.
 
 ## Artifact Contract
 

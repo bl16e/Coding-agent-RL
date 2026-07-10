@@ -78,6 +78,7 @@ def test_swebench_help_lists_only_prepare_and_run_for_runtime_work(capsys):
     assert exit_code == 0
     assert "prepare" in captured.out
     assert "run" in captured.out
+    assert "batch-run" in captured.out
     for command in (*LEGACY_SANDBOX_COMMANDS, *LEGACY_BATCH_COMMANDS):
         assert command not in captured.out
 
@@ -292,3 +293,54 @@ def test_swebench_run_contract_wires_active_index_and_cleanup(tmp_path: Path, mo
     assert captured["cleanup"] is True
     assert captured["include_pass_to_pass"] is True
     assert "build_missing" not in captured
+
+
+def test_swebench_batch_run_accepts_multiple_datasets_and_wires_coordinator(tmp_path: Path, monkeypatch):
+    dev_dataset = write_swebench_parquet(tmp_path / "dev.parquet")
+    test_dataset = write_swebench_parquet(
+        tmp_path / "test.parquet",
+        rows=[swebench_row(instance_id="django__django-11100", base_commit="def456")],
+    )
+    captured = {}
+
+    def fake_run_official_swebench_batch(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("coding_agent.cli.run_official_swebench_batch", fake_run_official_swebench_batch, raising=False)
+
+    exit_code = main(
+        [
+            "swebench",
+            "batch-run",
+            "--dataset",
+            str(dev_dataset),
+            "--dataset",
+            str(test_dataset),
+            "--output-dir",
+            str(tmp_path / "batch"),
+            "--max-steps",
+            "1",
+            "--timeout-seconds",
+            "60",
+            "--test-timeout-seconds",
+            "10",
+            "--jobs",
+            "2",
+            "--build-missing",
+            "--replace-existing",
+            "--resume",
+            "--include-pass-to-pass",
+            "--backend",
+            "mock",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["dataset_paths"] == (str(dev_dataset), str(test_dataset))
+    assert captured["output_dir"] == Path(tmp_path / "batch")
+    assert captured["jobs"] == 2
+    assert captured["build_missing"] is True
+    assert captured["replace_existing"] is True
+    assert captured["resume"] is True
+    assert captured["include_pass_to_pass"] is True

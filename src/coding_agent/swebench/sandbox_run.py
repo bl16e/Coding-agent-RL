@@ -1475,6 +1475,223 @@ def _load_records_for_batch(
     return records
 
 
+def _load_all_records_from_datasets(dataset_paths: Sequence[str | Path]) -> tuple[tuple[Path, SwebenchTaskRecord], ...]:
+    paths = tuple(Path(path) for path in dataset_paths)
+    if not paths:
+        raise SandboxedRunInputError("at least one dataset is required")
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise SandboxedRunInputError("pyarrow is required to read parquet datasets") from exc
+
+    loaded: list[tuple[Path, SwebenchTaskRecord]] = []
+    seen_instance_ids: set[str] = set()
+    duplicates: list[str] = []
+    for path in paths:
+        if not path.is_file():
+            raise SandboxedRunInputError(f"dataset does not exist: {path}")
+        for row in pq.read_table(path).to_pylist():
+            record = SwebenchTaskRecord.from_row(row)
+            if record.instance_id in seen_instance_ids and record.instance_id not in duplicates:
+                duplicates.append(record.instance_id)
+            seen_instance_ids.add(record.instance_id)
+            loaded.append((path, record))
+    if duplicates:
+        raise SandboxedRunInputError("duplicate instance id: " + ", ".join(duplicates))
+    if not loaded:
+        raise SandboxedRunInputError("at least one task record is required")
+    return tuple(loaded)
+
+
+def _initialize_official_batch_state(
+    *,
+    path: Path,
+    lock: Lock,
+    records: Sequence[tuple[Path, SwebenchTaskRecord]],
+    output_dir: Path,
+) -> None:
+    with lock:
+        state = _load_batch_state(path)
+        state["datasets"] = [str(dataset_path) for dataset_path, _record in records]
+        tasks = state.setdefault("tasks", {})
+        for dataset_path, record in records:
+            entry = dict(tasks.get(record.instance_id, {}))
+            entry.setdefault("instance_id", record.instance_id)
+            entry.setdefault("repo", record.repo)
+            entry.setdefault("base_commit", record.base_commit)
+            entry.setdefault("dataset", str(dataset_path))
+            entry.setdefault("status", "pending")
+            entry.setdefault("prepare_dir", str(output_dir / _safe_instance_dir(record.instance_id) / "prepare"))
+            entry.setdefault("run_dir", str(output_dir / _safe_instance_dir(record.instance_id) / "run"))
+            tasks[record.instance_id] = entry
+        _write_batch_state(path, state)
+
+
+def run_official_swebench_batch(
+    *,
+    dataset_paths: Sequence[str | Path],
+    docker: DockerCli,
+    backend_factory: Callable[[], ModelBackend],
+    budget: RunBudget,
+    model_name: str,
+    output_dir: str | Path,
+    jobs: int = 1,
+    build_missing: bool = False,
+    replace_existing: bool = False,
+    resume: bool = False,
+    include_pass_to_pass: bool = False,
+    cleanup: bool = True,
+    active_index_path: str | Path = ".coding-agent/active-sandboxes.json",
+    arch: str = "x86_64",
+) -> int:
+    """Run all tasks from one or more datasets through official prepare -> run."""
+    if jobs <= 0:
+        raise SandboxedRunInputError("jobs must be a positive integer")
+    records = _load_all_records_from_datasets(dataset_paths)
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    state = root / "batch_state.json"
+    state_lock = Lock()
+    _initialize_official_batch_state(path=state, lock=state_lock, records=records, output_dir=root)
+    terminal_resume_statuses = {RunStatus.SOLVED.value, RunStatus.FAILED.value, RunStatus.INCOMPLETE.value}
+
+    def run_one(item: tuple[Path, SwebenchTaskRecord]) -> dict[str, Any]:
+        dataset_path, record = item
+        instance_root = root / _safe_instance_dir(record.instance_id)
+        prepare_dir = instance_root / "prepare"
+        run_dir = instance_root / "run"
+        task_active_index = instance_root / "active-sandboxes.json"
+        if resume:
+            current_state = _load_batch_state(state)
+            current_status = current_state.get("tasks", {}).get(record.instance_id, {}).get("status")
+            if current_status in terminal_resume_statuses:
+                return {
+                    "instance_id": record.instance_id,
+                    "status": str(current_status),
+                    "error": None,
+                    "prepare_dir": str(prepare_dir),
+                    "run_dir": str(run_dir),
+                    "skipped": True,
+                    "artifact_error": False,
+                    "runtime_error": False,
+                }
+        _update_batch_task(
+            state,
+            state_lock,
+            record.instance_id,
+            status="preparing",
+            dataset=str(dataset_path),
+            prepare_dir=str(prepare_dir),
+            run_dir=str(run_dir),
+            last_error=None,
+        )
+        try:
+            prepare_official_swebench_runtime(
+                dataset_path=dataset_path,
+                instance_id=record.instance_id,
+                docker=docker,
+                output_dir=prepare_dir,
+                active_index_path=task_active_index,
+                build_missing=build_missing,
+                replace_existing=replace_existing,
+                arch=arch,
+            )
+            _update_batch_task(state, state_lock, record.instance_id, status="running", last_error=None)
+            summary = run_prepared_swebench_runtime(
+                dataset_path=dataset_path,
+                instance_id=record.instance_id,
+                docker=docker,
+                backend=backend_factory(),
+                budget=budget,
+                model_name=model_name,
+                output_dir=run_dir,
+                active_index_path=task_active_index,
+                include_pass_to_pass=include_pass_to_pass,
+                cleanup=cleanup,
+                arch=arch,
+            )
+            _update_batch_task(
+                state,
+                state_lock,
+                record.instance_id,
+                status=summary.status.value,
+                last_error=summary.error,
+            )
+            return {
+                "instance_id": record.instance_id,
+                "status": summary.status.value,
+                "error": summary.error,
+                "prepare_dir": str(prepare_dir),
+                "run_dir": str(run_dir),
+                "skipped": False,
+                "artifact_error": False,
+                "runtime_error": summary.status is RunStatus.ERRORED,
+            }
+        except ArtifactPersistenceError as exc:
+            _update_batch_task(state, state_lock, record.instance_id, status="artifact_error", last_error=str(exc))
+            return {
+                "instance_id": record.instance_id,
+                "status": "artifact_error",
+                "error": str(exc),
+                "prepare_dir": str(prepare_dir),
+                "run_dir": str(run_dir),
+                "skipped": False,
+                "artifact_error": True,
+                "runtime_error": False,
+            }
+        except Exception as exc:
+            _update_batch_task(state, state_lock, record.instance_id, status="errored", last_error=str(exc))
+            return {
+                "instance_id": record.instance_id,
+                "status": "errored",
+                "error": str(exc),
+                "prepare_dir": str(prepare_dir),
+                "run_dir": str(run_dir),
+                "skipped": False,
+                "artifact_error": False,
+                "runtime_error": True,
+            }
+
+    max_workers = min(jobs, len(records))
+    results_by_id: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_record = {pool.submit(run_one, item): item[1] for item in records}
+        for future in as_completed(future_to_record):
+            record = future_to_record[future]
+            results_by_id[record.instance_id] = future.result()
+
+    ordered_results = [results_by_id[record.instance_id] for _dataset_path, record in records]
+    status_counts: dict[str, int] = {}
+    for result in ordered_results:
+        status = str(result["status"])
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    predictions = [
+        _prediction_from_run_dir(Path(result["run_dir"]), result["instance_id"], model_name)
+        for result in ordered_results
+    ]
+    write_predictions_jsonl(root / "prediction.jsonl", predictions)
+    (root / "batch_summary.json").write_text(
+        json.dumps(
+            {
+                "total": len(ordered_results),
+                "jobs": jobs,
+                "datasets": [str(path) for path in dataset_paths],
+                "statuses": status_counts,
+                "tasks": ordered_results,
+            },
+            indent=2,
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    if any(result["artifact_error"] for result in ordered_results):
+        return 3
+    if any(result["runtime_error"] for result in ordered_results):
+        return 4
+    return 0
+
+
 def prepare_swebench_sandboxes(
     *,
     task_records: Sequence[SwebenchTaskRecord] | None = None,

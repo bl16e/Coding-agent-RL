@@ -27,6 +27,7 @@ from coding_agent.swebench.sandbox_run import (
     prepare_official_swebench_runtime,
     prepare_swebench_sandboxes,
     prepare_swebench_sandbox,
+    run_official_swebench_batch,
     run_prepared_swebench_runtime,
     run_swebench_task,
     run_swebench_tasks,
@@ -141,6 +142,24 @@ def build_parser() -> argparse.ArgumentParser:
     swebench_run_parser.add_argument("--cleanup", action="store_true")
     swebench_run_parser.add_argument("--model")
     swebench_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
+    swebench_batch_run_parser = swebench_subparsers.add_parser(
+        "batch-run",
+        help="run all tasks from one or more SWE-Bench Lite datasets",
+    )
+    swebench_batch_run_parser.add_argument("--dataset", action="append", required=True, dest="datasets")
+    swebench_batch_run_parser.add_argument("--max-steps", type=int, required=True)
+    swebench_batch_run_parser.add_argument("--timeout-seconds", type=int, required=True)
+    swebench_batch_run_parser.add_argument("--test-timeout-seconds", type=int, required=True)
+    swebench_batch_run_parser.add_argument("--output-dir", required=True)
+    swebench_batch_run_parser.add_argument("--jobs", type=int, default=1)
+    swebench_batch_run_parser.add_argument("--build-missing", action="store_true")
+    swebench_batch_run_parser.add_argument("--replace-existing", action="store_true")
+    swebench_batch_run_parser.add_argument("--resume", action="store_true")
+    swebench_batch_run_parser.add_argument("--include-pass-to-pass", action="store_true")
+    swebench_batch_run_parser.add_argument("--cleanup", action=argparse.BooleanOptionalAction, default=True)
+    swebench_batch_run_parser.add_argument("--arch", choices=("x86_64", "arm64"), default="x86_64")
+    swebench_batch_run_parser.add_argument("--model")
+    swebench_batch_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
     return parser
 
 
@@ -536,6 +555,55 @@ def _swebench_run_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _swebench_batch_run_command(args: argparse.Namespace) -> int:
+    """Run every task in one or more SWE-Bench Lite datasets through prepare -> run."""
+    try:
+        budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
+        if args.jobs <= 0:
+            raise ValueError("jobs must be a positive integer")
+        if args.backend == "mock":
+            model_name = args.model or "mock-model"
+
+            def backend_factory():
+                return MockBackend()
+
+        else:
+            config = load_model_config(model_override=args.model)
+            model_name = config.model
+
+            def backend_factory():
+                return OpenAICompatibleBackend(config)
+
+        return run_official_swebench_batch(
+            dataset_paths=tuple(args.datasets),
+            docker=DockerCli(),
+            backend_factory=backend_factory,
+            budget=budget,
+            model_name=model_name,
+            output_dir=Path(args.output_dir),
+            jobs=args.jobs,
+            build_missing=args.build_missing,
+            replace_existing=args.replace_existing,
+            resume=args.resume,
+            include_pass_to_pass=args.include_pass_to_pass,
+            cleanup=args.cleanup,
+            active_index_path=Path(".coding-agent/active-sandboxes.json"),
+            arch=args.arch,
+        )
+    except (ValueError, SwebenchDatasetError, SandboxedRunInputError, MissingModelConfigError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ArtifactPersistenceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except SandboxedRunRuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+
+
 def _reject_legacy_swebench_operation(argv: Sequence[str] | None) -> int | None:
     args = tuple(sys.argv[1:] if argv is None else argv)
     if len(args) < 2 or args[0] != "swebench":
@@ -578,6 +646,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _swebench_prepare_command(args)
         if getattr(args, "swebench_command", None) == "run":
             return _swebench_run_command(args)
+        if getattr(args, "swebench_command", None) == "batch-run":
+            return _swebench_batch_run_command(args)
         parser.error("swebench subcommand is required")
         return 2
     parser.error(f"command {args.command!r} is not implemented yet")

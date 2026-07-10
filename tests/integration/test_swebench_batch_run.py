@@ -5,11 +5,13 @@ import pytest
 
 from coding_agent.model_backends.base import AgentAction, AgentActionType
 from coding_agent.model_backends.mock import MockBackend
-from coding_agent.models import BaseImage, RunBudget
+from coding_agent.models import BaseImage, RunBudget, RunStatus
 from coding_agent.sandbox.docker_cli import DockerResult
 from coding_agent.swebench.dataset import SwebenchTaskRecord
 from coding_agent.swebench.sandbox_run import SandboxedRunInputError, run_swebench_tasks
 from coding_agent.swebench.sandbox_run import prepare_swebench_sandboxes, solve_swebench_sandboxes
+from coding_agent.swebench.sandbox_run import run_official_swebench_batch
+from tests.helpers.swebench_fixtures import swebench_row, write_swebench_parquet
 
 
 class FakeDocker:
@@ -203,3 +205,72 @@ def test_solve_sandboxes_uses_state_to_skip_solved_and_update_remaining_task(tmp
     assert not (output_dir / "django__django-11099" / "solve").exists()
     created_names = [call[1] for call in docker.calls if call[0] == "create"]
     assert created_names == []
+
+
+def test_official_batch_run_merges_multiple_datasets_and_writes_aggregate_outputs(tmp_path: Path, monkeypatch):
+    dev_dataset = write_swebench_parquet(
+        tmp_path / "dev.parquet",
+        rows=[swebench_row(instance_id="django__django-11099", base_commit="abc123")],
+    )
+    test_dataset = write_swebench_parquet(
+        tmp_path / "test.parquet",
+        rows=[swebench_row(instance_id="django__django-11100", base_commit="def456")],
+    )
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        calls.append(("prepare", kwargs["instance_id"], kwargs["output_dir"]))
+
+    class Summary:
+        status = RunStatus.INCOMPLETE
+        error = None
+
+    def fake_run_prepared_swebench_runtime(**kwargs):
+        calls.append(("run", kwargs["instance_id"], kwargs["output_dir"]))
+        run_dir = Path(kwargs["output_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "prediction.jsonl").write_text(
+            json.dumps(
+                {
+                    "instance_id": kwargs["instance_id"],
+                    "model_name_or_path": kwargs["model_name"],
+                    "model_patch": "",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return Summary()
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.prepare_official_swebench_runtime", fake_prepare_official_swebench_runtime)
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.run_prepared_swebench_runtime", fake_run_prepared_swebench_runtime)
+
+    exit_code = run_official_swebench_batch(
+        dataset_paths=(dev_dataset, test_dataset),
+        docker=FakeDocker(),
+        backend_factory=_backend_factory,
+        budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=tmp_path / "official-batch",
+        jobs=1,
+        build_missing=True,
+        replace_existing=True,
+        resume=False,
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        ("prepare", "django__django-11099", tmp_path / "official-batch" / "django__django-11099" / "prepare"),
+        ("run", "django__django-11099", tmp_path / "official-batch" / "django__django-11099" / "run"),
+        ("prepare", "django__django-11100", tmp_path / "official-batch" / "django__django-11100" / "prepare"),
+        ("run", "django__django-11100", tmp_path / "official-batch" / "django__django-11100" / "run"),
+    ]
+    summary = json.loads((tmp_path / "official-batch" / "batch_summary.json").read_text(encoding="utf-8"))
+    assert summary["total"] == 2
+    assert summary["statuses"] == {"incomplete": 2}
+    assert set(summary["datasets"]) == {str(dev_dataset), str(test_dataset)}
+    predictions = (tmp_path / "official-batch" / "prediction.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["instance_id"] for line in predictions] == [
+        "django__django-11099",
+        "django__django-11100",
+    ]

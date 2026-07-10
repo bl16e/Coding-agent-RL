@@ -16,8 +16,8 @@ Supported:
 - Single-task agent runs.
 - Mock and OpenAI-compatible model backends.
 - Local-workspace runs through `coding-agent run`.
-- Official-style SWE-Bench runtime operations through exactly two commands:
-  `coding-agent swebench prepare` and `coding-agent swebench run`.
+- Official-style SWE-Bench runtime operations through `coding-agent swebench
+  prepare`, `coding-agent swebench run`, and `coding-agent swebench batch-run`.
 - Runtime lineage metadata for Base, Env, and Instance image keys.
 - Default `FAIL_TO_PASS` validation and opt-in `PASS_TO_PASS` validation with
   `--include-pass-to-pass`.
@@ -27,7 +27,6 @@ Supported:
 
 Not supported in the refactored SWE-Bench runtime:
 
-- Batch benchmark orchestration.
 - Legacy benchmark runtime commands such as `prepare-sandbox`,
   `solve-sandbox`, `prepare-sandboxes`, and `solve-sandboxes`.
 - `--registry` on `swebench prepare` or `swebench run`.
@@ -73,7 +72,7 @@ Common budget flags:
 
 ## SWE-Bench Official-Style Runtime
 
-The refactored SWE-Bench runtime has two user-visible operations:
+The refactored SWE-Bench runtime has three user-visible operations:
 
 1. `prepare`: resolve the selected dataset row into an adapted TestSpec, check
    or explicitly build Base/Env/Instance image layers, create one task-specific
@@ -83,6 +82,8 @@ The refactored SWE-Bench runtime has two user-visible operations:
    container-confined tools, execute final review through the adapted TestSpec
    `eval_script`, export artifacts, and mark or clean up the prepared
    environment.
+3. `batch-run`: run every task from one or more SWE-Bench Lite datasets by
+   coordinating the same official `prepare -> run` flow per task.
 
 ### Prepare
 
@@ -145,6 +146,30 @@ cleanup metadata:
 ```powershell
 --cleanup
 ```
+
+### Batch Run
+
+Run all tasks from multiple Lite parquet files, such as the 23-row dev split
+plus the 300-row test split:
+
+```powershell
+coding-agent swebench batch-run `
+  --dataset data\dev-00000-of-00001.parquet `
+  --dataset data\test-00000-of-00001.parquet `
+  --backend mock `
+  --max-steps 20 `
+  --timeout-seconds 900 `
+  --test-timeout-seconds 180 `
+  --jobs 2 `
+  --build-missing `
+  --resume `
+  --output-dir runs\lite-323
+```
+
+`batch-run` writes per-task `prepare` and `run` directories, plus aggregate
+`batch_state.json`, `batch_summary.json`, and `prediction.jsonl` files in the
+batch output directory. By default it cleans up each consumed prepared
+environment after that task's run.
 
 Legacy benchmark runtime commands and registry input are rejected:
 

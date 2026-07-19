@@ -1,5 +1,6 @@
 """Contract tests for the official-style SWE-Bench runtime CLI surface."""
 
+import json
 from pathlib import Path
 
 from coding_agent.cli import main
@@ -79,6 +80,7 @@ def test_swebench_help_lists_only_prepare_and_run_for_runtime_work(capsys):
     assert "prepare" in captured.out
     assert "run" in captured.out
     assert "batch-run" in captured.out
+    assert "evaluate" in captured.out
     for command in (*LEGACY_SANDBOX_COMMANDS, *LEGACY_BATCH_COMMANDS):
         assert command not in captured.out
 
@@ -344,3 +346,73 @@ def test_swebench_batch_run_accepts_multiple_datasets_and_wires_coordinator(tmp_
     assert captured["replace_existing"] is True
     assert captured["resume"] is True
     assert captured["include_pass_to_pass"] is True
+
+
+def test_swebench_evaluate_requires_batch_dir(capsys):
+    exit_code = main(["swebench", "evaluate"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--batch-dir" in captured.err
+
+
+def test_swebench_evaluate_wires_load_and_compute_functions(tmp_path: Path, monkeypatch):
+    batch_dir = tmp_path / "batch"
+    batch_dir.mkdir()
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_load_evaluation_results(batch_dir_path):
+        captured_kwargs["load_called_with"] = str(batch_dir_path)
+        return [
+            {
+                "instance_id": "django__django-11099",
+                "repo": "django/django",
+                "status": "solved",
+                "resolved": True,
+                "resolved_text": "✓ RESOLVED",
+                "error": None,
+                "fail_to_pass_success": 1,
+                "fail_to_pass_failure": 0,
+                "pass_to_pass_success": 0,
+                "pass_to_pass_failure": 0,
+            }
+        ]
+
+    monkeypatch.setattr("coding_agent.cli.load_evaluation_results", fake_load_evaluation_results)
+
+    exit_code = main(
+        [
+            "swebench",
+            "evaluate",
+            "--batch-dir",
+            str(batch_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured_kwargs["load_called_with"] == str(batch_dir)
+
+
+def test_swebench_evaluate_json_output_flag(tmp_path: Path, monkeypatch, capsys):
+    batch_dir = tmp_path / "batch"
+    batch_dir.mkdir()
+
+    def fake_load_evaluation_results(batch_dir_path):
+        return []
+
+    monkeypatch.setattr("coding_agent.cli.load_evaluation_results", fake_load_evaluation_results)
+
+    exit_code = main(
+        [
+            "swebench",
+            "evaluate",
+            "--batch-dir",
+            str(batch_dir),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["total"] == 0

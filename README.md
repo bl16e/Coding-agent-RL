@@ -17,7 +17,8 @@ Supported:
 - Mock and OpenAI-compatible model backends.
 - Local-workspace runs through `coding-agent run`.
 - Official-style SWE-Bench runtime operations through `coding-agent swebench
-  prepare`, `coding-agent swebench run`, and `coding-agent swebench batch-run`.
+  prepare`, `coding-agent swebench run`, `coding-agent swebench batch-run`,
+  and `coding-agent swebench evaluate`.
 - Runtime lineage metadata for Base, Env, and Instance image keys.
 - Default `FAIL_TO_PASS` validation and opt-in `PASS_TO_PASS` validation with
   `--include-pass-to-pass`.
@@ -72,7 +73,7 @@ Common budget flags:
 
 ## SWE-Bench Official-Style Runtime
 
-The refactored SWE-Bench runtime has three user-visible operations:
+The refactored SWE-Bench runtime has four user-visible operations:
 
 1. `prepare`: resolve the selected dataset row into an adapted TestSpec, check
    or explicitly build Base/Env/Instance image layers, create one task-specific
@@ -170,6 +171,22 @@ coding-agent swebench batch-run `
 `batch_state.json`, `batch_summary.json`, and `prediction.jsonl` files in the
 batch output directory. By default it cleans up each consumed prepared
 environment after that task's run.
+
+### Evaluate
+
+Compute aggregate resolution metrics from a completed batch run:
+
+```powershell
+coding-agent swebench evaluate --batch-dir runs\lite-323
+
+# JSON output for programmatic consumption
+coding-agent swebench evaluate --batch-dir runs\lite-323 --json
+
+# Write report to file
+coding-agent swebench evaluate --batch-dir runs\lite-323 --output report.txt
+```
+
+`evaluate` reports total, resolved, unresolved, and errored counts, plus per-repository breakdown and per-instance detail. Errored instances (no eval report) are excluded from the resolve-rate denominator.
 
 Legacy benchmark runtime commands and registry input are rejected:
 

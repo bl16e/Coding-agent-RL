@@ -18,6 +18,11 @@ from coding_agent.sandbox.docker_cli import DockerCli
 from coding_agent.sandbox.registry import SandboxRegistry, SandboxRegistryError, register_base_image
 from coding_agent.swebench.dataset import SwebenchDatasetError, load_task_record
 from coding_agent.swebench.prediction import export_prediction_from_run
+from coding_agent.swebench.evaluate import (
+    compute_aggregate_metrics,
+    load_evaluation_results,
+    render_evaluation_report,
+)
 from coding_agent.swebench.sandbox_run import (
     SandboxedRunInputError,
     SandboxedRunRuntimeError,
@@ -160,6 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
     swebench_batch_run_parser.add_argument("--arch", choices=("x86_64", "arm64"), default="x86_64")
     swebench_batch_run_parser.add_argument("--model")
     swebench_batch_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
+    swebench_evaluate_parser = swebench_subparsers.add_parser(
+        "evaluate",
+        help="evaluate aggregate results from a batch run",
+    )
+    swebench_evaluate_parser.add_argument("--batch-dir", required=True)
+    swebench_evaluate_parser.add_argument("--json", action="store_true", dest="json_output")
+    swebench_evaluate_parser.add_argument("--output")
     return parser
 
 
@@ -604,6 +616,37 @@ def _swebench_batch_run_command(args: argparse.Namespace) -> int:
         return 4
 
 
+def _swebench_evaluate_command(args: argparse.Namespace) -> int:
+    """Compute aggregate evaluation metrics from a batch output directory."""
+    try:
+        batch_dir = Path(args.batch_dir)
+        results = load_evaluation_results(batch_dir)
+        report = compute_aggregate_metrics(results)
+        report["batch_dir"] = str(batch_dir)
+        if args.json_output:
+            output_text = json.dumps(report, indent=2, ensure_ascii=True)
+        else:
+            output_text = render_evaluation_report(report, batch_dir=str(batch_dir))
+        if args.output:
+            try:
+                Path(args.output).write_text(output_text, encoding="utf-8")
+            except OSError as exc:
+                print(str(exc), file=sys.stderr)
+                return 3
+        else:
+            print(output_text)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    return 0
+
+
 def _reject_legacy_swebench_operation(argv: Sequence[str] | None) -> int | None:
     args = tuple(sys.argv[1:] if argv is None else argv)
     if len(args) < 2 or args[0] != "swebench":
@@ -648,6 +691,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _swebench_run_command(args)
         if getattr(args, "swebench_command", None) == "batch-run":
             return _swebench_batch_run_command(args)
+        if getattr(args, "swebench_command", None) == "evaluate":
+            return _swebench_evaluate_command(args)
         parser.error("swebench subcommand is required")
         return 2
     parser.error(f"command {args.command!r} is not implemented yet")

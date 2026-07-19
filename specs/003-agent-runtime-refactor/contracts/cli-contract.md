@@ -147,6 +147,35 @@ coding-agent swebench batch-run
   `incomplete` in `batch_state.json`.
 - Does not use the legacy registry batch runtime.
 
+## `coding-agent swebench evaluate`
+
+Aggregate evaluation metrics from a completed batch run output directory.
+
+```text
+coding-agent swebench evaluate
+  --batch-dir <path>
+  [--json]
+  [--output <path>]
+```
+
+**Behavior**
+
+- Reads `batch_state.json` to enumerate instances and their `run_dir` paths.
+- Falls back to scanning `<batch-dir>` for subdirectories containing
+  `run/summary.json` when no `batch_state.json` is present.
+- Reads per-instance `run/summary.json` and extracts the `resolved` field from
+  `validation.eval_report`.
+- Computes aggregate metrics: total, resolved, unresolved, errored counts,
+  resolve rate (resolved / (total - errored)), per-repository breakdown, and
+  per-instance detail.
+- By default renders a human-readable text report to stdout.
+- With `--json`, outputs the aggregate report as a single JSON object.
+- With `--output <path>`, writes the report to a file instead of stdout.
+- Instances missing `summary.json` or `eval_report` are counted as errored and
+  excluded from the resolve-rate denominator.
+- Fails with exit code 2 when the batch directory does not exist or contains no
+  valid run directories, and with exit code 3 on output write failure.
+
 ## Unsupported Inputs
 
 Commands must fail before agent execution with exit code 2 for:

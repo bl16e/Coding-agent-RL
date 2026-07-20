@@ -377,6 +377,129 @@ def test_official_batch_run_preflights_missing_images_before_prepare(tmp_path: P
     assert not any(call[0] in {"create", "start"} for call in docker.calls)
 
 
+def test_official_batch_run_uses_active_index_path_as_per_instance_base(tmp_path: Path, monkeypatch):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    active_index = tmp_path / "indexes" / "active-sandboxes.json"
+    seen_indexes: list[Path] = []
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        seen_indexes.append(Path(kwargs["active_index_path"]))
+
+    class Summary:
+        status = RunStatus.INCOMPLETE
+        error = None
+
+    def fake_run_prepared_swebench_runtime(**kwargs):
+        seen_indexes.append(Path(kwargs["active_index_path"]))
+        run_dir = Path(kwargs["output_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "prediction.jsonl").write_text(
+            json.dumps(
+                {
+                    "instance_id": kwargs["instance_id"],
+                    "model_name_or_path": kwargs["model_name"],
+                    "model_patch": "",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return Summary()
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.prepare_official_swebench_runtime", fake_prepare_official_swebench_runtime)
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.run_prepared_swebench_runtime", fake_run_prepared_swebench_runtime)
+
+    exit_code = run_official_swebench_batch(
+        dataset_paths=(dataset,),
+        docker=PreflightDocker(present_images=set()),
+        backend_factory=_backend_factory,
+        budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=tmp_path / "official-batch",
+        jobs=1,
+        build_missing=True,
+        replace_existing=True,
+        active_index_path=active_index,
+    )
+
+    assert exit_code == 0
+    assert seen_indexes == [
+        tmp_path / "indexes" / "django__django-11099" / "active-sandboxes.json",
+        tmp_path / "indexes" / "django__django-11099" / "active-sandboxes.json",
+    ]
+
+
+def test_official_batch_run_preflights_active_slot_collision_before_prepare(tmp_path: Path, monkeypatch):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    active_index = tmp_path / "indexes" / "active-sandboxes.json"
+    task_index = tmp_path / "indexes" / "django__django-11099" / "active-sandboxes.json"
+    task_index.parent.mkdir(parents=True)
+    task_index.write_text(
+        json.dumps(
+            {
+                "prepared_environments": {
+                    "django__django-11099": {
+                        "status": "ready",
+                        "container_name": "old-container",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        calls.append(kwargs["instance_id"])
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.prepare_official_swebench_runtime", fake_prepare_official_swebench_runtime)
+
+    with pytest.raises(SandboxedRunInputError, match="output/slot collisions"):
+        run_official_swebench_batch(
+            dataset_paths=(dataset,),
+            docker=PreflightDocker(present_images=set()),
+            backend_factory=_backend_factory,
+            budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+            model_name="mock-model",
+            output_dir=tmp_path / "official-batch",
+            jobs=1,
+            build_missing=True,
+            replace_existing=False,
+            active_index_path=active_index,
+        )
+
+    assert calls == []
+
+
+def test_official_batch_run_preflights_output_collision_before_prepare(tmp_path: Path, monkeypatch):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    prepare_dir = tmp_path / "official-batch" / "django__django-11099" / "prepare"
+    prepare_dir.mkdir(parents=True)
+    (prepare_dir / "sandbox.json").write_text("{}", encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        calls.append(kwargs["instance_id"])
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.prepare_official_swebench_runtime", fake_prepare_official_swebench_runtime)
+
+    with pytest.raises(SandboxedRunInputError, match="output/slot collisions"):
+        run_official_swebench_batch(
+            dataset_paths=(dataset,),
+            docker=PreflightDocker(present_images=set()),
+            backend_factory=_backend_factory,
+            budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+            model_name="mock-model",
+            output_dir=tmp_path / "official-batch",
+            jobs=1,
+            build_missing=True,
+            replace_existing=True,
+            resume=False,
+        )
+
+    assert calls == []
+
+
 def test_official_batch_run_build_missing_serializes_shared_images_before_parallel_prepare(tmp_path: Path, monkeypatch):
     dataset = write_swebench_parquet(
         tmp_path / "dataset.parquet",

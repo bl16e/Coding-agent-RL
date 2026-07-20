@@ -1645,6 +1645,48 @@ def _preflight_official_batch_records(
     logger.info("official batch preflight completed: tasks=%s", len(records))
 
 
+def _official_batch_task_active_index(active_index_path: str | Path, instance_id: str) -> Path:
+    base = Path(active_index_path)
+    return base.parent / _safe_instance_dir(instance_id) / base.name
+
+
+def _official_batch_output_path_occupied(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if not path.is_dir():
+        return True
+    return any(path.iterdir())
+
+
+def _preflight_official_batch_collisions(
+    *,
+    records: Sequence[tuple[Path, SwebenchTaskRecord]],
+    output_dir: Path,
+    active_index_path: str | Path,
+    replace_existing: bool,
+    resume: bool,
+) -> None:
+    collisions: list[str] = []
+    for _dataset_path, record in records:
+        instance_root = output_dir / _safe_instance_dir(record.instance_id)
+        prepare_dir = instance_root / "prepare"
+        run_dir = instance_root / "run"
+        task_active_index = _official_batch_task_active_index(active_index_path, record.instance_id)
+        if not replace_existing:
+            payload = _read_active_prepared_index(task_active_index)
+            if record.instance_id in payload.get("prepared_environments", {}):
+                collisions.append(f"{record.instance_id}: active prepared slot exists at {task_active_index}")
+        if not resume:
+            existing_outputs = [path for path in (prepare_dir, run_dir) if _official_batch_output_path_occupied(path)]
+            if existing_outputs:
+                collisions.append(
+                    f"{record.instance_id}: output already exists at "
+                    + ", ".join(str(path) for path in existing_outputs)
+                )
+    if collisions:
+        raise SandboxedRunInputError("official batch preflight found output/slot collisions: " + "; ".join(collisions))
+
+
 def run_official_swebench_batch(
     *,
     dataset_paths: Sequence[str | Path],
@@ -1678,6 +1720,13 @@ def run_official_swebench_batch(
         resume=resume,
         terminal_resume_statuses=terminal_resume_statuses,
     )
+    _preflight_official_batch_collisions(
+        records=preflight_records,
+        output_dir=root,
+        active_index_path=active_index_path,
+        replace_existing=replace_existing,
+        resume=resume,
+    )
     _preflight_official_batch_records(
         records=preflight_records,
         docker=docker,
@@ -1690,7 +1739,7 @@ def run_official_swebench_batch(
         instance_root = root / _safe_instance_dir(record.instance_id)
         prepare_dir = instance_root / "prepare"
         run_dir = instance_root / "run"
-        task_active_index = instance_root / "active-sandboxes.json"
+        task_active_index = _official_batch_task_active_index(active_index_path, record.instance_id)
         if resume:
             current_state = _load_batch_state(state)
             current_status = current_state.get("tasks", {}).get(record.instance_id, {}).get("status")

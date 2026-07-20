@@ -40,6 +40,11 @@ from coding_agent.swebench.sandbox_run import (
     solve_swebench_sandboxes,
     solve_prepared_sandbox,
 )
+from coding_agent.swesmith.dataset import SwesmithDatasetError, create_subset_file, load_huggingface_swesmith
+from coding_agent.swesmith.evaluate import run_official_eval
+from coding_agent.swesmith.export_sft import export_sft
+from coding_agent.swesmith.run import run_swesmith_subset
+from coding_agent.swesmith.runtime import SwesmithRuntimeError
 from coding_agent.trajectory.summary import load_summary, load_trajectory, render_inspect_report
 
 
@@ -178,6 +183,36 @@ def build_parser() -> argparse.ArgumentParser:
     swebench_evaluate_parser.add_argument("--batch-dir", required=True)
     swebench_evaluate_parser.add_argument("--json", action="store_true", dest="json_output")
     swebench_evaluate_parser.add_argument("--output")
+    swesmith_parser = subparsers.add_parser("swesmith", help="SWE-smith training trajectory commands")
+    swesmith_subparsers = swesmith_parser.add_subparsers(dest="swesmith_command")
+    swesmith_create_parser = swesmith_subparsers.add_parser("create-subset", help="create a local SWE-smith subset file")
+    swesmith_create_parser.add_argument("--out", required=True)
+    swesmith_create_parser.add_argument("--split", default="train")
+    swesmith_create_parser.add_argument("--min-fail-to-pass", type=int, default=2)
+    swesmith_create_parser.add_argument("--max-fail-to-pass", type=int, default=5)
+    swesmith_create_parser.add_argument("--require-pr", action="store_true")
+    swesmith_run_parser = swesmith_subparsers.add_parser("run-subset", help="run current agent on a SWE-smith subset")
+    swesmith_run_parser.add_argument("--subset", required=True)
+    swesmith_run_parser.add_argument("--output-dir", required=True)
+    swesmith_run_parser.add_argument("--max-steps", type=int, required=True)
+    swesmith_run_parser.add_argument("--timeout-seconds", type=int, required=True)
+    swesmith_run_parser.add_argument("--test-timeout-seconds", type=int, required=True)
+    swesmith_run_parser.add_argument("--jobs", type=int, default=1)
+    swesmith_run_parser.add_argument("--reference-path")
+    swesmith_run_parser.add_argument("--model")
+    swesmith_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
+    swesmith_eval_parser = swesmith_subparsers.add_parser("eval", help="run official SWE-smith evaluation")
+    swesmith_eval_parser.add_argument("--subset", required=True)
+    swesmith_eval_parser.add_argument("--predictions", required=True)
+    swesmith_eval_parser.add_argument("--run-id", required=True)
+    swesmith_eval_parser.add_argument("--workers", type=int, default=10)
+    swesmith_eval_parser.add_argument("--timeout", type=int, default=240)
+    swesmith_eval_parser.add_argument("--reference-path")
+    swesmith_export_parser = swesmith_subparsers.add_parser("export-sft", help="export resolved trajectories to SFT JSONL")
+    swesmith_export_parser.add_argument("--runs", required=True)
+    swesmith_export_parser.add_argument("--eval-dir", required=True)
+    swesmith_export_parser.add_argument("--out", required=True)
+    swesmith_export_parser.add_argument("--style", choices=("xml",), default="xml")
     return parser
 
 
@@ -684,6 +719,84 @@ def _swebench_evaluate_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _swesmith_create_subset_command(args: argparse.Namespace) -> int:
+    try:
+        instances = load_huggingface_swesmith(split=args.split)
+        selected = create_subset_file(
+            args.out,
+            instances=instances,
+            require_pr=args.require_pr,
+            min_fail_to_pass=args.min_fail_to_pass,
+            max_fail_to_pass=args.max_fail_to_pass,
+        )
+        print(json.dumps({"output": args.out, "count": len(selected)}, indent=2))
+    except SwesmithDatasetError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    return 0
+
+
+def _swesmith_run_subset_command(args: argparse.Namespace) -> int:
+    try:
+        budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
+        if args.backend == "mock":
+            model_name = args.model or "mock-model"
+
+            def backend_factory():
+                return MockBackend()
+
+        else:
+            config = load_model_config(model_override=args.model)
+            model_name = config.model
+
+            def backend_factory():
+                return OpenAICompatibleBackend(config)
+
+        return run_swesmith_subset(
+            subset_path=args.subset,
+            docker=DockerCli(),
+            backend_factory=backend_factory,
+            budget=budget,
+            model_name=model_name,
+            output_dir=Path(args.output_dir),
+            reference_path=args.reference_path,
+            jobs=args.jobs,
+        )
+    except (ValueError, SwesmithDatasetError, SwesmithRuntimeError, MissingModelConfigError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ArtifactPersistenceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+
+
+def _swesmith_eval_command(args: argparse.Namespace) -> int:
+    return run_official_eval(
+        dataset_path=args.subset,
+        predictions_path=args.predictions,
+        run_id=args.run_id,
+        workers=args.workers,
+        timeout=args.timeout,
+        reference_path=args.reference_path,
+    )
+
+
+def _swesmith_export_sft_command(args: argparse.Namespace) -> int:
+    try:
+        count = export_sft(runs_dir=args.runs, eval_dir=args.eval_dir, output=args.out, style=args.style)
+        print(json.dumps({"output": args.out, "count": count}, indent=2))
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
 def _reject_legacy_swebench_operation(argv: Sequence[str] | None) -> int | None:
     args = tuple(sys.argv[1:] if argv is None else argv)
     if len(args) < 2 or args[0] != "swebench":
@@ -732,6 +845,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if getattr(args, "swebench_command", None) == "evaluate":
             return _swebench_evaluate_command(args)
         parser.error("swebench subcommand is required")
+        return 2
+    if args.command == "swesmith":
+        if getattr(args, "swesmith_command", None) == "create-subset":
+            return _swesmith_create_subset_command(args)
+        if getattr(args, "swesmith_command", None) == "run-subset":
+            return _swesmith_run_subset_command(args)
+        if getattr(args, "swesmith_command", None) == "eval":
+            return _swesmith_eval_command(args)
+        if getattr(args, "swesmith_command", None) == "export-sft":
+            return _swesmith_export_sft_command(args)
+        parser.error("swesmith subcommand is required")
         return 2
     parser.error(f"command {args.command!r} is not implemented yet")
     return 2

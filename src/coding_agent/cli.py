@@ -191,6 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
     swesmith_create_parser.add_argument("--min-fail-to-pass", type=int, default=2)
     swesmith_create_parser.add_argument("--max-fail-to-pass", type=int, default=5)
     swesmith_create_parser.add_argument("--require-pr", action="store_true")
+    swesmith_create_parser.add_argument("--languages", help="comma-separated language filter, e.g. python,cpp")
+    swesmith_create_parser.add_argument("--reference-path", help="path to SWE-smith checkout for language filtering")
     swesmith_run_parser = swesmith_subparsers.add_parser("run-subset", help="run current agent on a SWE-smith subset")
     swesmith_run_parser.add_argument("--subset", required=True)
     swesmith_run_parser.add_argument("--output-dir", required=True)
@@ -199,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     swesmith_run_parser.add_argument("--test-timeout-seconds", type=int, required=True)
     swesmith_run_parser.add_argument("--jobs", type=int, default=1)
     swesmith_run_parser.add_argument("--reference-path")
+    swesmith_run_parser.add_argument("--cleanup-images", action="store_true", help="remove Docker images after run completes")
     swesmith_run_parser.add_argument("--model")
     swesmith_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
     swesmith_eval_parser = swesmith_subparsers.add_parser("eval", help="run official SWE-smith evaluation")
@@ -721,12 +724,19 @@ def _swebench_evaluate_command(args: argparse.Namespace) -> int:
 def _swesmith_create_subset_command(args: argparse.Namespace) -> int:
     try:
         instances = load_huggingface_swesmith(split=args.split)
+        languages_list = (
+            [lang.strip() for lang in (args.languages or "").split(",") if lang.strip()]
+            if args.languages
+            else None
+        )
         selected = create_subset_file(
             args.out,
             instances=instances,
             require_pr=args.require_pr,
             min_fail_to_pass=args.min_fail_to_pass,
             max_fail_to_pass=args.max_fail_to_pass,
+            languages=languages_list,
+            reference_path=args.reference_path,
         )
         print(json.dumps({"output": args.out, "count": len(selected)}, indent=2))
     except SwesmithDatasetError as exc:
@@ -763,6 +773,7 @@ def _swesmith_run_subset_command(args: argparse.Namespace) -> int:
             output_dir=Path(args.output_dir),
             reference_path=args.reference_path,
             jobs=args.jobs,
+            cleanup_images=args.cleanup_images,
         )
     except (ValueError, SwesmithDatasetError, SwesmithRuntimeError, MissingModelConfigError) as exc:
         print(str(exc), file=sys.stderr)

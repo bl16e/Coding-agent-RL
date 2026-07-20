@@ -110,3 +110,89 @@ def test_run_swesmith_subset_writes_ordered_predictions_and_summary(tmp_path: Pa
     assert exit_code == 0
     assert [row["instance_id"] for row in preds] == ["repo__name.abcdef12.pr_1", "repo__name.abcdef12.pr_2"]
     assert batch["total"] == 2
+
+
+def test_run_swesmith_subset_parallel_preserves_order(tmp_path: Path, monkeypatch):
+    """Instances run in parallel across multiple threads but output order matches input."""
+    subset = tmp_path / "subset.json"
+    rows = [
+        {"instance_id": f"repo__name.abcdef12.pr_{i}", "problem_statement": f"Fix {i}", "FAIL_TO_PASS": ["a"]}
+        for i in range(1, 9)
+    ]
+    subset.write_text(json.dumps(rows), encoding="utf-8")
+
+    def fake_run(instance, **kwargs):
+        run_dir = Path(kwargs["output_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        patch = f"diff --git a/{instance['instance_id']} b/{instance['instance_id']}\n"
+        (run_dir / "final.patch").write_text(patch, encoding="utf-8")
+        (run_dir / "prediction.jsonl").write_text(
+            json.dumps({"instance_id": instance["instance_id"], "model_name_or_path": "mock", "model_patch": patch}) + "\n",
+            encoding="utf-8",
+        )
+        return RunSummary("run", instance["instance_id"], "mock", RunStatus.SOLVED, kwargs["budget"])
+
+    monkeypatch.setattr("coding_agent.swesmith.run.run_swesmith_instance", fake_run)
+
+    exit_code = run_swesmith_subset(
+        subset_path=subset,
+        docker=FakeDocker(),
+        backend_factory=lambda: object(),
+        budget=RunBudget(1, 60, 10),
+        model_name="mock",
+        output_dir=tmp_path / "batch",
+        reference_path=None,
+        jobs=4,
+    )
+
+    preds = [json.loads(line) for line in (tmp_path / "batch" / "preds.jsonl").read_text(encoding="utf-8").splitlines()]
+    batch = json.loads((tmp_path / "batch" / "batch_summary.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    expected_ids = [f"repo__name.abcdef12.pr_{i}" for i in range(1, 9)]
+    assert [row["instance_id"] for row in preds] == expected_ids
+    assert batch["total"] == 8
+    assert batch["jobs"] == 4
+
+
+def test_run_swesmith_subset_sorts_by_repo(tmp_path: Path, monkeypatch):
+    """Instances from different repos are reordered so same-repo instances cluster."""
+    subset = tmp_path / "subset.json"
+    # Deliberately interleave repos
+    rows = [
+        {"instance_id": "repo_b.aaaaaaaa.pr_1", "problem_statement": "Fix B1", "FAIL_TO_PASS": ["a"]},
+        {"instance_id": "repo_a.aaaaaaaa.pr_1", "problem_statement": "Fix A1", "FAIL_TO_PASS": ["a"]},
+        {"instance_id": "repo_b.aaaaaaaa.pr_2", "problem_statement": "Fix B2", "FAIL_TO_PASS": ["a"]},
+        {"instance_id": "repo_a.aaaaaaaa.pr_2", "problem_statement": "Fix A2", "FAIL_TO_PASS": ["a"]},
+    ]
+    subset.write_text(json.dumps(rows), encoding="utf-8")
+
+    seen_order: list[str] = []
+
+    def fake_run(instance, **kwargs):
+        run_dir = Path(kwargs["output_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        seen_order.append(instance["instance_id"])
+        (run_dir / "prediction.jsonl").write_text(
+            json.dumps({"instance_id": instance["instance_id"], "model_name_or_path": "mock", "model_patch": ""}) + "\n",
+            encoding="utf-8",
+        )
+        return RunSummary("run", instance["instance_id"], "mock", RunStatus.SOLVED, kwargs["budget"])
+
+    monkeypatch.setattr("coding_agent.swesmith.run.run_swesmith_instance", fake_run)
+
+    run_swesmith_subset(
+        subset_path=subset,
+        docker=FakeDocker(),
+        backend_factory=lambda: object(),
+        budget=RunBudget(1, 60, 10),
+        model_name="mock",
+        output_dir=tmp_path / "batch",
+        reference_path=None,
+        jobs=1,
+    )
+
+    # After sorting, all repo_a instances should come before or after all repo_b
+    a_positions = [i for i, x in enumerate(seen_order) if "repo_a" in x]
+    b_positions = [i for i, x in enumerate(seen_order) if "repo_b" in x]
+    assert max(a_positions) < min(b_positions) or max(b_positions) < min(a_positions), \
+        f"Expected repo-clustered order, got {seen_order}"

@@ -67,6 +67,8 @@ def test_run_official_eval_uses_resource_shim_on_windows(tmp_path: Path, monkeyp
 
     assert calls["command"][1] == "-c"
     assert "sys.modules.setdefault('resource'" in calls["command"][2]
+    assert "_ca_du.copy_to_container = _ca_copy_to_container" in calls["command"][2]
+    assert "_ca_su.copy_to_container = _ca_copy_to_container" in calls["command"][2]
     assert "runpy.run_module('swesmith.harness.eval'" in calls["command"][2]
 
 

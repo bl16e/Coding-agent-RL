@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from coding_agent.swesmith.compat import windows_resource_shim_prelude
+from coding_agent.swesmith.compat import windows_official_eval_prelude
 
 
 def run_official_eval(
@@ -33,7 +33,7 @@ def run_official_eval(
         command = [
             sys.executable,
             "-c",
-            windows_resource_shim_prelude()
+            windows_official_eval_prelude()
             + "import runpy, sys; sys.argv=['swesmith.harness.eval'] + sys.argv[1:]; "
             + "runpy.run_module('swesmith.harness.eval', run_name='__main__')",
             *eval_args,

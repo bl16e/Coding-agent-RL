@@ -21,6 +21,9 @@ class RepoSpecRegistry:
     def get(self, repo: str, version: str) -> RepoVersionSpec | None:
         return self._specs.get((repo, version))
 
+    def audited_pairs(self) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted(self._specs))
+
     def require(self, repo: str, version: str) -> RepoVersionSpec:
         spec = self.get(repo, version)
         if spec is None:
@@ -36,18 +39,135 @@ SOURCE_BACKED_REFERENCE = f"{AUDIT_SOURCE_REFERENCE}; {UPSTREAM_PYTHON_CONSTANTS
 
 TEST_DJANGO = "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
 TEST_PYTEST = "pytest -rA"
+TEST_ASTROPY_PYTEST = "pytest -rA -vv -o console_output_style=classic --tb=no"
+TEST_SEABORN = "pytest --no-header -rA"
+TEST_SPHINX = "tox --current-env -epy39 -v --"
+TEST_SYMPY = "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
 
-REPO_VERSION_OVERRIDES: dict[tuple[str, str], dict[str, Any]] = {
-    ("django/django", "3.0"): {
-        "python_version": "3.11",
+REPO_DEFAULT_METADATA: dict[str, dict[str, Any]] = {
+    "astropy/astropy": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .[test] --verbose",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "django/django": {
+        "python_version": "3.9",
         "install_commands": ("python -m pip install -e .",),
         "test_command": TEST_DJANGO,
     },
-    ("pytest-dev/pytest", "6.0"): {
+    "marshmallow-code/marshmallow": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e '.[dev]'",),
+        "test_command": TEST_PYTEST,
+    },
+    "matplotlib/matplotlib": {
         "python_version": "3.11",
         "install_commands": ("python -m pip install -e .",),
         "pip_packages": ("pytest",),
         "test_command": TEST_PYTEST,
+    },
+    "mwaskom/seaborn": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .[dev]",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_SEABORN,
+    },
+    "pallets/flask": {
+        "python_version": "3.11",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "psf/requests": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "pvlib/pvlib-python": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "pydata/xarray": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "pydicom/pydicom": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "pylint-dev/astroid": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "pylint-dev/pylint": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "pytest-dev/pytest": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "test_command": TEST_PYTEST,
+    },
+    "pyvista/pyvista": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    "scikit-learn/scikit-learn": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -v --no-use-pep517 --no-build-isolation -e .",),
+        "pip_packages": ("cython", "setuptools", "numpy", "scipy"),
+        "test_command": TEST_PYTEST,
+    },
+    "sphinx-doc/sphinx": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .[test]",),
+        "pip_packages": ("tox==4.16.0", "tox-current-env==0.0.11", "Jinja2==3.0.3"),
+        "test_command": TEST_SPHINX,
+    },
+    "sqlfluff/sqlfluff": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "test_command": TEST_PYTEST,
+    },
+    "sympy/sympy": {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("mpmath==1.3.0",),
+        "test_command": TEST_SYMPY,
+    },
+}
+
+REPO_VERSION_OVERRIDES: dict[tuple[str, str], dict[str, Any]] = {
+    ("django/django", "3.0"): {
+        "python_version": "3.6",
+        "install_commands": ("python -m pip install -e .",),
+        "test_command": TEST_DJANGO,
+    },
+    ("pytest-dev/pytest", "6.0"): {
+        "python_version": "3.9",
+        "install_commands": ("python -m pip install -e .",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_PYTEST,
+    },
+    ("astropy/astropy", "1.3"): {
+        "python_version": "3.6",
+        "install_commands": ("python -m pip install -e .[test] --verbose",),
+        "pip_packages": ("pytest",),
+        "test_command": TEST_ASTROPY_PYTEST,
     },
 }
 
@@ -86,6 +206,27 @@ def load_audit_repo_specs(audit_path: Path | None = None) -> RepoSpecRegistry:
         if pair not in audited_pairs:
             continue
         repo, version = pair
+        specs.append(
+            RepoVersionSpec(
+                repo=repo,
+                version=version,
+                language="py",
+                test_command=str(metadata["test_command"]),
+                source_reference=SOURCE_BACKED_REFERENCE,
+                review_status=RepoSpecReviewStatus.SOURCE_BACKED,
+                python_version=str(metadata["python_version"]) if metadata.get("python_version") else None,
+                packages=tuple(metadata.get("packages", ())),
+                pip_packages=tuple(metadata.get("pip_packages", ())),
+                install_commands=tuple(metadata.get("install_commands", ())),
+                docker_specs=dict(metadata.get("docker_specs", {})),
+            )
+        )
+    for repo, version in pairs:
+        if any((spec.repo, spec.version) == (repo, version) for spec in specs):
+            continue
+        metadata = REPO_DEFAULT_METADATA.get(repo)
+        if metadata is None:
+            continue
         specs.append(
             RepoVersionSpec(
                 repo=repo,

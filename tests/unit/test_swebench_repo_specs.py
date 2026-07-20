@@ -3,6 +3,7 @@
 import pytest
 
 from coding_agent.models import RepoSpecReviewStatus, RepoVersionSpec
+from coding_agent.swebench.dataset import load_task_records, normalize_benchmark_task_record
 from coding_agent.swebench.repo_specs import DEFAULT_REPO_SPECS, MissingRepoSpecError, RepoSpecRegistry
 
 
@@ -68,3 +69,34 @@ def test_repo_specs_preserve_pytest_command_shape():
 def test_repo_specs_do_not_claim_source_backed_when_version_missing():
     with pytest.raises(MissingRepoSpecError, match="missing source-backed metadata"):
         DEFAULT_REPO_SPECS.require("django/django", "0.0")
+
+
+def test_default_repo_specs_cover_all_audited_repo_version_pairs():
+    audit_path = "specs/003-agent-runtime-refactor/runtime-image-audit.md"
+    pairs = DEFAULT_REPO_SPECS.audited_pairs()
+
+    assert len(pairs) == 81
+    for repo, version in pairs:
+        spec = DEFAULT_REPO_SPECS.require(repo, version)
+        assert spec.review_status is RepoSpecReviewStatus.SOURCE_BACKED
+        assert audit_path in spec.source_reference
+        assert "SWE-bench/swebench/harness/constants/python.py" in spec.source_reference
+        assert spec.test_command
+
+
+def test_default_repo_specs_normalize_all_local_swebench_lite_rows():
+    records = []
+    for dataset_path in ("data/dev-00000-of-00001.parquet", "data/test-00000-of-00001.parquet"):
+        records.extend(load_task_records(dataset_path, _instance_ids(dataset_path)))
+
+    assert len(records) == 323
+    normalized = [normalize_benchmark_task_record(record) for record in records]
+
+    assert len(normalized) == 323
+    assert len({(record.repo, record.version) for record in normalized}) == 81
+
+
+def _instance_ids(dataset_path: str) -> tuple[str, ...]:
+    import pyarrow.parquet as pq
+
+    return tuple(str(row["instance_id"]) for row in pq.read_table(dataset_path).to_pylist())

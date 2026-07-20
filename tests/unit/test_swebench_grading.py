@@ -45,6 +45,42 @@ def test_parse_eval_report_accepts_official_status_map_json():
     assert report.pass_to_pass_success == ("test_regression",)
 
 
+def test_parse_eval_report_accepts_official_report_json_shape():
+    report = parse_eval_report(
+        """
+        {
+          "django__django-11099": {
+            "patch_is_None": false,
+            "patch_exists": true,
+            "patch_successfully_applied": true,
+            "resolved": true,
+            "tests_status": {
+              "FAIL_TO_PASS": {
+                "success": ["tests/test_issue.py::test_fix"],
+                "failure": []
+              },
+              "PASS_TO_PASS": {
+                "success": ["tests/test_regression.py::test_old"],
+                "failure": []
+              }
+            }
+          }
+        }
+        """,
+        repo="sympy/sympy",
+        version="1.11",
+        fail_to_pass=("tests/test_issue.py::test_fix",),
+        pass_to_pass=("tests/test_regression.py::test_old",),
+        raw_output_artifact="report.json",
+    )
+
+    assert report.resolved is True
+    assert report.fail_to_pass_success == ("tests/test_issue.py::test_fix",)
+    assert report.fail_to_pass_failure == ()
+    assert report.pass_to_pass_success == ("tests/test_regression.py::test_old",)
+    assert report.pass_to_pass_failure == ()
+
+
 def test_parse_eval_report_records_selected_failures():
     report = parse_eval_report(
         '{"tests_status": {"test_fix": "FAILED", "test_regression": "PASSED"}}',
@@ -96,6 +132,56 @@ def test_parse_eval_report_accepts_marker_wrapped_pytest_output():
     assert report.resolved is True
     assert report.fail_to_pass_success == ("tests/test_issue.py::test_fix",)
     assert report.pass_to_pass_success == ("tests/test_regression.py::test_old",)
+
+
+def test_parse_eval_report_accepts_marker_wrapped_pytest_output_with_progress_column():
+    output = "\n".join(
+        [
+            "setup text",
+            ">>>>> Start Test Output",
+            "tests/test_issue.py::test_fix PASSED [ 50%]",
+            "tests/test_regression.py::test_old PASSED [100%]",
+            ">>>>> End Test Output",
+        ]
+    )
+
+    report = parse_eval_report(
+        output,
+        repo="pytest-dev/pytest",
+        version="6.0",
+        fail_to_pass=("tests/test_issue.py::test_fix",),
+        pass_to_pass=("tests/test_regression.py::test_old",),
+        raw_output_artifact="eval.log",
+    )
+
+    assert report.resolved is True
+    assert report.fail_to_pass_success == ("tests/test_issue.py::test_fix",)
+    assert report.pass_to_pass_success == ("tests/test_regression.py::test_old",)
+
+
+def test_parse_eval_report_accepts_marker_wrapped_pytest_output_for_non_pytest_repo():
+    output = "\n".join(
+        [
+            "setup text",
+            ">>>>> Start Test Output",
+            "sklearn/utils/tests/test_validation.py::test_check_array_object_dtype PASSED [ 50%]",
+            "sklearn/utils/tests/test_validation.py::test_check_array_force_all_finite PASSED [100%]",
+            ">>>>> End Test Output",
+        ]
+    )
+
+    report = parse_eval_report(
+        output,
+        repo="scikit-learn/scikit-learn",
+        version="1.3",
+        fail_to_pass=("sklearn/utils/tests/test_validation.py::test_check_array_object_dtype",),
+        pass_to_pass=("sklearn/utils/tests/test_validation.py::test_check_array_force_all_finite",),
+        raw_output_artifact="eval.log",
+    )
+
+    assert report.resolved is True
+    assert report.fail_to_pass_success == ("sklearn/utils/tests/test_validation.py::test_check_array_object_dtype",)
+    assert report.pass_to_pass_success == ("sklearn/utils/tests/test_validation.py::test_check_array_force_all_finite",)
 
 
 def test_parse_eval_report_accepts_marker_wrapped_django_unittest_output():

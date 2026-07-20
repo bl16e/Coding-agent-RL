@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from coding_agent.swesmith.compat import windows_resource_shim_prelude
+
 
 def run_official_eval(
     *,
@@ -14,14 +16,10 @@ def run_official_eval(
     predictions_path: str | Path,
     run_id: str,
     workers: int,
-    timeout: int,
     reference_path: str | Path | None,
     runner: Callable[..., Any] = subprocess.run,
 ) -> int:
-    command = [
-        sys.executable,
-        "-m",
-        "swesmith.harness.eval",
+    eval_args = [
         "--dataset_path",
         str(dataset_path),
         "--predictions_path",
@@ -30,13 +28,22 @@ def run_official_eval(
         run_id,
         "--workers",
         str(workers),
-        "--timeout",
-        str(timeout),
     ]
+    if os.name == "nt":
+        command = [
+            sys.executable,
+            "-c",
+            windows_resource_shim_prelude()
+            + "import runpy, sys; sys.argv=['swesmith.harness.eval'] + sys.argv[1:]; "
+            + "runpy.run_module('swesmith.harness.eval', run_name='__main__')",
+            *eval_args,
+        ]
+    else:
+        command = [sys.executable, "-m", "swesmith.harness.eval", *eval_args]
     env = dict(os.environ)
     if reference_path is not None:
         env["PYTHONPATH"] = str(Path(reference_path).resolve()) + os.pathsep + env.get("PYTHONPATH", "")
-    completed = runner(command, text=True, capture_output=True, check=False, env=env)
+    completed = runner(command, text=True, check=False, env=env)
     return int(completed.returncode)
 
 

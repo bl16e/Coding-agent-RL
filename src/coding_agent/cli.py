@@ -206,7 +206,6 @@ def build_parser() -> argparse.ArgumentParser:
     swesmith_eval_parser.add_argument("--predictions", required=True)
     swesmith_eval_parser.add_argument("--run-id", required=True)
     swesmith_eval_parser.add_argument("--workers", type=int, default=10)
-    swesmith_eval_parser.add_argument("--timeout", type=int, default=240)
     swesmith_eval_parser.add_argument("--reference-path")
     swesmith_export_parser = swesmith_subparsers.add_parser("export-sft", help="export resolved trajectories to SFT JSONL")
     swesmith_export_parser.add_argument("--runs", required=True)
@@ -782,7 +781,6 @@ def _swesmith_eval_command(args: argparse.Namespace) -> int:
         predictions_path=args.predictions,
         run_id=args.run_id,
         workers=args.workers,
-        timeout=args.timeout,
         reference_path=args.reference_path,
     )
 

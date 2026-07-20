@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from coding_agent.swesmith.compat import install_windows_resource_shim
+
 
 class SwesmithRuntimeError(RuntimeError):
     """Raised when SWE-smith official runtime setup cannot proceed."""
@@ -22,6 +24,7 @@ class SwesmithPreparedContainer:
 
 
 def import_swesmith(reference_path: str | Path | None = None) -> Any:
+    install_windows_resource_shim()
     if reference_path is not None:
         root = Path(reference_path)
         if not root.exists():

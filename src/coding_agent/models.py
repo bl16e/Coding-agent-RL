@@ -136,8 +136,14 @@ class RepoVersionSpec:
     review_status: RepoSpecReviewStatus
     python_version: str | None = None
     packages: tuple[str, ...] = ()
+    package_spec: str = ""
     pip_packages: tuple[str, ...] = ()
+    pre_install_commands: tuple[str, ...] = ()
     install_commands: tuple[str, ...] = ()
+    eval_commands: tuple[str, ...] = ()
+    requirements_paths: tuple[str, ...] = ()
+    environment_yml_paths: tuple[str, ...] = ()
+    no_use_env: bool = False
     docker_specs: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -148,7 +154,11 @@ class RepoVersionSpec:
             object.__setattr__(self, "review_status", RepoSpecReviewStatus(self.review_status))
         object.__setattr__(self, "packages", tuple(str(item) for item in self.packages if str(item)))
         object.__setattr__(self, "pip_packages", tuple(str(item) for item in self.pip_packages if str(item)))
+        object.__setattr__(self, "pre_install_commands", tuple(str(item) for item in self.pre_install_commands if str(item)))
         object.__setattr__(self, "install_commands", tuple(str(item) for item in self.install_commands if str(item)))
+        object.__setattr__(self, "eval_commands", tuple(str(item) for item in self.eval_commands if str(item)))
+        object.__setattr__(self, "requirements_paths", tuple(str(item) for item in self.requirements_paths if str(item)))
+        object.__setattr__(self, "environment_yml_paths", tuple(str(item) for item in self.environment_yml_paths if str(item)))
 
 
 @dataclass(frozen=True)

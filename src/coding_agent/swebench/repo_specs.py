@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import importlib.util
 from pathlib import Path
 import re
 from typing import Any
@@ -172,6 +173,79 @@ REPO_VERSION_OVERRIDES: dict[tuple[str, str], dict[str, Any]] = {
 }
 
 
+def _upstream_constants_module() -> Any | None:
+    path = _project_root() / UPSTREAM_PYTHON_CONSTANTS_REFERENCE
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("coding_agent._swebench_python_constants", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _upstream_metadata_for(module: Any | None, repo: str, version: str) -> dict[str, Any] | None:
+    if module is None:
+        return None
+    mapping = getattr(module, "MAP_REPO_VERSION_TO_SPECS_PY", {})
+    repo_mapping = mapping.get(repo, {})
+    metadata = repo_mapping.get(version)
+    if not isinstance(metadata, dict):
+        return None
+    return dict(metadata)
+
+
+def _tuple_from_value(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, Iterable):
+        return tuple(str(item) for item in value if str(item))
+    return (str(value),)
+
+
+def _paths_for(module: Any | None, map_name: str, repo: str) -> tuple[str, ...]:
+    if module is None:
+        return ()
+    mapping = getattr(module, map_name, {})
+    return _tuple_from_value(mapping.get(repo))
+
+
+def _repo_version_spec_from_metadata(
+    *,
+    repo: str,
+    version: str,
+    metadata: dict[str, Any],
+    constants_module: Any | None,
+) -> RepoVersionSpec:
+    install = metadata.get("install")
+    install_commands = _tuple_from_value(metadata.get("install_commands"))
+    if install:
+        install_commands = (*install_commands, str(install))
+    package_spec = str(metadata.get("packages", "") or "")
+    return RepoVersionSpec(
+        repo=repo,
+        version=version,
+        language="py",
+        test_command=str(metadata["test_cmd"] if "test_cmd" in metadata else metadata["test_command"]),
+        source_reference=SOURCE_BACKED_REFERENCE,
+        review_status=RepoSpecReviewStatus.SOURCE_BACKED,
+        python_version=str(metadata["python"]) if metadata.get("python") else str(metadata["python_version"]) if metadata.get("python_version") else None,
+        packages=tuple(package_spec.split()) if package_spec not in {"requirements.txt", "environment.yml"} else (),
+        package_spec=package_spec,
+        pip_packages=_tuple_from_value(metadata.get("pip_packages")),
+        pre_install_commands=_tuple_from_value(metadata.get("pre_install")),
+        install_commands=install_commands,
+        eval_commands=_tuple_from_value(metadata.get("eval_commands")),
+        requirements_paths=_paths_for(constants_module, "MAP_REPO_TO_REQS_PATHS", repo),
+        environment_yml_paths=_paths_for(constants_module, "MAP_REPO_TO_ENV_YML_PATHS", repo),
+        no_use_env=bool(metadata.get("no_use_env", False)),
+        docker_specs=dict(metadata.get("docker_specs", {})),
+    )
+
+
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
@@ -201,45 +275,33 @@ def load_audit_repo_specs(audit_path: Path | None = None) -> RepoSpecRegistry:
         return RepoSpecRegistry()
     pairs = _parse_supported_pairs(path.read_text(encoding="utf-8"))
     audited_pairs = set(pairs)
+    constants_module = _upstream_constants_module()
     specs = []
     for pair, metadata in REPO_VERSION_OVERRIDES.items():
         if pair not in audited_pairs:
             continue
         repo, version = pair
+        metadata = _upstream_metadata_for(constants_module, repo, version) or metadata
         specs.append(
-            RepoVersionSpec(
+            _repo_version_spec_from_metadata(
                 repo=repo,
                 version=version,
-                language="py",
-                test_command=str(metadata["test_command"]),
-                source_reference=SOURCE_BACKED_REFERENCE,
-                review_status=RepoSpecReviewStatus.SOURCE_BACKED,
-                python_version=str(metadata["python_version"]) if metadata.get("python_version") else None,
-                packages=tuple(metadata.get("packages", ())),
-                pip_packages=tuple(metadata.get("pip_packages", ())),
-                install_commands=tuple(metadata.get("install_commands", ())),
-                docker_specs=dict(metadata.get("docker_specs", {})),
+                metadata=metadata,
+                constants_module=constants_module,
             )
         )
     for repo, version in pairs:
         if any((spec.repo, spec.version) == (repo, version) for spec in specs):
             continue
-        metadata = REPO_DEFAULT_METADATA.get(repo)
+        metadata = _upstream_metadata_for(constants_module, repo, version) or REPO_DEFAULT_METADATA.get(repo)
         if metadata is None:
             continue
         specs.append(
-            RepoVersionSpec(
+            _repo_version_spec_from_metadata(
                 repo=repo,
                 version=version,
-                language="py",
-                test_command=str(metadata["test_command"]),
-                source_reference=SOURCE_BACKED_REFERENCE,
-                review_status=RepoSpecReviewStatus.SOURCE_BACKED,
-                python_version=str(metadata["python_version"]) if metadata.get("python_version") else None,
-                packages=tuple(metadata.get("packages", ())),
-                pip_packages=tuple(metadata.get("pip_packages", ())),
-                install_commands=tuple(metadata.get("install_commands", ())),
-                docker_specs=dict(metadata.get("docker_specs", {})),
+                metadata=metadata,
+                constants_module=constants_module,
             )
         )
     return RepoSpecRegistry(specs)

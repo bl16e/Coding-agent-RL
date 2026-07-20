@@ -1,7 +1,10 @@
 """Contract tests for the official-style SWE-Bench runtime CLI surface."""
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 from coding_agent.cli import main
 from coding_agent.models import PreparedTaskEnvironment, PreparedEnvironmentStatus, RunStatus, RuntimeLineage
@@ -10,6 +13,24 @@ from tests.helpers.swebench_fixtures import swebench_row, write_swebench_parquet
 
 LEGACY_SANDBOX_COMMANDS = ("prepare-sandbox", "solve-sandbox")
 LEGACY_BATCH_COMMANDS = ("prepare-sandboxes", "solve-sandboxes")
+
+
+def test_cli_module_invocation_runs_main():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "src"
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "coding_agent.cli", "--help"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "coding-agent" in completed.stdout
+    assert "swebench" in completed.stdout
 
 
 def _prepared_env(tmp_path: Path) -> PreparedTaskEnvironment:
@@ -173,6 +194,37 @@ def test_swebench_prepare_wires_build_missing_and_replace_existing(tmp_path: Pat
     assert captured["build_missing"] is True
     assert captured["replace_existing"] is True
     assert captured["arch"] == "x86_64"
+
+
+def test_swebench_prepare_writes_progress_to_log_file(tmp_path: Path, monkeypatch):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    log_file = tmp_path / "prepare.log"
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        return _prepared_env(tmp_path)
+
+    monkeypatch.setattr("coding_agent.cli.prepare_official_swebench_runtime", fake_prepare_official_swebench_runtime)
+
+    exit_code = main(
+        [
+            "--log-file",
+            str(log_file),
+            "swebench",
+            "prepare",
+            "--dataset",
+            str(dataset),
+            "--instance-id",
+            "django__django-11099",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    assert exit_code == 0
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "swebench prepare started" in log_text
+    assert "swebench prepare completed" in log_text
+    assert "django__django-11099" in log_text
 
 
 def test_swebench_prepare_reports_missing_images_before_agent_execution(tmp_path: Path, monkeypatch, capsys):

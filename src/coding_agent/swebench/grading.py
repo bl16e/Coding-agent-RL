@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from enum import Enum
+import importlib.util
 import json
 import re
+import sys
+import types
 from typing import AbstractSet
 
 from coding_agent.models import EvalReport
@@ -14,6 +18,62 @@ class EvalOutputParseError(ValueError):
 START_TEST_OUTPUT = ">>>>> Start Test Output"
 END_TEST_OUTPUT = ">>>>> End Test Output"
 UNITTEST_RESULT_RE = re.compile(r"(test_[^\s]+ \([^)]+\)) \.\.\. (ok|FAIL|ERROR|skipped\b.*)")
+
+
+class _UpstreamTestStatus(str, Enum):
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+    ERROR = "ERROR"
+    XFAIL = "XFAIL"
+    XPASS = "XPASS"
+
+
+class _ParserTestSpec:
+    def __init__(self, repo: str, version: str) -> None:
+        self.repo = repo
+        self.version = version
+
+
+def _project_root():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[3]
+
+
+def _load_upstream_python_parsers():
+    module_name = "coding_agent._upstream_swebench_python_log_parsers"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    parser_path = _project_root() / "SWE-bench" / "swebench" / "harness" / "log_parsers" / "python.py"
+    if not parser_path.is_file():
+        return None
+
+    swebench_pkg = sys.modules.setdefault("swebench", types.ModuleType("swebench"))
+    harness_pkg = sys.modules.setdefault("swebench.harness", types.ModuleType("swebench.harness"))
+    constants_module = sys.modules.get("swebench.harness.constants")
+    if constants_module is None or not hasattr(constants_module, "TestStatus"):
+        constants_module = types.ModuleType("swebench.harness.constants")
+        constants_module.TestStatus = _UpstreamTestStatus
+        sys.modules["swebench.harness.constants"] = constants_module
+    test_spec_pkg = sys.modules.setdefault("swebench.harness.test_spec", types.ModuleType("swebench.harness.test_spec"))
+    test_spec_module = sys.modules.get("swebench.harness.test_spec.test_spec")
+    if test_spec_module is None or not hasattr(test_spec_module, "TestSpec"):
+        test_spec_module = types.ModuleType("swebench.harness.test_spec.test_spec")
+        test_spec_module.TestSpec = _ParserTestSpec
+        sys.modules["swebench.harness.test_spec.test_spec"] = test_spec_module
+    setattr(swebench_pkg, "harness", harness_pkg)
+    setattr(harness_pkg, "constants", constants_module)
+    setattr(harness_pkg, "test_spec", test_spec_pkg)
+
+    spec = importlib.util.spec_from_file_location(module_name, parser_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def build_eval_report_contract(
@@ -140,9 +200,20 @@ def _parse_unittest_statuses(test_output: str) -> dict[str, str]:
 
 def _status_map_from_official_output(output: str, *, repo: str, version: str) -> dict[str, str]:
     test_output = _extract_official_test_output(output)
-    if repo == "django/django":
-        return {**_parse_pytest_statuses(test_output), **_parse_unittest_statuses(test_output)}
-    return _parse_pytest_statuses(test_output)
+    fallback = (
+        {**_parse_pytest_statuses(test_output), **_parse_unittest_statuses(test_output)}
+        if repo == "django/django"
+        else _parse_pytest_statuses(test_output)
+    )
+    upstream = _load_upstream_python_parsers()
+    parser = None if upstream is None else getattr(upstream, "MAP_REPO_TO_PARSER_PY", {}).get(repo)
+    if parser is not None:
+        upstream_statuses = {
+            test: str(status).upper()
+            for test, status in parser(test_output, _ParserTestSpec(repo, version)).items()
+        }
+        return {**upstream_statuses, **fallback}
+    return fallback
 
 
 def parse_eval_report(

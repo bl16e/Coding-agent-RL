@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -40,6 +41,9 @@ from coding_agent.swebench.sandbox_run import (
     solve_prepared_sandbox,
 )
 from coding_agent.trajectory.summary import load_summary, load_trajectory, render_inspect_report
+
+
+logger = logging.getLogger(__name__)
 
 
 LEGACY_SWEBENCH_OPERATIONS = {
@@ -93,6 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     校验会下沉到 models、registry、dataset 和 sandbox_run，便于测试库函数。
     """
     parser = argparse.ArgumentParser(prog="coding-agent")
+    parser.add_argument("--verbose", action="store_true", help="show debug-level progress logs")
+    parser.add_argument("--log-file", help="write progress logs to this file")
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="run one prepared SWE-Bench Lite task")
@@ -173,6 +179,30 @@ def build_parser() -> argparse.ArgumentParser:
     swebench_evaluate_parser.add_argument("--json", action="store_true", dest="json_output")
     swebench_evaluate_parser.add_argument("--output")
     return parser
+
+
+def _configure_logging(args: argparse.Namespace) -> None:
+    level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, "_coding_agent_cli_handler", False):
+            root.removeHandler(handler)
+            handler.close()
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    stream_handler = logging.StreamHandler(sys.stderr)
+    stream_handler.setFormatter(formatter)
+    stream_handler.setLevel(level)
+    stream_handler._coding_agent_cli_handler = True  # type: ignore[attr-defined]
+    root.addHandler(stream_handler)
+    if getattr(args, "log_file", None):
+        log_path = Path(args.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler._coding_agent_cli_handler = True  # type: ignore[attr-defined]
+        root.addHandler(file_handler)
+    root.setLevel(logging.DEBUG)
 
 
 def _run_command(args: argparse.Namespace) -> int:
@@ -365,6 +395,7 @@ def _legacy_swebench_run_command(args: argparse.Namespace) -> int:
 
 def _swebench_prepare_command(args: argparse.Namespace) -> int:
     """Prepare official-style SWE-Bench runtime layers and one task environment."""
+    logger.info("swebench prepare started: instance_id=%s dataset=%s output_dir=%s", args.instance_id, args.dataset, args.output_dir)
     try:
         prepare_official_swebench_runtime(
             dataset_path=args.dataset,
@@ -385,6 +416,7 @@ def _swebench_prepare_command(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 4
+    logger.info("swebench prepare completed: instance_id=%s output_dir=%s", args.instance_id, args.output_dir)
     return 0
 
 
@@ -528,6 +560,7 @@ def _swebench_solve_sandboxes_command(args: argparse.Namespace) -> int:
 
 def _swebench_run_command(args: argparse.Namespace) -> int:
     """Run one SWE-Bench task through an active official-style prepared environment."""
+    logger.info("swebench run started: instance_id=%s dataset=%s output_dir=%s", args.instance_id, args.dataset, args.output_dir)
     try:
         budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
         if args.backend == "mock":
@@ -564,11 +597,13 @@ def _swebench_run_command(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 4
+    logger.info("swebench run completed: instance_id=%s output_dir=%s", args.instance_id, args.output_dir)
     return 0
 
 
 def _swebench_batch_run_command(args: argparse.Namespace) -> int:
     """Run every task in one or more SWE-Bench Lite datasets through prepare -> run."""
+    logger.info("swebench batch-run started: datasets=%s output_dir=%s jobs=%s", args.datasets, args.output_dir, args.jobs)
     try:
         budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
         if args.jobs <= 0:
@@ -586,7 +621,7 @@ def _swebench_batch_run_command(args: argparse.Namespace) -> int:
             def backend_factory():
                 return OpenAICompatibleBackend(config)
 
-        return run_official_swebench_batch(
+        exit_code = run_official_swebench_batch(
             dataset_paths=tuple(args.datasets),
             docker=DockerCli(),
             backend_factory=backend_factory,
@@ -602,6 +637,8 @@ def _swebench_batch_run_command(args: argparse.Namespace) -> int:
             active_index_path=Path(".coding-agent/active-sandboxes.json"),
             arch=args.arch,
         )
+        logger.info("swebench batch-run completed: output_dir=%s exit_code=%s", args.output_dir, exit_code)
+        return exit_code
     except (ValueError, SwebenchDatasetError, SandboxedRunInputError, MissingModelConfigError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -668,6 +705,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code)
+    _configure_logging(args)
     if args.command is None:
         parser.print_help()
         return 2
@@ -697,3 +735,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     parser.error(f"command {args.command!r} is not implemented yet")
     return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

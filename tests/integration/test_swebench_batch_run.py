@@ -44,6 +44,21 @@ class FakeDocker:
         return DockerResult("", "", 0)
 
 
+class PreflightDocker(FakeDocker):
+    def __init__(self, *, present_images: set[str] | None = None) -> None:
+        super().__init__()
+        self.present_images = present_images or set()
+
+    def image_exists(self, image: str) -> bool:
+        self.calls.append(("image_exists", image))
+        return image in self.present_images
+
+    def build_image(self, *, image: str, dockerfile: str, context: str = ".") -> DockerResult:
+        self.calls.append(("build_image", image, dockerfile, context))
+        self.present_images.add(image)
+        return DockerResult("", "", 0)
+
+
 def _task_record(instance_id: str, base_commit: str) -> SwebenchTaskRecord:
     return SwebenchTaskRecord.from_row(
         {
@@ -128,6 +143,32 @@ def test_batch_run_rejects_duplicate_direct_task_records_before_starting_sandbox
         )
 
     assert docker.calls == []
+
+
+def test_batch_run_classifies_per_task_input_error_without_runtime_error(tmp_path: Path, monkeypatch):
+    def fake_run_swebench_task(**kwargs):
+        raise SandboxedRunInputError("bad task input")
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.run_swebench_task", fake_run_swebench_task)
+
+    output_dir = tmp_path / "batch"
+    exit_code = run_swebench_tasks(
+        task_records=[_task_record("django__django-11099", "abc123")],
+        base_images={"django/django": _base_image()},
+        docker=FakeDocker(),
+        backend_factory=_backend_factory,
+        budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=output_dir,
+        jobs=1,
+    )
+
+    assert exit_code == 2
+    summary = json.loads((output_dir / "batch_summary.json").read_text(encoding="utf-8"))
+    task = summary["tasks"][0]
+    assert task["status"] == "input_error"
+    assert task["input_error"] is True
+    assert task["runtime_error"] is False
 
 
 def test_prepare_sandboxes_writes_locked_state_and_active_index_without_cleanup(tmp_path: Path):
@@ -247,7 +288,7 @@ def test_official_batch_run_merges_multiple_datasets_and_writes_aggregate_output
 
     exit_code = run_official_swebench_batch(
         dataset_paths=(dev_dataset, test_dataset),
-        docker=FakeDocker(),
+        docker=PreflightDocker(present_images=set()),
         backend_factory=_backend_factory,
         budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
@@ -274,3 +315,172 @@ def test_official_batch_run_merges_multiple_datasets_and_writes_aggregate_output
         "django__django-11099",
         "django__django-11100",
     ]
+
+
+def test_official_batch_run_preflights_missing_metadata_before_prepare(tmp_path: Path, monkeypatch):
+    dataset = write_swebench_parquet(
+        tmp_path / "dataset.parquet",
+        rows=[
+            swebench_row(instance_id="django__django-11099", base_commit="abc123"),
+            swebench_row(instance_id="django__django-11100", base_commit="def456", version="0.0"),
+        ],
+    )
+    calls: list[str] = []
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        calls.append(kwargs["instance_id"])
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.prepare_official_swebench_runtime", fake_prepare_official_swebench_runtime)
+
+    with pytest.raises(SandboxedRunInputError, match="missing source-backed metadata"):
+        run_official_swebench_batch(
+            dataset_paths=(dataset,),
+            docker=PreflightDocker(present_images=set()),
+            backend_factory=_backend_factory,
+            budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+            model_name="mock-model",
+            output_dir=tmp_path / "official-batch",
+            jobs=2,
+            build_missing=True,
+            replace_existing=True,
+            resume=False,
+        )
+
+    assert calls == []
+
+
+def test_official_batch_run_preflights_missing_images_before_prepare(tmp_path: Path, monkeypatch):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    calls: list[str] = []
+    docker = PreflightDocker(present_images=set())
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        calls.append(kwargs["instance_id"])
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.prepare_official_swebench_runtime", fake_prepare_official_swebench_runtime)
+
+    with pytest.raises(SandboxedRunInputError, match="missing runtime images"):
+        run_official_swebench_batch(
+            dataset_paths=(dataset,),
+            docker=docker,
+            backend_factory=_backend_factory,
+            budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+            model_name="mock-model",
+            output_dir=tmp_path / "official-batch",
+            jobs=2,
+            build_missing=False,
+            replace_existing=True,
+            resume=False,
+        )
+
+    assert calls == []
+    assert not any(call[0] in {"create", "start"} for call in docker.calls)
+
+
+def test_official_batch_run_build_missing_serializes_shared_images_before_parallel_prepare(tmp_path: Path, monkeypatch):
+    dataset = write_swebench_parquet(
+        tmp_path / "dataset.parquet",
+        rows=[
+            swebench_row(instance_id="django__django-11099", base_commit="abc123"),
+            swebench_row(instance_id="django__django-11100", base_commit="def456"),
+        ],
+    )
+    docker = PreflightDocker(present_images=set())
+    calls: list[tuple[str, str]] = []
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        docker.calls.append(("prepare", kwargs["instance_id"]))
+        calls.append(("prepare", kwargs["instance_id"]))
+
+    class Summary:
+        status = RunStatus.INCOMPLETE
+        error = None
+
+    def fake_run_prepared_swebench_runtime(**kwargs):
+        calls.append(("run", kwargs["instance_id"]))
+        run_dir = Path(kwargs["output_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "prediction.jsonl").write_text(
+            json.dumps(
+                {
+                    "instance_id": kwargs["instance_id"],
+                    "model_name_or_path": kwargs["model_name"],
+                    "model_patch": "",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return Summary()
+
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.prepare_official_swebench_runtime", fake_prepare_official_swebench_runtime)
+    monkeypatch.setattr("coding_agent.swebench.sandbox_run.run_prepared_swebench_runtime", fake_run_prepared_swebench_runtime)
+
+    exit_code = run_official_swebench_batch(
+        dataset_paths=(dataset,),
+        docker=docker,
+        backend_factory=_backend_factory,
+        budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=tmp_path / "official-batch",
+        jobs=2,
+        build_missing=True,
+        replace_existing=True,
+        resume=False,
+    )
+
+    assert exit_code == 0
+    built_images = [call[1] for call in docker.calls if call[0] == "build_image"]
+    assert built_images.count("sweb.base.py.x86_64:latest") == 1
+    assert built_images.count("sweb.env.py.x86_64.2baaea72acc974f6c02079:latest") == 1
+    assert built_images.count("sweb.eval.x86_64.django__django-11099:latest") == 1
+    assert built_images.count("sweb.eval.x86_64.django__django-11100:latest") == 1
+    last_build = max(index for index, call in enumerate(docker.calls) if call[0] == "build_image")
+    first_prepare = min(index for index, call in enumerate(docker.calls) if call[0] == "prepare")
+    assert last_build < first_prepare
+    assert calls
+
+
+def test_official_batch_run_classifies_per_task_input_error_without_runtime_error(tmp_path: Path, monkeypatch):
+    dataset = write_swebench_parquet(
+        tmp_path / "dataset.parquet",
+        rows=[swebench_row(instance_id="django__django-11099", base_commit="abc123")],
+    )
+    docker = PreflightDocker(present_images=set())
+
+    def fake_prepare_official_swebench_runtime(**kwargs):
+        raise SandboxedRunInputError("bad prepared input")
+
+    def fake_run_prepared_swebench_runtime(**kwargs):
+        raise AssertionError("input errors from prepare should skip run")
+
+    monkeypatch.setattr(
+        "coding_agent.swebench.sandbox_run.prepare_official_swebench_runtime",
+        fake_prepare_official_swebench_runtime,
+    )
+    monkeypatch.setattr(
+        "coding_agent.swebench.sandbox_run.run_prepared_swebench_runtime",
+        fake_run_prepared_swebench_runtime,
+    )
+
+    output_dir = tmp_path / "official-batch"
+    exit_code = run_official_swebench_batch(
+        dataset_paths=(dataset,),
+        docker=docker,
+        backend_factory=_backend_factory,
+        budget=RunBudget(max_steps=1, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="mock-model",
+        output_dir=output_dir,
+        jobs=1,
+        build_missing=True,
+        replace_existing=True,
+        resume=False,
+    )
+
+    assert exit_code == 2
+    summary = json.loads((output_dir / "batch_summary.json").read_text(encoding="utf-8"))
+    task = summary["tasks"][0]
+    assert task["status"] == "input_error"
+    assert task["input_error"] is True
+    assert task["runtime_error"] is False
+    assert summary["statuses"] == {"input_error": 1}

@@ -60,7 +60,7 @@ def build_adapted_testspec(
     spec = repo_spec or DEFAULT_REPO_SPECS.require(task_record.repo, task_record.version or "")
     repo_path = "/testbed"
     repo_script = build_repo_script_contract(spec, base_commit=task_record.base_commit, repo_path=repo_path)
-    env_script = build_env_script_contract(spec)
+    env_script = build_env_script_contract(spec, task_record=task_record)
     eval_script = task_record.eval_script or build_eval_script_contract(
         spec,
         task_record.fail_to_pass,

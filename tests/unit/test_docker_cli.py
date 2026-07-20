@@ -62,13 +62,47 @@ def test_docker_cli_inspect_helpers_return_booleans():
     def runner(command, **kwargs):
         seen.append(command)
         code = 0 if "present:latest" in command or "container-1" in command else 1
-        return subprocess.CompletedProcess(command, code, "", "missing")
+        detail = (
+            "Error response from daemon: No such image: missing:latest"
+            if "image" in command
+            else "Error response from daemon: No such container: missing-container"
+        )
+        return subprocess.CompletedProcess(command, code, "", detail)
 
     cli = DockerCli(runner=runner)
 
     assert cli.image_exists("present:latest") is True
     assert cli.image_exists("missing:latest") is False
     assert cli.container_exists("container-1") is True
+
+
+def test_docker_cli_image_exists_raises_for_docker_access_errors():
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "permission denied while trying to connect to the docker API at npipe:////./pipe/docker_engine",
+        )
+
+    cli = DockerCli(runner=runner)
+
+    with pytest.raises(DockerCommandError, match="permission denied"):
+        cli.image_exists("present:latest")
+
+
+def test_docker_cli_image_exists_returns_false_only_for_missing_images():
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "Error response from daemon: No such image: missing:latest",
+        )
+
+    cli = DockerCli(runner=runner)
+
+    assert cli.image_exists("missing:latest") is False
 
 
 def test_docker_cli_exec_can_set_workdir():

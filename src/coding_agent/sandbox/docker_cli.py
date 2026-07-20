@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+import logging
 from typing import Callable
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,7 @@ class DockerCli:
     ) -> DockerResult:
         """执行一条 docker 子命令并返回标准输出、标准错误和退出码。"""
         command = ["docker", *args]
+        logger.debug("docker command start: %s", " ".join(command))
         stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
         try:
             completed = self._runner(
@@ -64,21 +69,49 @@ class DockerCli:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
+            logger.warning("docker command timed out: %s", " ".join(command))
             raise DockerCommandTimeout(f"docker command timed out: {' '.join(command)}") from exc
         stdout = completed.stdout.decode("utf-8", errors="replace") if isinstance(completed.stdout, bytes) else completed.stdout or ""
         stderr = completed.stderr.decode("utf-8", errors="replace") if isinstance(completed.stderr, bytes) else completed.stderr or ""
         result = DockerResult(stdout or "", stderr or "", int(completed.returncode))
+        logger.debug("docker command finished rc=%s: %s", result.returncode, " ".join(command))
         if check and result.returncode != 0:
+            logger.warning(
+                "docker command failed rc=%s: %s; %s",
+                result.returncode,
+                " ".join(command),
+                (result.stderr or result.stdout).strip(),
+            )
             raise DockerCommandError(args, result)
         return result
 
+    def _inspect_exists(self, args: list[str], *, missing_markers: tuple[str, ...]) -> bool:
+        result = self.run(args, check=False)
+        target = args[-1]
+        if result.returncode == 0:
+            logger.info("docker inspect found: %s", target)
+            return True
+        detail = (result.stderr or result.stdout).strip()
+        lowered = detail.lower()
+        if any(marker in lowered for marker in missing_markers):
+            logger.info("docker inspect missing: %s; %s", target, detail)
+            return False
+        logger.error("docker inspect failed for %s: %s", target, detail or f"exit code {result.returncode}")
+        raise DockerCommandError(args, result)
+
     def image_exists(self, image: str) -> bool:
         """检查镜像是否存在；用于注册阶段快速失败。"""
-        return self.run(["image", "inspect", image], check=False).returncode == 0
+        return self._inspect_exists(
+            ["image", "inspect", image],
+            missing_markers=("no such image", "no such object", "not found"),
+        )
 
     def container_exists(self, name: str) -> bool:
         """检查容器是否存在，供测试或未来恢复逻辑使用。"""
-        return self.run(["container", "inspect", name], check=False).returncode == 0
+        return self._inspect_exists(
+            ["container", "inspect", name],
+            missing_markers=("no such container", "no such object", "not found"),
+        )
 
     def create_container(self, *, name: str, image: str) -> DockerResult:
         """创建长驻任务容器。

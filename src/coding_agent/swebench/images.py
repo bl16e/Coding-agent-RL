@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import re
 from typing import AbstractSet
 
 from coding_agent.models import AdaptedTestSpec
+
+
+logger = logging.getLogger(__name__)
 
 
 class MissingRuntimeImagesError(ValueError):
@@ -83,16 +87,60 @@ def plan_image_graph(
 
 
 def inspect_image_graph(testspec: AdaptedTestSpec, *, docker, build_missing: bool) -> ImageGraphPlan:
-    existing = {image for image in (testspec.base_image_key, testspec.env_image_key, testspec.instance_image_key) if docker.image_exists(image)}
-    return plan_image_graph(testspec, existing_images=existing, build_missing=build_missing)
+    logger.info("checking runtime image graph: instance_id=%s build_missing=%s", testspec.instance_id, build_missing)
+    existing = {
+        image
+        for image in (testspec.base_image_key, testspec.env_image_key, testspec.instance_image_key)
+        if docker.image_exists(image)
+    }
+    plan = plan_image_graph(testspec, existing_images=existing, build_missing=build_missing)
+    logger.info(
+        "runtime image graph resolved: instance_id=%s reused=%s missing=%s",
+        testspec.instance_id,
+        list(plan.reused_images),
+        list(plan.missing_images),
+    )
+    return plan
 
 
 def base_dockerfile(testspec: AdaptedTestSpec) -> str:
+    docker_specs = {
+        "ubuntu_version": "22.04",
+        "conda_version": "py311_23.11.0-2",
+        "conda_arch": "x86_64",
+        **getattr(testspec, "docker_specs", {}),
+    }
     return "\n".join(
         [
-            "FROM ubuntu:22.04",
-            "ENV DEBIAN_FRONTEND=noninteractive",
-            "RUN apt-get update && apt-get install -y git curl ca-certificates bash python3 python3-pip python-is-python3 && rm -rf /var/lib/apt/lists/*",
+            f"FROM --platform={testspec.platform} ubuntu:{docker_specs['ubuntu_version']}",
+            "",
+            "ARG DEBIAN_FRONTEND=noninteractive",
+            "ENV TZ=Etc/UTC",
+            "",
+            "RUN apt update && apt install -y \\",
+            "wget \\",
+            "git \\",
+            "build-essential \\",
+            "libffi-dev \\",
+            "libtiff-dev \\",
+            "python3 \\",
+            "python3-pip \\",
+            "python-is-python3 \\",
+            "jq \\",
+            "curl \\",
+            "locales \\",
+            "locales-all \\",
+            "tzdata \\",
+            "&& rm -rf /var/lib/apt/lists/*",
+            "",
+            "RUN wget 'https://repo.anaconda.com/miniconda/Miniconda3-"
+            f"{docker_specs['conda_version']}-Linux-{docker_specs['conda_arch']}.sh' -O miniconda.sh \\",
+            "    && bash miniconda.sh -b -p /opt/miniconda3",
+            "ENV PATH=/opt/miniconda3/bin:$PATH",
+            "RUN conda init --all",
+            "RUN conda config --append channels conda-forge",
+            "",
+            "RUN adduser --disabled-password --gecos 'dog' nonroot",
             "",
         ]
     )
@@ -101,12 +149,15 @@ def base_dockerfile(testspec: AdaptedTestSpec) -> str:
 def env_dockerfile(testspec: AdaptedTestSpec) -> str:
     return "\n".join(
         [
-            f"FROM {testspec.base_image_key}",
+            f"FROM --platform={testspec.platform} {testspec.base_image_key}",
             'SHELL ["/bin/bash", "-lc"]',
             "RUN cat > /tmp/setup_env.sh <<'EOF_ENV'",
             testspec.env_script,
             "EOF_ENV",
-            "RUN bash /tmp/setup_env.sh",
+            "RUN chmod +x /tmp/setup_env.sh",
+            'RUN /bin/bash -c "source ~/.bashrc && /tmp/setup_env.sh"',
+            "WORKDIR /testbed/",
+            'RUN echo "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed" > /root/.bashrc',
             "",
         ]
     )
@@ -115,12 +166,13 @@ def env_dockerfile(testspec: AdaptedTestSpec) -> str:
 def instance_dockerfile(testspec: AdaptedTestSpec) -> str:
     return "\n".join(
         [
-            f"FROM {testspec.env_image_key}",
+            f"FROM --platform={testspec.platform} {testspec.env_image_key}",
             'SHELL ["/bin/bash", "-lc"]',
             "RUN cat > /tmp/setup_repo.sh <<'EOF_REPO'",
             testspec.repo_script,
             "EOF_REPO",
             "RUN bash /tmp/setup_repo.sh",
+            "WORKDIR /testbed/",
             "RUN cat > /opt/swebench_eval.sh <<'EOF_EVAL'",
             testspec.eval_script,
             "EOF_EVAL",
@@ -140,6 +192,8 @@ def build_missing_images(testspec: AdaptedTestSpec, *, docker, plan: ImageGraphP
     for image in plan.ordered_image_keys:
         if image not in plan.missing_images:
             continue
+        logger.info("docker image build started: image=%s instance_id=%s", image, testspec.instance_id)
         docker.build_image(image=image, dockerfile=dockerfiles[image], context=".")
+        logger.info("docker image build completed: image=%s instance_id=%s", image, testspec.instance_id)
         built.append(image)
     return tuple(built)

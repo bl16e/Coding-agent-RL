@@ -99,9 +99,12 @@ def test_build_missing_images_uses_testspec_scripts_in_dockerfiles():
     )
 
     dockerfiles = {call[1][0]: call[1][1] for call in docker.calls if call[0] == "build_image"}
-    assert "FROM ubuntu" in dockerfiles["sweb.base.py.x86_64:latest"]
-    assert "python3-pip" in dockerfiles["sweb.base.py.x86_64:latest"]
-    assert "python-is-python3" in dockerfiles["sweb.base.py.x86_64:latest"]
+    base = dockerfiles["sweb.base.py.x86_64:latest"]
+    assert "FROM --platform=linux/x86_64 ubuntu:22.04" in base
+    assert "Miniconda3-" in base
+    assert "ENV PATH=/opt/miniconda3/bin:$PATH" in base
+    assert "RUN conda init --all" in base
     assert "conda create -n testbed python=3.11 -y" in dockerfiles["sweb.env.py.x86_64.hash:latest"]
+    assert "RUN chmod +x /tmp/setup_env.sh" in dockerfiles["sweb.env.py.x86_64.hash:latest"]
     assert "git clone repo" in dockerfiles["sweb.eval.x86_64.django__django-11099:latest"]
     assert "echo eval" in dockerfiles["sweb.eval.x86_64.django__django-11099:latest"]

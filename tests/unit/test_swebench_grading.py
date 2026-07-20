@@ -217,6 +217,55 @@ def test_parse_eval_report_accepts_marker_wrapped_django_unittest_output():
     assert report.fail_to_pass_failure == ()
 
 
+def test_parse_eval_report_uses_upstream_sympy_parser_for_sympy_output():
+    output = "\n".join(
+        [
+            "setup text",
+            ">>>>> Start Test Output",
+            "test_singular ok",
+            "test_inverse F",
+            ">>>>> End Test Output",
+        ]
+    )
+
+    report = parse_eval_report(
+        output,
+        repo="sympy/sympy",
+        version="1.11",
+        fail_to_pass=("test_singular", "test_inverse"),
+        raw_output_artifact="eval.log",
+    )
+
+    assert report.resolved is False
+    assert report.fail_to_pass_success == ("test_singular",)
+    assert report.fail_to_pass_failure == ("test_inverse",)
+
+
+def test_parse_eval_report_uses_upstream_sphinx_parser_for_status_suffix_output():
+    output = "\n".join(
+        [
+            "setup text",
+            ">>>>> Start Test Output",
+            "tests/test_build_latex.py::test_latex_images PASSED",
+            "tests/test_build_text.py::test_text_builder PASSED",
+            ">>>>> End Test Output",
+        ]
+    )
+
+    report = parse_eval_report(
+        output,
+        repo="sphinx-doc/sphinx",
+        version="7.3",
+        fail_to_pass=("tests/test_build_latex.py::test_latex_images",),
+        pass_to_pass=("tests/test_build_text.py::test_text_builder",),
+        raw_output_artifact="eval.log",
+    )
+
+    assert report.resolved is True
+    assert report.fail_to_pass_success == ("tests/test_build_latex.py::test_latex_images",)
+    assert report.pass_to_pass_success == ("tests/test_build_text.py::test_text_builder",)
+
+
 def test_parse_eval_report_accepts_django_unittest_output_with_docstring_lines():
     output = "\n".join(
         [

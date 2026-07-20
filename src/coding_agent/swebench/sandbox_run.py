@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -45,6 +46,9 @@ from coding_agent.swebench.testspec import build_adapted_testspec
 from coding_agent.swebench.validation import ValidationMetadataError, build_official_validation_set, build_validation_test_set
 from coding_agent.trajectory.converter import convert_trajectory_to_summary_format
 from coding_agent.trajectory.summary import write_summary
+
+
+logger = logging.getLogger(__name__)
 
 
 class SandboxedRunInputError(ValueError):
@@ -326,6 +330,7 @@ def _official_ready_checks(
     prepared: PreparedTaskEnvironment,
     testspec: Any,
 ) -> dict[str, Any]:
+    logger.info("prepared environment ready checks started: instance_id=%s container=%s", prepared.instance_id, prepared.container_name)
     _exec_ready_command(docker, prepared, ["true"])
     head = _exec_ready_command(
         docker,
@@ -341,6 +346,7 @@ def _official_ready_checks(
     ).stdout.strip()
     if status:
         raise SandboxedRunInputError("prepared workspace is not clean")
+    logger.info("prepared environment ready checks completed: instance_id=%s base_commit=%s", prepared.instance_id, head)
     return {
         "container_exec": {"ok": True},
         "task_identity": {"ok": True, "instance_id": prepared.instance_id},
@@ -362,16 +368,36 @@ def prepare_official_swebench_runtime(
     arch: str = "x86_64",
 ) -> PreparedTaskEnvironment:
     """Prepare an official-style SWE-Bench task runtime without starting the agent."""
+    logger.info(
+        "official runtime prepare started: instance_id=%s dataset=%s output_dir=%s build_missing=%s replace_existing=%s arch=%s",
+        instance_id,
+        dataset_path,
+        output_dir,
+        build_missing,
+        replace_existing,
+        arch,
+    )
     output_path = Path(output_dir)
     index_path = Path(active_index_path)
+    logger.info("checking active prepared slot: instance_id=%s index=%s", instance_id, index_path)
     index_payload = _assert_prepared_slot_available(index_path, instance_id, replace_existing=replace_existing)
     old_entry = index_payload.get("prepared_environments", {}).get(instance_id)
 
+    logger.info("loading SWE-Bench task record: instance_id=%s dataset=%s", instance_id, dataset_path)
     task_record = normalize_benchmark_task_record(load_task_record(dataset_path, instance_id))
+    logger.info(
+        "loaded SWE-Bench task record: instance_id=%s repo=%s version=%s base_commit=%s",
+        task_record.instance_id,
+        task_record.repo,
+        task_record.version,
+        task_record.base_commit,
+    )
+    logger.info("building adapted TestSpec: instance_id=%s arch=%s", task_record.instance_id, arch)
     testspec = build_adapted_testspec(task_record, arch=arch)
     image_plan = inspect_image_graph(testspec, docker=docker, build_missing=build_missing)
     built_images = build_missing_images(testspec, docker=docker, plan=image_plan) if image_plan.missing_images else ()
     if old_entry and replace_existing and old_entry.get("container_name"):
+        logger.info("replacing existing prepared environment: instance_id=%s old_container=%s", instance_id, old_entry["container_name"])
         docker.stop_container(str(old_entry["container_name"]))
         docker.remove_container(str(old_entry["container_name"]))
 
@@ -386,6 +412,7 @@ def prepare_official_swebench_runtime(
         reused_images=image_plan.reused_images,
         metadata_sources=(testspec.repo_version_source,),
     )
+    logger.info("creating prepared task container: instance_id=%s image=%s", task_record.instance_id, testspec.instance_image_key)
     sandbox = TaskSandboxManager(docker=docker).prepare_official_instance(
         repo=task_record.repo,
         instance_id=task_record.instance_id,
@@ -412,11 +439,13 @@ def prepare_official_swebench_runtime(
     ready_checks = _official_ready_checks(docker, prepared, testspec)
     prepared = replace(prepared, ready_checks=ready_checks)
     output_path.mkdir(parents=True, exist_ok=True)
+    logger.info("writing prepare sandbox metadata: instance_id=%s path=%s", task_record.instance_id, sandbox_json_path)
     sandbox_json_path.write_text(
         json.dumps(_official_sandbox_payload(prepared=prepared, status=prepared.status, ready_checks=ready_checks), indent=2),
         encoding="utf-8",
     )
     _save_active_prepared_environment(index_path, prepared)
+    logger.info("official runtime prepare completed: instance_id=%s container=%s", task_record.instance_id, prepared.container_name)
     return prepared
 
 
@@ -613,7 +642,9 @@ def _ensure_trajectory_json(*, output_path: Path, task_record: Any, patch: str, 
 
 
 def _cleanup_prepared_environment(docker: DockerCli, prepared: PreparedTaskEnvironment) -> None:
+    logger.info("cleanup prepared environment started: instance_id=%s container=%s", prepared.instance_id, prepared.container_name)
     TaskSandboxManager(docker=docker).stop(_task_sandbox_from_prepared(prepared))
+    logger.info("cleanup prepared environment completed: instance_id=%s container=%s", prepared.instance_id, prepared.container_name)
 
 
 def _validate_active_prepared_environment(prepared: PreparedTaskEnvironment, task_record: Any) -> None:
@@ -695,6 +726,7 @@ def _run_final_eval(
     timeout_seconds: int,
 ) -> EvalReport:
     eval_log = output_path / "eval.log"
+    logger.info("official final eval started: instance_id=%s log=%s", prepared.instance_id, eval_log)
     try:
         result = docker.exec(
             prepared.container_name,
@@ -714,7 +746,7 @@ def _run_final_eval(
     raw_output = (result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr).strip()
     eval_log.write_text(raw_output, encoding="utf-8")
     try:
-        return parse_eval_report(
+        report = parse_eval_report(
             raw_output,
             repo=prepared.repo,
             version=prepared.version,
@@ -722,7 +754,18 @@ def _run_final_eval(
             pass_to_pass=validation.pass_to_pass,
             raw_output_artifact=str(eval_log),
         )
+        logger.info(
+            "official final eval completed: instance_id=%s resolved=%s fail_success=%s fail_failure=%s pass_success=%s pass_failure=%s",
+            prepared.instance_id,
+            report.resolved,
+            len(report.fail_to_pass_success),
+            len(report.fail_to_pass_failure),
+            len(report.pass_to_pass_success),
+            len(report.pass_to_pass_failure),
+        )
+        return report
     except EvalOutputParseError:
+        logger.warning("official final eval output could not be parsed: instance_id=%s log=%s", prepared.instance_id, eval_log)
         return _failure_eval_report(validation, str(eval_log))
 
 
@@ -741,13 +784,28 @@ def run_prepared_swebench_runtime(
     arch: str = "x86_64",
 ) -> RunSummary:
     """Run the host-owned agent through an active official-style prepared environment."""
+    logger.info(
+        "official runtime run started: instance_id=%s dataset=%s output_dir=%s cleanup=%s include_pass_to_pass=%s",
+        instance_id,
+        dataset_path,
+        output_dir,
+        cleanup,
+        include_pass_to_pass,
+    )
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     index_path = Path(active_index_path)
     task_record = normalize_benchmark_task_record(load_task_record(dataset_path, instance_id))
     testspec = build_adapted_testspec(task_record, arch=arch)
     validation = build_official_validation_set(testspec, include_pass_to_pass=include_pass_to_pass)
+    logger.info(
+        "official validation set built: instance_id=%s fail_to_pass=%s pass_to_pass=%s",
+        task_record.instance_id,
+        len(validation.fail_to_pass),
+        len(validation.pass_to_pass),
+    )
     prepared = _load_active_prepared_environment(index_path, instance_id)
+    logger.info("loaded active prepared environment: instance_id=%s container=%s status=%s", instance_id, prepared.container_name, prepared.status.value)
     _validate_active_prepared_environment(prepared, task_record)
     ready_checks = _official_ready_checks(docker, prepared, testspec)
     prepared = replace(prepared, ready_checks=ready_checks)
@@ -755,6 +813,7 @@ def run_prepared_swebench_runtime(
     running = replace(prepared, status=PreparedEnvironmentStatus.RUNNING, sandbox_json=output_path / "sandbox.json")
     _save_active_prepared_environment(index_path, running)
     status_transition: list[str] = [PreparedEnvironmentStatus.READY.value, PreparedEnvironmentStatus.RUNNING.value]
+    logger.info("prepared environment status transition: instance_id=%s %s", instance_id, " -> ".join(status_transition))
     _write_official_sandbox_json(
         output_path=output_path,
         prepared=running,
@@ -785,6 +844,7 @@ def run_prepared_swebench_runtime(
     )
     run_id = str(uuid.uuid4())
     try:
+        logger.info("agent run started: instance_id=%s run_id=%s model=%s", task_record.instance_id, run_id, model_name)
         summary = run_task(
             task=task,
             budget=budget,
@@ -794,9 +854,11 @@ def run_prepared_swebench_runtime(
             run_id=run_id,
             tool_executor=executor,
         )
+        logger.info("agent run completed: instance_id=%s run_id=%s status=%s", task_record.instance_id, run_id, summary.status.value)
     except ArtifactPersistenceError:
         raise
     except Exception as exc:
+        logger.exception("agent run failed after start: instance_id=%s run_id=%s", task_record.instance_id, run_id)
         error_prepared = replace(prepared, status=PreparedEnvironmentStatus.ERROR, sandbox_json=output_path / "sandbox.json")
         status_transition.append(PreparedEnvironmentStatus.ERROR.value)
         if cleanup:
@@ -857,6 +919,12 @@ def run_prepared_swebench_runtime(
         repo_path=prepared.repo_path,
     )
     final_patch = filter_validation_patch_changes(container_patch, task_record.test_patch)
+    logger.info(
+        "exported final patch: instance_id=%s raw_bytes=%s filtered_bytes=%s",
+        task_record.instance_id,
+        len(container_patch.encode("utf-8")),
+        len(final_patch.encode("utf-8")),
+    )
     (output_path / "final.patch").write_text(final_patch, encoding="utf-8")
     write_prediction_from_patch(
         output_path / "prediction.jsonl",
@@ -877,6 +945,7 @@ def run_prepared_swebench_runtime(
         else PreparedEnvironmentStatus.USED
     )
     status_transition.append(terminal_status.value)
+    logger.info("prepared environment terminal status: instance_id=%s status=%s", instance_id, terminal_status.value)
     terminal_prepared = replace(prepared, status=terminal_status, sandbox_json=output_path / "sandbox.json")
     if cleanup and terminal_status is PreparedEnvironmentStatus.USED:
         status_transition.append(PreparedEnvironmentStatus.STOPPED.value)
@@ -917,6 +986,13 @@ def run_prepared_swebench_runtime(
         cleanup_action=cleanup_action,
         active_index_result=active_index_result,
         eval_report=eval_report,
+    )
+    logger.info(
+        "official runtime run completed: instance_id=%s status=%s active_index=%s cleanup_action=%s",
+        instance_id,
+        summary.status.value,
+        active_index_result,
+        cleanup_action,
     )
     return summary
 
@@ -1527,6 +1603,48 @@ def _initialize_official_batch_state(
         _write_batch_state(path, state)
 
 
+def _official_batch_records_to_preflight(
+    *,
+    records: Sequence[tuple[Path, SwebenchTaskRecord]],
+    state_path: Path,
+    resume: bool,
+    terminal_resume_statuses: set[str],
+) -> tuple[tuple[Path, SwebenchTaskRecord], ...]:
+    if not resume:
+        return tuple(records)
+    current_state = _load_batch_state(state_path)
+    tasks = current_state.get("tasks", {})
+    return tuple(
+        (dataset_path, record)
+        for dataset_path, record in records
+        if str(tasks.get(record.instance_id, {}).get("status")) not in terminal_resume_statuses
+    )
+
+
+def _preflight_official_batch_records(
+    *,
+    records: Sequence[tuple[Path, SwebenchTaskRecord]],
+    docker: DockerCli,
+    build_missing: bool,
+    arch: str,
+) -> None:
+    logger.info("official batch preflight started: tasks=%s build_missing=%s arch=%s", len(records), build_missing, arch)
+    for dataset_path, record in records:
+        try:
+            task_record = normalize_benchmark_task_record(record)
+            testspec = build_adapted_testspec(task_record, arch=arch)
+            image_plan = inspect_image_graph(testspec, docker=docker, build_missing=build_missing)
+            if image_plan.missing_images:
+                build_missing_images(testspec, docker=docker, plan=image_plan)
+        except SandboxedRunInputError:
+            raise
+        except ValueError as exc:
+            raise SandboxedRunInputError(
+                f"batch preflight failed for {record.instance_id} from {dataset_path}: {exc}"
+            ) from exc
+    logger.info("official batch preflight completed: tasks=%s", len(records))
+
+
 def run_official_swebench_batch(
     *,
     dataset_paths: Sequence[str | Path],
@@ -1554,6 +1672,18 @@ def run_official_swebench_batch(
     state_lock = Lock()
     _initialize_official_batch_state(path=state, lock=state_lock, records=records, output_dir=root)
     terminal_resume_statuses = {RunStatus.SOLVED.value, RunStatus.FAILED.value, RunStatus.INCOMPLETE.value}
+    preflight_records = _official_batch_records_to_preflight(
+        records=records,
+        state_path=state,
+        resume=resume,
+        terminal_resume_statuses=terminal_resume_statuses,
+    )
+    _preflight_official_batch_records(
+        records=preflight_records,
+        docker=docker,
+        build_missing=build_missing,
+        arch=arch,
+    )
 
     def run_one(item: tuple[Path, SwebenchTaskRecord]) -> dict[str, Any]:
         dataset_path, record = item
@@ -1572,6 +1702,7 @@ def run_official_swebench_batch(
                     "prepare_dir": str(prepare_dir),
                     "run_dir": str(run_dir),
                     "skipped": True,
+                    "input_error": False,
                     "artifact_error": False,
                     "runtime_error": False,
                 }
@@ -1624,8 +1755,22 @@ def run_official_swebench_batch(
                 "prepare_dir": str(prepare_dir),
                 "run_dir": str(run_dir),
                 "skipped": False,
+                "input_error": False,
                 "artifact_error": False,
                 "runtime_error": summary.status is RunStatus.ERRORED,
+            }
+        except SandboxedRunInputError as exc:
+            _update_batch_task(state, state_lock, record.instance_id, status="input_error", last_error=str(exc))
+            return {
+                "instance_id": record.instance_id,
+                "status": "input_error",
+                "error": str(exc),
+                "prepare_dir": str(prepare_dir),
+                "run_dir": str(run_dir),
+                "skipped": False,
+                "input_error": True,
+                "artifact_error": False,
+                "runtime_error": False,
             }
         except ArtifactPersistenceError as exc:
             _update_batch_task(state, state_lock, record.instance_id, status="artifact_error", last_error=str(exc))
@@ -1636,6 +1781,7 @@ def run_official_swebench_batch(
                 "prepare_dir": str(prepare_dir),
                 "run_dir": str(run_dir),
                 "skipped": False,
+                "input_error": False,
                 "artifact_error": True,
                 "runtime_error": False,
             }
@@ -1648,6 +1794,7 @@ def run_official_swebench_batch(
                 "prepare_dir": str(prepare_dir),
                 "run_dir": str(run_dir),
                 "skipped": False,
+                "input_error": False,
                 "artifact_error": False,
                 "runtime_error": True,
             }
@@ -1687,6 +1834,8 @@ def run_official_swebench_batch(
     )
     if any(result["artifact_error"] for result in ordered_results):
         return 3
+    if any(result["input_error"] for result in ordered_results):
+        return 2
     if any(result["runtime_error"] for result in ordered_results):
         return 4
     return 0
@@ -1960,8 +2109,19 @@ def run_swebench_tasks(
                 "status": summary.status.value,
                 "error": summary.error,
                 "output_dir": str(run_dir),
+                "input_error": False,
                 "artifact_error": False,
                 "runtime_error": summary.status is RunStatus.ERRORED,
+            }
+        except SandboxedRunInputError as exc:
+            return {
+                "instance_id": record.instance_id,
+                "status": "input_error",
+                "error": str(exc),
+                "output_dir": str(run_dir),
+                "input_error": True,
+                "artifact_error": False,
+                "runtime_error": False,
             }
         except ArtifactPersistenceError as exc:
             return {
@@ -1969,6 +2129,7 @@ def run_swebench_tasks(
                 "status": "artifact_error",
                 "error": str(exc),
                 "output_dir": str(run_dir),
+                "input_error": False,
                 "artifact_error": True,
                 "runtime_error": False,
             }
@@ -1978,6 +2139,7 @@ def run_swebench_tasks(
                 "status": "errored",
                 "error": str(exc),
                 "output_dir": str(run_dir),
+                "input_error": False,
                 "artifact_error": False,
                 "runtime_error": True,
             }
@@ -2018,6 +2180,8 @@ def run_swebench_tasks(
 
     if any(result["artifact_error"] for result in ordered_results):
         return 3
+    if any(result["input_error"] for result in ordered_results):
+        return 2
     if any(result["runtime_error"] for result in ordered_results):
         return 4
     return 0

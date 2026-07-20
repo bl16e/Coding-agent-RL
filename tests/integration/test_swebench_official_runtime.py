@@ -1,6 +1,7 @@
 """Integration tests for official-style SWE-Bench prepare/run orchestration."""
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,26 @@ def test_prepare_official_runtime_writes_ready_metadata_and_active_index(tmp_pat
     assert sandbox["runtime"]["instance_image_key"] == "sweb.eval.x86_64.django__django-11099:latest"
     assert active["prepared_environments"]["django__django-11099"]["status"] == "ready"
     assert not any(call[0] == "build_image" for call in docker.calls)
+
+
+def test_prepare_official_runtime_logs_progress(tmp_path: Path, caplog):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    docker = FakeOfficialRuntimeDocker(present_images=set(PRESENT_IMAGES))
+
+    with caplog.at_level(logging.INFO):
+        prepare_official_swebench_runtime(
+            dataset_path=dataset,
+            instance_id="django__django-11099",
+            docker=docker,
+            output_dir=tmp_path / "prepare",
+            active_index_path=tmp_path / ".coding-agent" / "active-sandboxes.json",
+        )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "official runtime prepare started" in log_text
+    assert "runtime image graph resolved" in log_text
+    assert "prepared environment ready checks completed" in log_text
+    assert "official runtime prepare completed" in log_text
 
 
 def test_prepare_official_runtime_rejects_duplicate_active_entry_before_container_create(tmp_path: Path):

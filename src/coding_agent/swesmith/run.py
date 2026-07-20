@@ -11,6 +11,7 @@ from coding_agent.models import BenchmarkTask, Prediction, RunBudget, RunSummary
 from coding_agent.sandbox.docker_cli import DockerCli
 from coding_agent.sandbox.tools import ContainerToolExecutor
 from coding_agent.swebench.prediction import prediction_to_dict
+from coding_agent.swesmith.dataset import load_subset
 from coding_agent.swesmith.runtime import SwesmithPreparedContainer, create_official_container
 
 
@@ -95,3 +96,79 @@ def run_swesmith_instance(
     _write_prediction(output_path / "prediction.jsonl", Prediction(prepared.instance_id, model_name, patch))
     _write_sandbox_json(output_path / "sandbox.json", prepared)
     return summary
+
+
+def _safe_instance_dir(instance_id: str) -> str:
+    return instance_id.replace("/", "__").replace("\\", "__")
+
+
+def _read_prediction(run_dir: Path, instance_id: str, model_name: str) -> Prediction:
+    path = run_dir / "prediction.jsonl"
+    if not path.is_file():
+        return Prediction(instance_id, model_name, "")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        return Prediction(
+            str(payload.get("instance_id", instance_id)),
+            str(payload.get("model_name_or_path", model_name)),
+            str(payload.get("model_patch", "")),
+        )
+    return Prediction(instance_id, model_name, "")
+
+
+def run_swesmith_subset(
+    *,
+    subset_path: str | Path,
+    docker: DockerCli,
+    backend_factory: Callable[[], ModelBackend],
+    budget: RunBudget,
+    model_name: str,
+    output_dir: str | Path,
+    reference_path: str | Path | None,
+    jobs: int = 1,
+) -> int:
+    if jobs != 1:
+        raise ValueError("SWE-smith run-subset supports jobs=1 in the first version")
+    rows = load_subset(subset_path)
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+    predictions: list[Prediction] = []
+    for instance in rows:
+        instance_id = str(instance["instance_id"])
+        run_dir = root / _safe_instance_dir(instance_id)
+        try:
+            summary = run_swesmith_instance(
+                instance,
+                docker=docker,
+                backend=backend_factory(),
+                budget=budget,
+                model_name=model_name,
+                output_dir=run_dir,
+                reference_path=reference_path,
+            )
+            status = summary.status.value
+            error = summary.error
+        except Exception as exc:
+            status = "errored"
+            error = str(exc)
+        predictions.append(_read_prediction(run_dir, instance_id, model_name))
+        results.append({"instance_id": instance_id, "status": status, "error": error, "run_dir": str(run_dir)})
+    preds_path = root / "preds.jsonl"
+    preds_path.write_text(
+        "".join(json.dumps(prediction_to_dict(pred), ensure_ascii=True) + "\n" for pred in predictions),
+        encoding="utf-8",
+    )
+    _write_json(
+        root / "batch_summary.json",
+        {
+            "total": len(results),
+            "jobs": jobs,
+            "subset": str(subset_path),
+            "predictions": str(preds_path),
+            "tasks": results,
+        },
+    )
+    return 4 if any(result["status"] == "errored" for result in results) else 0

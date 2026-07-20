@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from coding_agent.models import RunBudget, RunStatus, RunSummary
-from coding_agent.swesmith.run import run_swesmith_instance
+from coding_agent.swesmith.run import run_swesmith_instance, run_swesmith_subset
 
 
 class FakeDocker:
@@ -71,3 +71,42 @@ def test_run_swesmith_instance_uses_container_diff_for_prediction(tmp_path: Path
     assert prediction["model_patch"].startswith("diff --git")
     assert sandbox["runtime"]["path"] == "swesmith_official"
     assert sandbox["container_name"] == "container-1"
+
+
+def test_run_swesmith_subset_writes_ordered_predictions_and_summary(tmp_path: Path, monkeypatch):
+    subset = tmp_path / "subset.json"
+    rows = [
+        {"instance_id": "repo__name.abcdef12.pr_1", "problem_statement": "Fix 1", "FAIL_TO_PASS": ["a"]},
+        {"instance_id": "repo__name.abcdef12.pr_2", "problem_statement": "Fix 2", "FAIL_TO_PASS": ["b"]},
+    ]
+    subset.write_text(json.dumps(rows), encoding="utf-8")
+
+    def fake_run(instance, **kwargs):
+        run_dir = Path(kwargs["output_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        patch = f"diff --git a/{instance['instance_id']} b/{instance['instance_id']}\n"
+        (run_dir / "final.patch").write_text(patch, encoding="utf-8")
+        (run_dir / "prediction.jsonl").write_text(
+            json.dumps({"instance_id": instance["instance_id"], "model_name_or_path": "mock", "model_patch": patch}) + "\n",
+            encoding="utf-8",
+        )
+        return RunSummary("run", instance["instance_id"], "mock", RunStatus.SOLVED, kwargs["budget"])
+
+    monkeypatch.setattr("coding_agent.swesmith.run.run_swesmith_instance", fake_run)
+
+    exit_code = run_swesmith_subset(
+        subset_path=subset,
+        docker=FakeDocker(),
+        backend_factory=lambda: object(),
+        budget=RunBudget(1, 60, 10),
+        model_name="mock",
+        output_dir=tmp_path / "batch",
+        reference_path=None,
+        jobs=1,
+    )
+
+    preds = [json.loads(line) for line in (tmp_path / "batch" / "preds.jsonl").read_text(encoding="utf-8").splitlines()]
+    batch = json.loads((tmp_path / "batch" / "batch_summary.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert [row["instance_id"] for row in preds] == ["repo__name.abcdef12.pr_1", "repo__name.abcdef12.pr_2"]
+    assert batch["total"] == 2

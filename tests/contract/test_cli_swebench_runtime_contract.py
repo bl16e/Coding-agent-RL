@@ -468,3 +468,18 @@ def test_swebench_evaluate_json_output_flag(tmp_path: Path, monkeypatch, capsys)
     captured = capsys.readouterr()
     report = json.loads(captured.out)
     assert report["total"] == 0
+
+
+def test_cli_does_not_import_legacy_positive_swebench_runtime_helpers():
+    import coding_agent.cli as cli
+
+    for name in (
+        "prepare_swebench_sandbox",
+        "solve_prepared_sandbox",
+        "run_swebench_task",
+        "prepare_swebench_sandboxes",
+        "solve_swebench_sandboxes",
+        "run_swebench_tasks",
+        "load_base_image_from_registry",
+    ):
+        assert not hasattr(cli, name)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import uuid
 from pathlib import Path
@@ -33,7 +34,7 @@ from coding_agent.trajectory.writer import TrajectoryWriter
 class ArtifactPersistenceError(RuntimeError):
     """必需运行产物无法可靠写入时抛出。
 
-    这里单独定义错误类型，是为了让 CLI 能把“任务运行失败”和“产物落盘失败”
+    这里单独定义错误类型，是为了让 CLI 能把"任务运行失败"和"产物落盘失败"
     映射成不同退出码。后者通常需要调用方优先处理，因为没有完整产物就无法审计
     代理到底做了什么。
     """
@@ -304,6 +305,88 @@ def _write_artifacts(
         raise ArtifactPersistenceError(str(exc)) from exc
 
 
+def _detect_conflicts(actions: list[AgentAction]) -> list[list[int]]:
+    """Group action indices that conflict on the same file_path.
+
+    Two actions conflict when they target the same file and at least one
+    is a write (APPLY_PATCH).  Conflicting groups must run serially;
+    non-conflicting actions run in parallel.
+
+    Returns a list of groups, each group being a list of indices into *actions*.
+    """
+    # Build file_path -> list of indices for write operations
+    write_targets: dict[str, list[int]] = {}
+    for i, action in enumerate(actions):
+        if action.action is AgentActionType.APPLY_PATCH:
+            fp = action.tool_input.get("file_path", "")
+            if fp:
+                write_targets.setdefault(fp, []).append(i)
+
+    # Build file_path -> list of indices for read operations that conflict with writes
+    read_targets: dict[str, list[int]] = {}
+    for i, action in enumerate(actions):
+        if action.action is AgentActionType.READ_FILE:
+            fp = action.tool_input.get("file_path", "")
+            if fp and fp in write_targets:
+                read_targets.setdefault(fp, []).append(i)
+
+    # Collect conflicting indices
+    conflicting: set[int] = set()
+    for indices in write_targets.values():
+        if len(indices) > 1:
+            conflicting.update(indices)  # multiple writes to same file
+    for indices in read_targets.values():
+        conflicting.update(indices)  # read + write to same file
+
+    if not conflicting:
+        return [list(range(len(actions)))]
+
+    # Non-conflicting indices go in one parallel group; conflicting each get their own
+    parallel_group = [i for i in range(len(actions)) if i not in conflicting]
+    groups: list[list[int]] = []
+    if parallel_group:
+        groups.append(parallel_group)
+    for i in sorted(conflicting):
+        groups.append([i])
+    return groups
+
+
+def _parallel_execute(
+    executor: ToolExecutor,
+    actions: list[AgentAction],
+    action_tool_map: dict[AgentActionType, ToolName],
+) -> list[ToolExecutionResult]:
+    """Execute *actions* with concurrency where safe.
+
+    Non-conflicting actions run in a ThreadPoolExecutor.  Conflicting
+    actions (same file_path with a write) run sequentially.
+    """
+    if len(actions) == 1:
+        tool_name = action_tool_map[actions[0].action]
+        return [executor.execute(tool_name, actions[0].tool_input)]
+
+    groups = _detect_conflicts(actions)
+    results: list[ToolExecutionResult | None] = [None] * len(actions)
+
+    for group in groups:
+        if len(group) == 1:
+            idx = group[0]
+            tool_name = action_tool_map[actions[idx].action]
+            results[idx] = executor.execute(tool_name, actions[idx].tool_input)
+        else:
+            def _run_one(idx: int) -> tuple[int, ToolExecutionResult]:
+                tn = action_tool_map[actions[idx].action]
+                return idx, executor.execute(tn, actions[idx].tool_input)
+
+            with ThreadPoolExecutor(max_workers=len(group)) as pool:
+                futures = {pool.submit(_run_one, i): i for i in group}
+                for future in as_completed(futures):
+                    idx, result = future.result()
+                    results[idx] = result
+
+    return results  # type: ignore[return-value]
+
+
 def run_task(
     *,
     task: BenchmarkTask,
@@ -354,56 +437,67 @@ def run_task(
         {"role": "user", "content": task.problem_statement},
     ]
 
-    # 主循环的最小单位是“一次模型决策”。工具调用结果会写入轨迹并反馈给模型，
-    # 但不额外消耗 max_steps，避免一次合理的读文件/改文件动作被重复计费。
+    # 主循环的最小单位是"一次模型决策"。一次决策可能包含多个并行工具调用，
+    # 它们共享一个 step 预算，但各自写入独立的轨迹条目。
     while not tracker.max_steps_reached:
         if tracker.total_timeout_reached():
             final_error = "total runtime budget reached"
             break
         # 预算检查通过后才请求模型，确保超时场景不会再产生额外工具副作用。
         tracker.consume_step()
-        action = backend.next_action([dict(message) for message in messages])
+        actions = backend.next_action([dict(message) for message in messages])
+
+        # --- 记录模型决策（取第一个 action 的元信息作为代表）---
         try:
-            # 先写模型决策，再执行工具。这样即使工具执行时崩溃，也能从轨迹中看到
-            # 最后一次模型打算做什么，方便复盘和调试。
-            writer.write_step(_decision_step(trajectory_index, action))
+            writer.write_step(_decision_step(trajectory_index, actions[0]))
         except OSError as exc:
             raise ArtifactPersistenceError(str(exc)) from exc
         trajectory_index += 1
-        messages.append(_action_message(action))
-        if action.action is AgentActionType.FINAL:
-            terminal_status = _terminal_status(action)
+
+        # --- 将模型动作追加到对话历史 ---
+        for action in actions:
+            messages.append(_action_message(action))
+
+        # --- 检查 FINAL ---
+        final_actions = [a for a in actions if a.action is AgentActionType.FINAL]
+        if final_actions:
+            final_action = final_actions[0]
+            terminal_status = _terminal_status(final_action)
             if terminal_status is RunStatus.SOLVED and unresolved_tool_failure:
                 agent_run.finish(RunStatus.INCOMPLETE)
                 final_error = "model reported solved after unresolved tool failure"
             else:
                 agent_run.finish(terminal_status)
-                final_error = action.final_message
+                final_error = final_action.final_message
             break
-        tool_name = ACTION_TOOL_MAP[action.action]
-        result = executor.execute(tool_name, action.tool_input)
-        if result.status is Outcome.OK:
-            last_successful_tool_call = result.tool_name.value
-        else:
-            unresolved_tool_failure = True
-        for modification in result.modifications:
-            if result.status is Outcome.OK and _is_test_path(modification.path):
-                authored_test_identifiers.update(_test_path_identifiers(modification.path))
-        if result.test_result is not None:
-            # summary 只保留测试状态计数；完整输出保存在对应的 trajectory tool_result，
-            # 避免 summary.json 变成大日志文件。
-            key = result.test_result.status.value
-            test_summary[key] = test_summary.get(key, 0) + 1
-            category = _self_test_category(result.test_result.command, authored_test_identifiers)
-            self_test_coverage[category][key] = self_test_coverage[category].get(key, 0) + 1
-            if key == "passed":
-                unresolved_tool_failure = False
-        try:
-            writer.write_step(_tool_result_step(trajectory_index, result, action.tool_input))
-        except OSError as exc:
-            raise ArtifactPersistenceError(str(exc)) from exc
-        trajectory_index += 1
-        messages.append(_tool_history_message(action, result))
+
+        # --- 过滤出工具动作并并行执行 ---
+        tool_actions = [a for a in actions if a.action is not AgentActionType.FINAL]
+        if not tool_actions:
+            continue
+
+        results = _parallel_execute(executor, tool_actions, ACTION_TOOL_MAP)
+        for action, result in zip(tool_actions, results):
+            if result.status is Outcome.OK:
+                last_successful_tool_call = result.tool_name.value
+            else:
+                unresolved_tool_failure = True
+            for modification in result.modifications:
+                if result.status is Outcome.OK and _is_test_path(modification.path):
+                    authored_test_identifiers.update(_test_path_identifiers(modification.path))
+            if result.test_result is not None:
+                key = result.test_result.status.value
+                test_summary[key] = test_summary.get(key, 0) + 1
+                category = _self_test_category(result.test_result.command, authored_test_identifiers)
+                self_test_coverage[category][key] = self_test_coverage[category].get(key, 0) + 1
+                if key == "passed":
+                    unresolved_tool_failure = False
+            try:
+                writer.write_step(_tool_result_step(trajectory_index, result, action.tool_input))
+            except OSError as exc:
+                raise ArtifactPersistenceError(str(exc)) from exc
+            trajectory_index += 1
+            messages.append(_tool_history_message(action, result))
     else:
         final_error = "max steps budget reached"
 

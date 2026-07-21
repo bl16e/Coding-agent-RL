@@ -23,12 +23,11 @@ def test_agent_persists_reasoning_intent_and_tool_selection_reason(tmp_path: Pat
         [
             AgentAction(
                 action=AgentActionType.READ_FILE,
-                tool_input={"path": "app.py"},
+                tool_input={"file_path": "app.py"},
                 reasoning_summary="Need current implementation",
                 next_intent="Read file",
                 tool_selection_reason="app.py is likely relevant",
             ),
-            AgentAction(action=AgentActionType.FINAL, final_status="incomplete"),
         ]
     )
 
@@ -64,7 +63,6 @@ def test_summary_trajectory_preserves_failed_apply_patch_status(tmp_path: Path):
                 action=AgentActionType.APPLY_PATCH,
                 tool_input={"type": "update", "file_path": "app.py", "old_string": "nope", "new_string": "yep"},
             ),
-            AgentAction(action=AgentActionType.FINAL, final_status="incomplete"),
         ]
     )
 

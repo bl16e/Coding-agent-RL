@@ -1,13 +1,11 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from coding_agent.agent import create_task_from_paths, run_task
 from coding_agent.models import FileModification, Outcome, RunBudget, RunStatus, TestResult as ModelTestResult
 from coding_agent.models import TestStatus as ModelTestStatus
 from coding_agent.models import ToolName
-from coding_agent.model_backends.base import AgentAction, AgentActionType
+from coding_agent.model_backends.base import AgentAction, AgentActionType, TurnResult
 from coding_agent.model_backends.mock import MockBackend
 from coding_agent.tools import ToolExecutionResult, ToolExecutor
 
@@ -16,50 +14,25 @@ class CapturingBackend:
     def __init__(self) -> None:
         self.messages: list[dict[str, str]] = []
 
-    def next_action(self, messages: list[dict[str, str]]) -> AgentAction:
+    def next_action(self, messages: list[dict[str, str]]) -> TurnResult:
         self.messages = messages
-        return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
+        return TurnResult(actions=[], assistant_messages=[{"role": "assistant", "content": "All done."}])
 
 
 class TwoStepCapturingBackend:
     def __init__(self) -> None:
         self.messages_by_call: list[list[dict[str, str]]] = []
 
-    def next_action(self, messages: list[dict[str, str]]) -> AgentAction:
+    def next_action(self, messages: list[dict[str, str]]) -> TurnResult:
         self.messages_by_call.append(messages)
         if len(self.messages_by_call) == 1:
-            return AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "README.md"})
-        return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
-
-
-class NativeToolCallCapturingBackend:
-    def __init__(self) -> None:
-        self.messages_by_call: list[list[dict]] = []
-
-    def next_action(self, messages: list[dict]) -> AgentAction:
-        self.messages_by_call.append(messages)
-        if len(self.messages_by_call) == 1:
-            raw_message = {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_read",
-                        "type": "function",
-                        "function": {
-                            "name": "read_file",
-                            "arguments": '{"file_path":"README.md"}',
-                        },
-                    }
-                ],
-            }
-            return AgentAction(
-                action=AgentActionType.READ_FILE,
-                tool_input={"file_path": "README.md"},
-                tool_call_id="call_read",
-                raw_message=raw_message,
+            return TurnResult(
+                actions=[AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "README.md"})],
+                assistant_messages=[{"role": "assistant", "content": None, "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": '{"file_path":"README.md"}'}}
+                ]}],
             )
-        return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
+        return TurnResult(actions=[], assistant_messages=[{"role": "assistant", "content": "Looks good."}])
 
 
 class ScriptedExecutor(ToolExecutor):
@@ -72,7 +45,7 @@ class ScriptedExecutor(ToolExecutor):
         return self.results.pop(0)
 
 
-def test_agent_run_moves_from_pending_to_terminal_status(tmp_path: Path):
+def test_agent_run_stops_naturally(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     problem = tmp_path / "problem.txt"
@@ -83,17 +56,7 @@ def test_agent_run_moves_from_pending_to_terminal_status(tmp_path: Path):
         problem_statement_file=problem,
         allowed_test_commands=("python -m pytest",),
     )
-    backend = MockBackend(
-        [
-            AgentAction(
-                action=AgentActionType.FINAL,
-                reasoning_summary="No edits required",
-                next_intent="Finish",
-                final_status="solved",
-                final_message="Solved",
-            )
-        ]
-    )
+    backend = CapturingBackend()
 
     summary = run_task(
         task=task,
@@ -103,7 +66,7 @@ def test_agent_run_moves_from_pending_to_terminal_status(tmp_path: Path):
         output_dir=tmp_path / "run",
     )
 
-    assert summary.status is RunStatus.SOLVED
+    assert summary.status is RunStatus.INCOMPLETE
 
 
 def test_agent_summary_classifies_self_authored_existing_and_diagnostic_self_tests(tmp_path: Path):
@@ -170,20 +133,9 @@ def test_agent_summary_classifies_self_authored_existing_and_diagnostic_self_tes
         backend=MockBackend(
             [
                 AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={"type": "write", "file_path": "tests/test_issue.py", "content": "test"}),
-
-                AgentAction(
-                    action=AgentActionType.RUN_TESTS,
-                    tool_input={"command": "python -m pytest tests/test_issue.py::test_new"},
-                ),
-                AgentAction(
-                    action=AgentActionType.RUN_TESTS,
-                    tool_input={"command": "python -m pytest tests/test_existing.py::test_old"},
-                ),
-                AgentAction(
-                    action=AgentActionType.RUN_TESTS,
-                    tool_input={"command": "python -c \"print('diagnostic')\""},
-                ),
-                AgentAction(action=AgentActionType.FINAL, final_status="solved"),
+                AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": "python -m pytest tests/test_issue.py::test_new"}),
+                AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": "python -m pytest tests/test_existing.py::test_old"}),
+                AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": "python -c \"print('diagnostic')\""}),
             ]
         ),
         model_name="mock-model",
@@ -219,7 +171,6 @@ def test_agent_prompt_describes_action_json_schema_and_allowed_tests(tmp_path: P
     )
 
     system_prompt = backend.messages[0]["content"]
-    # System prompt is task-focused; tool schemas are sent via API's tools parameter
     assert "coding agent" in system_prompt.lower()
     assert "solve" in system_prompt.lower() or "issue" in system_prompt.lower()
     assert "python -m pytest tests/test_issue.py::test_fix" in system_prompt
@@ -248,8 +199,8 @@ def test_agent_sends_tool_result_history_to_next_model_turn(tmp_path: Path):
     )
 
     second_turn = backend.messages_by_call[1]
-    assert any("read_file" in message["content"] for message in second_turn)
-    assert any("important context" in message["content"] for message in second_turn)
+    assert any("read_file" in (message["content"] or "") for message in second_turn)
+    assert any("important context" in (message["content"] or "") for message in second_turn)
 
 
 def test_read_file_history_shows_source_text_without_json_escaping(tmp_path: Path):
@@ -265,17 +216,20 @@ def test_read_file_history_shows_source_text_without_json_escaping(tmp_path: Pat
         allowed_test_commands=("python -m pytest",),
     )
 
-    class ReadValidatorsBackend:
+    class ReadThenStopBackend:
         def __init__(self) -> None:
             self.messages_by_call: list[list[dict[str, str]]] = []
 
-        def next_action(self, messages: list[dict[str, str]]) -> AgentAction:
+        def next_action(self, messages: list[dict[str, str]]) -> TurnResult:
             self.messages_by_call.append(messages)
             if len(self.messages_by_call) == 1:
-                return AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "validators.py"})
-            return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
+                return TurnResult(
+                    actions=[AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "validators.py"})],
+                    assistant_messages=[{"role": "assistant", "content": None, "tool_calls": []}],
+                )
+            return TurnResult(actions=[], assistant_messages=[{"role": "assistant", "content": "Finished."}])
 
-    backend = ReadValidatorsBackend()
+    backend = ReadThenStopBackend()
 
     run_task(
         task=task,
@@ -302,7 +256,28 @@ def test_agent_sends_native_tool_call_and_tool_result_history(tmp_path: Path):
         problem_statement_file=problem,
         allowed_test_commands=("python -m pytest",),
     )
-    backend = NativeToolCallCapturingBackend()
+
+    class NativeToolCallThenStop:
+        def __init__(self) -> None:
+            self.messages_by_call: list[list[dict]] = []
+
+        def next_action(self, messages: list[dict]) -> TurnResult:
+            self.messages_by_call.append(messages)
+            if len(self.messages_by_call) == 1:
+                raw_message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "call_read", "type": "function", "function": {"name": "read_file", "arguments": '{"file_path":"README.md"}'}},
+                    ],
+                }
+                return TurnResult(
+                    actions=[AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "README.md"}, tool_call_id="call_read", raw_message=raw_message)],
+                    assistant_messages=[raw_message],
+                )
+            return TurnResult(actions=[], assistant_messages=[{"role": "assistant", "content": "All done."}])
+
+    backend = NativeToolCallThenStop()
 
     run_task(
         task=task,
@@ -322,28 +297,6 @@ def test_agent_sends_native_tool_call_and_tool_result_history(tmp_path: Path):
     assert "regex = r'^[\\\\w.@+-]+$'" not in second_turn[-1]["content"]
 
 
-def test_agent_run_rejects_invalid_final_status(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    problem = tmp_path / "problem.txt"
-    problem.write_text("Fix it.", encoding="utf-8")
-    task = create_task_from_paths(
-        instance_id="example__repo-1",
-        workspace=workspace,
-        problem_statement_file=problem,
-        allowed_test_commands=("python -m pytest",),
-    )
-
-    with pytest.raises(ValueError, match="unsupported final status"):
-        run_task(
-            task=task,
-            budget=RunBudget(max_steps=3, timeout_seconds=60, test_timeout_seconds=10),
-            backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="unknown")]),
-            model_name="mock-model",
-            output_dir=tmp_path / "run",
-        )
-
-
 def test_agent_downgrades_solved_after_unresolved_tool_failure(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -361,18 +314,14 @@ def test_agent_downgrades_solved_after_unresolved_tool_failure(tmp_path: Path):
         budget=RunBudget(max_steps=3, timeout_seconds=60, test_timeout_seconds=10),
         backend=MockBackend(
             [
-                AgentAction(
-                    action=AgentActionType.RUN_TESTS,
-                    tool_input={"command": "python -m pytest"},
-                ),
-                AgentAction(action=AgentActionType.FINAL, final_status="solved"),
+                AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": "python -m pytest"}),
             ]
         ),
         model_name="mock-model",
         output_dir=tmp_path / "run",
     )
 
-    trajectory = json.loads((tmp_path / "run" / "trajectory.json").read_text(encoding="utf-8"))
+    # After MockBackend exhausts actions, it returns empty TurnResult → agent stops
+    # The run_tests command gets rejected by policy → unresolved tool failure
+    # Natural stop after tool failure → INCOMPLETE
     assert summary.status is RunStatus.INCOMPLETE
-    assert "unresolved tool failure" in (summary.error or "")
-    assert trajectory["resolved"] is False

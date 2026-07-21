@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from coding_agent.model_backends.base import AgentAction, AgentActionType
+from coding_agent.model_backends.base import AgentAction, AgentActionType, TurnResult
 
 
 class MockBackend:
@@ -10,16 +10,18 @@ class MockBackend:
         self._actions = list(actions or [])
         self._index = 0
 
-    def next_action(self, messages: list[dict[str, str]]) -> list[AgentAction]:
+    def next_action(self, messages: list[dict[str, str]]) -> TurnResult:
         if self._index >= len(self._actions):
-            return [AgentAction(
-                action=AgentActionType.FINAL,
-                reasoning_summary="No mock actions remain",
-                next_intent="Stop run",
-                final_status="incomplete",
-                final_message="Mock backend exhausted",
-            )]
+            return TurnResult(
+                actions=[],
+                assistant_messages=[{"role": "assistant", "content": "Task complete."}],
+            )
         action = self._actions[self._index]
         self._index += 1
-        return [action]
-
+        # Build a minimal assistant message for history
+        msg: dict[str, object] = {"role": "assistant", "content": None}
+        if action.tool_call_id:
+            msg["tool_calls"] = [
+                {"id": action.tool_call_id, "type": "function", "function": {"name": action.action.value, "arguments": "{}"}}
+            ]
+        return TurnResult(actions=[action], assistant_messages=[msg])

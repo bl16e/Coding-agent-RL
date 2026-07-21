@@ -147,7 +147,7 @@ def test_run_prepared_official_runtime_writes_artifacts_and_review_metadata(tmp_
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+        backend=MockBackend([]),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -194,7 +194,7 @@ def test_run_fails_before_agent_when_container_is_not_running(tmp_path: Path):
             dataset_path=dataset,
             instance_id="django__django-11099",
             docker=docker,
-            backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+            backend=MockBackend([]),
             budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
             model_name="mock-model",
             output_dir=tmp_path / "run",
@@ -222,7 +222,7 @@ class EvalRecordingDocker(FakeOfficialRuntimeDocker):
                         ">>>>> Start Test Output",
                         "tests/test_issue.py::test_fix PASSED",
                         "tests/test_regression.py::test_old PASSED",
-                        ">>>>> End Test Output",
+                        ">>>>> End Test Output"
                     ]
                 ),
                 "",
@@ -248,7 +248,7 @@ def test_run_executes_final_eval_and_excludes_validation_patch_from_final_diff(t
                         "@@ -1 +1 @@",
                         "-old test",
                         "+new test",
-                        "",
+                        ""
                     ]
                 ),
             )
@@ -270,7 +270,7 @@ def test_run_executes_final_eval_and_excludes_validation_patch_from_final_diff(t
                 "@@ -1 +1 @@",
                 "-old test",
                 "+new test",
-                "",
+                ""
             ]
         ),
     )
@@ -287,7 +287,7 @@ def test_run_executes_final_eval_and_excludes_validation_patch_from_final_diff(t
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+        backend=MockBackend([]),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -326,7 +326,7 @@ class PromptCapturingBackend:
     def next_action(self, messages):
         if self.first_messages is None:
             self.first_messages = messages
-        return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
+        return 
 
 
 def test_official_eval_script_is_not_visible_to_agent_prompt(tmp_path: Path):
@@ -378,7 +378,7 @@ def test_final_eval_does_not_apply_test_patch_outside_official_eval_script(tmp_p
                         "+new test",
                         "EOF_PATCH",
                         "python -m pytest tests/test_issue.py::test_fix",
-                        "git checkout abc123 tests/test_issue.py",
+                        "git checkout abc123 tests/test_issue.py"
                     ]
                 ),
                 test_patch="\n".join(
@@ -389,7 +389,7 @@ def test_final_eval_does_not_apply_test_patch_outside_official_eval_script(tmp_p
                         "@@ -1 +1 @@",
                         "-old test",
                         "+new test",
-                        "",
+                        ""
                     ]
                 ),
             )
@@ -412,7 +412,7 @@ def test_final_eval_does_not_apply_test_patch_outside_official_eval_script(tmp_p
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+        backend=MockBackend([]),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -444,7 +444,7 @@ def test_official_eval_resolution_overrides_agent_incomplete_status(tmp_path: Pa
         backend=MockBackend(
             [
                 AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": "not allowed"}),
-                AgentAction(action=AgentActionType.FINAL, final_status="solved"),
+                
             ]
         ),
         budget=RunBudget(max_steps=3, timeout_seconds=60, test_timeout_seconds=10),
@@ -469,7 +469,7 @@ class FailingEvalDocker(EvalRecordingDocker):
                     [
                         ">>>>> Start Test Output",
                         "tests/test_issue.py::test_fix FAILED",
-                        ">>>>> End Test Output",
+                        ">>>>> End Test Output"
                     ]
                 ),
                 "",
@@ -517,7 +517,7 @@ def test_agent_solved_does_not_override_failed_official_eval(tmp_path: Path):
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+        backend=MockBackend([]),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -549,7 +549,7 @@ def test_official_eval_command_error_still_overrides_agent_solved_summary(tmp_pa
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+        backend=MockBackend([]),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -582,7 +582,7 @@ def test_prepare_then_run_with_cleanup_removes_active_index_entry(tmp_path: Path
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="incomplete")]),
+        backend=MockBackend([]),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -621,7 +621,7 @@ def test_run_rejects_non_ready_active_prepared_environment_before_agent_start(tm
             dataset_path=dataset,
             instance_id="django__django-11099",
             docker=docker,
-            backend=MockBackend([AgentAction(action=AgentActionType.FINAL, final_status="solved")]),
+            backend=MockBackend([]),
             budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
             model_name="mock-model",
             output_dir=tmp_path / "run",

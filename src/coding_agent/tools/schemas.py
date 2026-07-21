@@ -147,21 +147,3 @@ TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
         ],
     },
 }
-
-# Final action schema (not a tool, but follows similar pattern)
-FINAL_ACTION_SCHEMA = {
-    "description": "Finish the run after solving, failing, or exhausting useful work.",
-    "parameters": {
-        "final_status": {
-            "type": "string",
-            "required": True,
-            "enum": ["solved", "failed", "incomplete", "errored"],
-            "description": "Terminal status of the run.",
-        },
-        "final_message": {
-            "type": "string",
-            "description": "Optional explanation of the outcome.",
-        },
-    },
-    "examples": ['{"final_status": "solved", "final_message": "All tests passing"}'],
-}

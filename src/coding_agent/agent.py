@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from coding_agent.budgets import BudgetTracker
-from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackend
+from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackend, TurnResult
 from coding_agent.models import (
     AgentRun,
     BenchmarkTask,
@@ -24,7 +24,7 @@ from coding_agent.models import (
 )
 from coding_agent.swebench.prediction import write_prediction_jsonl
 from coding_agent.tools import LocalToolExecutor, ToolExecutionResult, ToolExecutor
-from coding_agent.tools.schemas import FINAL_ACTION_SCHEMA, TOOL_SCHEMAS
+from coding_agent.tools.schemas import TOOL_SCHEMAS
 from coding_agent.trajectory.converter import convert_trajectory_to_summary_format
 from coding_agent.trajectory.patch import generate_workspace_patch, snapshot_workspace
 from coding_agent.trajectory.summary import write_summary
@@ -41,16 +41,6 @@ class ArtifactPersistenceError(RuntimeError):
 
     pass
 
-
-# Final status values are produced by the model, while RunStatus is the
-# internal persisted contract. Keep the mapping explicit so unsupported model
-# output fails fast instead of being silently normalized.
-FINAL_STATUS_MAP = {
-    "solved": RunStatus.SOLVED,
-    "failed": RunStatus.FAILED,
-    "incomplete": RunStatus.INCOMPLETE,
-    "errored": RunStatus.ERRORED,
-}
 
 ACTION_TOOL_MAP = {
     AgentActionType.READ_FILE: ToolName.READ_FILE,
@@ -75,7 +65,7 @@ def _system_prompt(task: BenchmarkTask) -> str:
         "error messages, exception types, warnings, check IDs, and CLI output. Tests you add yourself are useful, "
         "but they are not enough on their own; also run existing adjacent tests or focused diagnostics when possible.\n\n"
         "Work systematically: read relevant files, understand the issue, make changes, and verify with tests. "
-        "Call the 'final' tool when you have solved the issue or determined it cannot be solved."
+        "When you have solved the issue or determined it cannot be solved, explain your conclusion and stop calling tools."
     )
 
 
@@ -93,8 +83,6 @@ def _action_message(action: AgentAction) -> dict[str, str]:
         "reasoning_summary": action.reasoning_summary,
         "next_intent": action.next_intent,
         "tool_selection_reason": action.tool_selection_reason,
-        "final_status": action.final_status,
-        "final_message": action.final_message,
     }
     return {"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)}
 
@@ -173,15 +161,6 @@ def create_task_from_paths(
         problem_statement=problem_path.read_text(encoding="utf-8"),
         allowed_test_commands=allowed_test_commands,
     )
-
-
-def _terminal_status(action: AgentAction) -> RunStatus:
-    """把模型 final 动作里的字符串状态转换为持久化枚举。"""
-    status = action.final_status or "incomplete"
-    try:
-        return FINAL_STATUS_MAP[status]
-    except KeyError as exc:
-        raise ValueError(f"unsupported final status: {status}") from exc
 
 
 def _decision_step(step_index: int, action: AgentAction) -> TrajectoryStep:
@@ -388,6 +367,15 @@ def _parallel_execute(
     return results  # type: ignore[return-value]
 
 
+def _extract_content(assistant_messages: list[dict[str, Any]]) -> str | None:
+    """Return the text content from the last assistant message, if any."""
+    for msg in reversed(assistant_messages):
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return None
+
+
 def run_task(
     *,
     task: BenchmarkTask,
@@ -446,39 +434,38 @@ def run_task(
             break
         # 预算检查通过后才请求模型，确保超时场景不会再产生额外工具副作用。
         tracker.consume_step()
-        actions = backend.next_action([dict(message) for message in messages])
+        turn = backend.next_action([dict(message) for message in messages])
 
-        # --- 记录模型决策（取第一个 action 的元信息作为代表）---
+        # --- 追加 assistant 消息到对话历史 ---
+        for msg in turn.assistant_messages:
+            messages.append(msg)
+
+        # --- 模型自然停止：没有工具调用，返回了文本 ---
+        if not turn.actions:
+            final_error = _extract_content(turn.assistant_messages)
+            try:
+                writer.write_step(TrajectoryStep(
+                    step_index=trajectory_index,
+                    timestamp=utc_now(),
+                    action_type=StepActionType.MODEL,
+                    outcome=Outcome.OK,
+                    reasoning_summary=final_error or "",
+                ))
+            except OSError as exc:
+                raise ArtifactPersistenceError(str(exc)) from exc
+            agent_run.finish(RunStatus.INCOMPLETE)
+            break
+
+        # --- 记录模型决策 ---
         try:
-            writer.write_step(_decision_step(trajectory_index, actions[0]))
+            writer.write_step(_decision_step(trajectory_index, turn.actions[0]))
         except OSError as exc:
             raise ArtifactPersistenceError(str(exc)) from exc
         trajectory_index += 1
 
-        # --- 将模型动作追加到对话历史 ---
-        for action in actions:
-            messages.append(_action_message(action))
-
-        # --- 检查 FINAL ---
-        final_actions = [a for a in actions if a.action is AgentActionType.FINAL]
-        if final_actions:
-            final_action = final_actions[0]
-            terminal_status = _terminal_status(final_action)
-            if terminal_status is RunStatus.SOLVED and unresolved_tool_failure:
-                agent_run.finish(RunStatus.INCOMPLETE)
-                final_error = "model reported solved after unresolved tool failure"
-            else:
-                agent_run.finish(terminal_status)
-                final_error = final_action.final_message
-            break
-
-        # --- 过滤出工具动作并并行执行 ---
-        tool_actions = [a for a in actions if a.action is not AgentActionType.FINAL]
-        if not tool_actions:
-            continue
-
-        results = _parallel_execute(executor, tool_actions, ACTION_TOOL_MAP)
-        for action, result in zip(tool_actions, results):
+        # --- 并行执行工具 ---
+        results = _parallel_execute(executor, turn.actions, ACTION_TOOL_MAP)
+        for action, result in zip(turn.actions, results):
             if result.status is Outcome.OK:
                 last_successful_tool_call = result.tool_name.value
             else:

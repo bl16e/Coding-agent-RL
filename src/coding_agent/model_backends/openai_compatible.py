@@ -7,9 +7,9 @@ from typing import Any
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
-from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackendError
+from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackendError, TurnResult
 from coding_agent.models import ModelConfig, ToolName
-from coding_agent.tools.schemas import COMMON_PROPERTIES, FINAL_ACTION_SCHEMA, TOOL_SCHEMAS
+from coding_agent.tools.schemas import COMMON_PROPERTIES, TOOL_SCHEMAS
 
 REQUIRED_ENV_KEYS = ("PROVIDER", "MODEL", "API_KEY", "BASE_URL")
 STAGE_ENV_KEYS = {
@@ -172,22 +172,6 @@ def tool_definitions() -> list[dict[str, Any]]:
             },
         })
 
-    # Add final action
-    props, req = _schema_to_openai_properties(FINAL_ACTION_SCHEMA["parameters"])
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "final",
-            "description": FINAL_ACTION_SCHEMA["description"],
-            "parameters": {
-                "type": "object",
-                "properties": {**props, **COMMON_PROPERTIES},
-                "required": req,
-                "additionalProperties": False,
-            },
-        },
-    })
-
     return tools
 
 
@@ -213,12 +197,10 @@ def _parse_tool_calls_message(message: dict[str, Any]) -> list[AgentAction]:
             raise ModelBackendError(f"Unsupported agent action: {name}") from exc
         actions.append(AgentAction(
             action=action_type,
-            tool_input={} if action_type is AgentActionType.FINAL else arguments,
+            tool_input=arguments,
             reasoning_summary=arguments.get("reasoning_summary") or "",
             next_intent=arguments.get("next_intent") or "",
             tool_selection_reason=arguments.get("tool_selection_reason") or "",
-            final_status=arguments.get("final_status") if action_type is AgentActionType.FINAL else None,
-            final_message=arguments.get("final_message") if action_type is AgentActionType.FINAL else None,
             tool_call_id=tool_call.get("id"),
             raw_message=message,
         ))
@@ -258,13 +240,17 @@ def _payload_to_action_dict(payload: dict[str, Any] | str) -> dict[str, Any]:
 
 
 def parse_agent_action(payload: dict[str, Any] | str) -> list[AgentAction]:
-    """Validate provider output and convert it into executable actions."""
+    """Validate provider JSON-text output and convert it into executable actions.
+
+    Only used for legacy JSON text mode (non-native function calling).
+    """
 
     action_dict = _payload_to_action_dict(payload)
     if "__agent_actions__" in action_dict:
         return action_dict["__agent_actions__"]
-    # JSON text mode: single action (legacy path)
     action_value = action_dict.get("action")
+    if action_value is None or action_value == "final":
+        return []  # model indicated it is done
     try:
         action = AgentActionType(action_value)
     except ValueError as exc:
@@ -275,8 +261,6 @@ def parse_agent_action(payload: dict[str, Any] | str) -> list[AgentAction]:
         reasoning_summary=action_dict.get("reasoning_summary") or "",
         next_intent=action_dict.get("next_intent") or "",
         tool_selection_reason=action_dict.get("tool_selection_reason") or "",
-        final_status=action_dict.get("final_status"),
-        final_message=action_dict.get("final_message"),
     )]
 
 
@@ -313,12 +297,32 @@ class OpenAICompatibleBackend:
             "tool_choice": "auto",
         }
 
-    def next_action(self, messages: list[dict[str, Any]]) -> list[AgentAction]:
-        """Request the next tool/final action(s) from the configured model."""
+    def next_action(self, messages: list[dict[str, Any]]) -> TurnResult:
+        """Request the next tool action(s) from the configured model.
+
+        When the model returns text without tool calls it has stopped
+        naturally — the returned TurnResult will have an empty *actions* list.
+        """
 
         try:
             completion = self.client.chat.completions.create(**self.request_payload(messages))
         except APIError as exc:
             raise map_request_error(exc) from exc
         payload = completion.model_dump() if hasattr(completion, "model_dump") else completion
-        return parse_agent_action(payload)
+
+        # Extract the assistant message for conversation history
+        choices = payload.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+        else:
+            message = {}
+        assistant_messages = [dict(message)]
+
+        # If the model returned text without tool calls, it's done
+        tool_calls = message.get("tool_calls")
+        if not tool_calls or not isinstance(tool_calls, list) or len(tool_calls) == 0:
+            return TurnResult(actions=[], assistant_messages=assistant_messages)
+
+        # Parse tool calls into actions
+        actions = _parse_tool_calls_message(message)
+        return TurnResult(actions=actions, assistant_messages=assistant_messages)

@@ -4,7 +4,7 @@ import pytest
 from openai import APIConnectionError
 
 from coding_agent.models import ModelConfig
-from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackendError
+from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackendError, TurnResult
 from coding_agent.model_backends.openai_compatible import (
     OpenAICompatibleBackend,
     map_request_error,
@@ -22,15 +22,19 @@ class FakeMessage:
 
 class FakeChoice:
     def __init__(self, message: dict):
-        self.message = FakeMessage(message)
+        self.message = message
 
 
 class FakeCompletion:
     def __init__(self, message: dict):
-        self.choices = [FakeChoice(message)]
+        self._message = message
 
     def model_dump(self) -> dict:
-        return {"choices": [{"message": self.choices[0].message.model_dump()}]}
+        return {"choices": [{"message": self._message}]}
+
+    @property
+    def choices(self):
+        return [FakeChoice(self._message)]
 
 
 class FakeChatCompletions:
@@ -64,7 +68,7 @@ def test_parse_agent_action_from_json_content():
                     "content": json.dumps(
                         {
                             "action": "read_file",
-                            "tool_input": {"path": "README.md"},
+                            "tool_input": {"file_path": "README.md"},
                             "reasoning_summary": "Need context",
                             "next_intent": "Inspect README",
                             "tool_selection_reason": "File likely documents setup",
@@ -75,15 +79,15 @@ def test_parse_agent_action_from_json_content():
         ]
     }
 
-    action = parse_agent_action(payload)
+    actions = parse_agent_action(payload)
 
-    assert action == AgentAction(
+    assert actions == [AgentAction(
         action=AgentActionType.READ_FILE,
-        tool_input={"path": "README.md"},
+        tool_input={"file_path": "README.md"},
         reasoning_summary="Need context",
         next_intent="Inspect README",
         tool_selection_reason="File likely documents setup",
-    )
+    )]
 
 
 def test_parse_agent_action_from_openai_tool_call():
@@ -99,7 +103,7 @@ def test_parse_agent_action_from_openai_tool_call():
                             "type": "function",
                             "function": {
                                 "name": "read_file",
-                                "arguments": json.dumps({"path": "README.md", "offset": 2, "limit": 10}),
+                                "arguments": json.dumps({"file_path": "README.md", "offset": 2, "limit": 10}),
                             },
                         }
                     ],
@@ -108,61 +112,20 @@ def test_parse_agent_action_from_openai_tool_call():
         ]
     }
 
-    action = parse_agent_action(payload)
+    actions = parse_agent_action(payload)
 
-    assert action.action is AgentActionType.READ_FILE
-    assert action.tool_input == {"path": "README.md", "offset": 2, "limit": 10}
-    assert action.tool_call_id == "call_123"
-    assert action.raw_message == payload["choices"][0]["message"]
-
-
-def test_parse_final_action_from_openai_tool_call():
-    payload = {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "call_final",
-                            "type": "function",
-                            "function": {
-                                "name": "final",
-                                "arguments": json.dumps(
-                                    {"final_status": "solved", "final_message": "All tests pass."}
-                                ),
-                            },
-                        }
-                    ],
-                }
-            }
-        ]
-    }
-
-    action = parse_agent_action(payload)
-
-    assert action.action is AgentActionType.FINAL
-    assert action.final_status == "solved"
-    assert action.final_message == "All tests pass."
-    assert action.tool_call_id == "call_final"
+    assert actions[0].action is AgentActionType.READ_FILE
+    assert actions[0].tool_input == {"file_path": "README.md", "offset": 2, "limit": 10}
+    assert actions[0].tool_call_id == "call_123"
 
 
-def test_parse_agent_action_accepts_json_inside_markdown_fence():
-    payload = {
-        "choices": [
-            {
-                "message": {
-                    "content": '```json\n{"action":"final","final_status":"incomplete"}\n```'
-                }
-            }
-        ]
-    }
+def test_natural_stop_when_final_in_json_text_mode():
+    # JSON text mode with "final" action → returns empty list (natural stop)
+    payload = {"choices": [{"message": {"content": '{"action":"final","final_status":"incomplete"}'}}]}
 
-    action = parse_agent_action(payload)
+    actions = parse_agent_action(payload)
 
-    assert action.action is AgentActionType.FINAL
-    assert action.final_status == "incomplete"
+    assert actions == []
 
 
 def test_parse_agent_action_error_includes_response_preview():
@@ -197,7 +160,7 @@ def test_backend_uses_official_openai_sdk_chat_completion_tools():
                         "type": "function",
                         "function": {
                             "name": "read_file",
-                            "arguments": json.dumps({"path": "README.md"}),
+                            "arguments": json.dumps({"file_path": "README.md"}),
                         },
                     }
                 ],
@@ -206,17 +169,38 @@ def test_backend_uses_official_openai_sdk_chat_completion_tools():
     )
     backend = OpenAICompatibleBackend(config, timeout_seconds=5, client=client)
 
-    action = backend.next_action([{"role": "user", "content": "next"}])
+    turn = backend.next_action([{"role": "user", "content": "next"}])
 
-    assert action.action is AgentActionType.READ_FILE
-    assert action.tool_input == {"path": "README.md"}
+    assert isinstance(turn, TurnResult)
+    assert len(turn.actions) == 1
+    assert turn.actions[0].action is AgentActionType.READ_FILE
+    assert turn.actions[0].tool_input == {"file_path": "README.md"}
     call = client.chat_completions.calls[0]
     assert call["model"] == "model-a"
     assert call["messages"] == [{"role": "user", "content": "next"}]
     assert call["tool_choice"] == "auto"
-    assert "response_format" not in call
     tool_names = {tool["function"]["name"] for tool in call["tools"]}
-    assert tool_names == {"read_file", "apply_patch", "search_code", "run_tests", "final"}
+    assert tool_names == {"read_file", "apply_patch", "search_code", "run_tests"}
+
+
+def test_backend_stops_naturally_when_no_tool_calls():
+    config = ModelConfig("provider", "model-a", "secret", "http://example.test/v1")
+    client = FakeOpenAIClient(
+        FakeCompletion(
+            {
+                "role": "assistant",
+                "content": "The fix is applied. All tests should pass now.",
+            }
+        )
+    )
+    backend = OpenAICompatibleBackend(config, timeout_seconds=5, client=client)
+
+    turn = backend.next_action([{"role": "user", "content": "next"}])
+
+    assert isinstance(turn, TurnResult)
+    assert turn.actions == []
+    assert len(turn.assistant_messages) == 1
+    assert "All tests should pass" in turn.assistant_messages[0]["content"]
 
 
 def test_backend_maps_sdk_errors_to_model_backend_error():

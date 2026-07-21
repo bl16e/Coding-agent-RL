@@ -46,7 +46,7 @@ def test_existing_run_accepts_custom_executor_without_changing_artifacts(tmp_pat
                     tool_input={"path": "README.md"},
                     reasoning_summary="Need context",
                 ),
-                AgentAction(action=AgentActionType.FINAL, final_status="incomplete"),
+                
             ]
         ),
         model_name="mock-model",

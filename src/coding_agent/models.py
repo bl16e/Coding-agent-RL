@@ -575,17 +575,6 @@ class SandboxMetadata:
 
 
 @dataclass(frozen=True)
-class PreparedSandboxSummary:
-    """Result returned after preparing a reusable SWE-Bench sandbox."""
-
-    sandbox: TaskSandbox
-    validation_test_set: ValidationTestSet
-    sandbox_json: Path
-    status: str
-    ready_checks: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class RunSummary:
     """summary.json 的持久化契约。"""
 

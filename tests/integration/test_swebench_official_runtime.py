@@ -8,14 +8,12 @@ import pytest
 
 from coding_agent.model_backends.base import AgentAction, AgentActionType
 from coding_agent.model_backends.mock import MockBackend
-from coding_agent.models import BaseImage, ValidationTestSet
 from coding_agent.models import RunBudget
 from coding_agent.sandbox.docker_cli import DockerCommandError
 from coding_agent.sandbox.docker_cli import DockerResult
 from coding_agent.swebench import sandbox_run
 from coding_agent.swebench.sandbox_run import (
     SandboxedRunInputError,
-    _sandbox_payload,
     prepare_official_swebench_runtime,
 )
 from tests.helpers.swebench_fixtures import write_swebench_parquet
@@ -28,42 +26,6 @@ PRESENT_IMAGES = {
     "sweb.env.py.x86_64.2baaea72acc974f6c02079:latest",
     "sweb.eval.x86_64.django__django-11099:latest",
 }
-
-
-def test_sandbox_payload_includes_runtime_path_metadata():
-    base_image = BaseImage(
-        repo="django/django",
-        image="django-base:latest",
-        repo_path="/workspace/repo",
-        official_compatible=True,
-    )
-    validation = ValidationTestSet(
-        fail_to_pass=("tests/test_issue.py::test_fix",),
-        command_source="official_testspec",
-        eval_script="python -m pytest {tests}",
-        allowed_commands=("python -m pytest tests/test_issue.py::test_fix",),
-    )
-
-    from coding_agent.models import TaskSandbox
-
-    payload = _sandbox_payload(
-        TaskSandbox(
-            container_name="task-container",
-            base_image=base_image,
-            instance_id="django__django-11099",
-            repo="django/django",
-            base_commit="abc123",
-            repo_path="/workspace/repo",
-            status="ready",
-        ),
-        validation,
-        status="ready",
-        runtime_path="official_style",
-    )
-
-    assert payload["runtime_path"] == "official_style"
-    assert payload["runtime"]["path"] == "official_style"
-
 
 def test_prepare_official_runtime_writes_ready_metadata_and_active_index(tmp_path: Path):
     dataset = write_swebench_parquet(tmp_path / "dataset.parquet")

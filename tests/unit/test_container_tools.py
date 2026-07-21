@@ -8,18 +8,23 @@ from coding_agent.sandbox.tools import ContainerToolExecutor
 class FakeDocker:
     def __init__(self) -> None:
         self.calls: list[tuple[str, list[str], str | None, str | None]] = []
+        self.next_stdout: str | None = None
 
     def exec(self, container: str, command: list[str], *, timeout_seconds=None, stdin=None, workdir=None) -> DockerResult:
         self.calls.append((container, command, stdin, workdir))
+        if self.next_stdout is not None:
+            stdout = self.next_stdout
+            self.next_stdout = None
+            return DockerResult(stdout, "", 0)
         joined = " ".join(command)
-        if "json.dumps" in joined:
-            return DockerResult(json.dumps({"matches": [{"path": "app.py", "line": 1, "text": "hello"}], "truncated": False}), "", 0)
+        if len(command) >= 3 and command[-1].isdigit() and not command[-2].isdigit():
+            return DockerResult(json.dumps({"matches": [{"path": "app.py", "line": 1, "text": "hello", "encoding": "utf-8", "newline": "lf"}], "truncated": False, "binary_skipped": 0}), "", 0)
+        if len(command) >= 2 and command[-2:] == ["", ""]:
+            return DockerResult(json.dumps({"content": "hello\n", "encoding": "utf-8", "newline": "lf", "line_start": 1, "line_end": 1, "total_lines": 1, "truncated": False}), "", 0)
         if "splitlines" in joined:
-            return DockerResult("two\nthree\n", "", 0)
-        if "read_text" in joined:
-            return DockerResult("hello\n", "", 0)
+            return DockerResult(json.dumps({"content": "two\nthree\n", "encoding": "utf-8", "newline": "lf", "line_start": 2, "line_end": 3, "total_lines": 4, "truncated": False}), "", 0)
         if "write_text" in joined:
-            return DockerResult("", "", 0)
+            return DockerResult(json.dumps({"status": "ok", "encoding": "utf-8", "newline": "lf"}), "", 0)
         return DockerResult("tests passed", "", 0)
 
 
@@ -37,7 +42,29 @@ def test_container_executor_reads_file_from_repo_path():
 
     assert result.status is Outcome.OK
     assert result.output["content"] == "hello\n"
+    assert result.output["encoding"] == "utf-8"
+    assert result.output["newline"] == "lf"
     assert "/workspace/repo/README.md" in docker.calls[0][1]
+
+
+def test_container_executor_reads_gbk_metadata_from_helper_payload():
+    docker = FakeDocker()
+    docker.next_stdout = json.dumps(
+        {"content": "中文\n", "encoding": "gbk", "newline": "lf", "line_start": 1, "line_end": 1, "total_lines": 1, "truncated": False}
+    )
+    executor = ContainerToolExecutor(
+        docker=docker,
+        container_name="task-1",
+        repo_path="/workspace/repo",
+        allowed_test_commands=("python -m pytest tests/test_issue.py",),
+        test_timeout_seconds=30,
+    )
+
+    result = executor.execute(ToolName.READ_FILE, {"path": "legacy.txt"})
+
+    assert result.status is Outcome.OK
+    assert result.output["content"] == "中文\n"
+    assert result.output["encoding"] == "gbk"
 
 
 def test_container_executor_reads_requested_line_range():
@@ -106,6 +133,8 @@ def test_container_executor_applies_add_file():
 
     assert result.status is Outcome.OK
     assert docker.calls[0][2] == "print('fixed')\n"
+    assert result.output["encoding"] == "utf-8"
+    assert result.output["newline"] == "lf"
 
 
 def test_container_executor_add_file_script_is_valid_python():
@@ -146,6 +175,8 @@ def test_container_executor_update_script_is_valid_python():
     )
 
     assert result.status is Outcome.OK
+    assert result.output["encoding"] == "utf-8"
+    assert result.output["newline"] == "lf"
     script = docker.calls[0][1][2]
     compile(script, "<container-update-script>", "exec")
 
@@ -163,6 +194,7 @@ def test_container_executor_searches_with_bounded_results():
 
     assert result.status is Outcome.OK
     assert result.output["matches"][0]["path"] == "app.py"
+    assert result.output["matches"][0]["encoding"] == "utf-8"
 
 
 def test_container_executor_search_script_uses_regular_expressions():

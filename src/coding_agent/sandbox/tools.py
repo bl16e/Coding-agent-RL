@@ -7,16 +7,11 @@ from typing import Any
 
 from coding_agent.models import FileModification, Outcome, TestResult, TestStatus, ToolName
 from coding_agent.sandbox.docker_cli import DockerCli, DockerCommandError, DockerCommandTimeout
-from coding_agent.tools.test_command_policy import validate_self_test_command
 from coding_agent.tools.result import ToolExecutionResult
+from coding_agent.tools.test_command_policy import validate_self_test_command
 
 
 def _repo_file_path(repo_path: str, requested_path: str) -> str:
-    """解析容器内仓库路径，并阻止路径逃逸。
-
-    Docker 容器里使用 POSIX 路径，因此这里不能复用宿主机 Path。先拼接、规范化，再
-    检查结果仍位于 repo_path 下，避免模型通过 ../../ 读写仓库外文件。
-    """
     if not requested_path:
         raise ValueError("path is required")
     relative = requested_path.lstrip("/")
@@ -28,12 +23,10 @@ def _repo_file_path(repo_path: str, requested_path: str) -> str:
 
 
 def _docker_error(tool_name: ToolName, exc: Exception) -> ToolExecutionResult:
-    """把 Docker 异常转换为工具结果，避免异常穿透 agent loop。"""
     return ToolExecutionResult(tool_name, Outcome.ERROR, str(exc))
 
 
 def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
-    """兼容 offset/limit 和 line/end_line 两套行号参数。"""
     if "line" in tool_input:
         start = int(tool_input["line"])
         if "end_line" in tool_input:
@@ -62,13 +55,46 @@ def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
     return 1, end
 
 
+def _container_textio_prelude() -> str:
+    return (
+        "from pathlib import Path\n"
+        "import json, re, sys\n"
+        "class BinaryFileError(Exception): pass\n"
+        "class TextDecodeError(Exception): pass\n"
+        "def looks_binary(data):\n"
+        "    if not data: return False\n"
+        "    if b'\\x00' in data: return True\n"
+        "    control=sum(1 for b in data if b < 32 and b not in (9,10,12,13))\n"
+        "    return control / len(data) > 0.30\n"
+        "def detect_newline(data):\n"
+        "    crlf=data.count(b'\\r\\n')\n"
+        "    normalized=data.replace(b'\\r\\n', b'')\n"
+        "    lf=normalized.count(b'\\n')\n"
+        "    cr=normalized.count(b'\\r')\n"
+        "    kinds=sum(1 for c in (crlf,lf,cr) if c)\n"
+        "    if kinds == 0: return 'none'\n"
+        "    if kinds > 1: return 'mixed'\n"
+        "    if crlf: return 'crlf'\n"
+        "    if cr: return 'cr'\n"
+        "    return 'lf'\n"
+        "def read_text(path):\n"
+        "    data=path.read_bytes()\n"
+        "    if looks_binary(data): raise BinaryFileError('binary file is not supported')\n"
+        "    for enc in ('utf-8','gbk'):\n"
+        "        try: return data.decode(enc), enc, detect_newline(data)\n"
+        "        except UnicodeDecodeError: pass\n"
+        "    raise TextDecodeError('file is not supported text; tried utf-8, gbk')\n"
+        "def normalize_newlines(content, newline):\n"
+        "    seq={'lf':'\\n','crlf':'\\r\\n','cr':'\\r'}.get(newline)\n"
+        "    if seq is None: return content\n"
+        "    normalized=content.replace('\\r\\n','\\n').replace('\\r','\\n')\n"
+        "    return normalized.replace('\\n', seq)\n"
+        "def write_text(path, content, encoding, newline):\n"
+        "    path.write_bytes(normalize_newlines(content, newline).encode(encoding))\n"
+    )
+
+
 class ContainerToolExecutor:
-    """在已准备好的任务容器中执行仓库工具。
-
-    它实现与 LocalToolExecutor 相同的 execute 接口，因此 agent.py 不需要知道工具
-    最终跑在宿主机还是 Docker 容器里。
-    """
-
     def __init__(
         self,
         *,
@@ -85,7 +111,6 @@ class ContainerToolExecutor:
         self._test_timeout_seconds = test_timeout_seconds
 
     def execute(self, tool_name: ToolName, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        """按工具名分发到容器内实现。"""
         if tool_name is ToolName.READ_FILE:
             return self.read_file(tool_input)
         if tool_name is ToolName.APPLY_PATCH:
@@ -97,46 +122,52 @@ class ContainerToolExecutor:
         raise ValueError(f"unsupported tool: {tool_name}")
 
     def read_file(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        """在容器内读取 UTF-8 文本文件。"""
         try:
             path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
             bounds = _line_bounds(tool_input)
-            if bounds is None:
-                # 通过 python -c 读取文件，避免依赖容器里是否安装 sed/head/tail 等工具。
-                script = "from pathlib import Path; import sys; print(Path(sys.argv[1]).read_text(encoding='utf-8'), end='')"
-                result = self._docker.exec(self._container_name, ["python", "-c", script, path])
-                output_summary = f"read {len(result.stdout)} characters"
+            script = _container_textio_prelude() + (
+                "p=Path(sys.argv[1])\n"
+                "start=int(sys.argv[2]) if sys.argv[2] else None\n"
+                "end=int(sys.argv[3]) if sys.argv[3] else None\n"
+                "try:\n"
+                "    text, enc, nl = read_text(p)\n"
+                "except (BinaryFileError, TextDecodeError) as exc:\n"
+                "    print(json.dumps({'error': str(exc)})); sys.exit(1)\n"
+                "lines=text.splitlines(keepends=True)\n"
+                "total=len(text.splitlines())\n"
+                "if start is None:\n"
+                "    start=1; end=min(1000, max(total, 1))\n"
+                "selected=''.join(lines[start-1:end])\n"
+                "actual_end=min(end, total) if total else 0\n"
+                "payload={'content': selected, 'encoding': enc, 'newline': nl, 'line_start': start if total else 0, 'line_end': actual_end, 'total_lines': total, 'truncated': (False if total == 0 else start > 1 or end < total)}\n"
+                "print(json.dumps(payload, ensure_ascii=False))\n"
+            )
+            start_arg = "" if bounds is None else str(bounds[0])
+            end_arg = "" if bounds is None else str(bounds[1])
+            result = self._docker.exec(self._container_name, ["python", "-c", script, path, start_arg, end_arg])
+            output = json.loads(result.stdout)
+            if output.get("line_start") and (bounds is not None or output.get("truncated")):
+                output_summary = f"read lines {output['line_start']}-{output['line_end']} ({len(output['content'])} characters)"
             else:
-                # 行号切片在容器内完成，宿主侧只接收最终文本，减少大文件传输。
-                script = (
-                    "from pathlib import Path; import sys; "
-                    "lines=Path(sys.argv[1]).read_text(encoding='utf-8').splitlines(keepends=True); "
-                    "start=int(sys.argv[2]); end=int(sys.argv[3]); "
-                    "print(''.join(lines[start-1:end]), end='')"
-                )
-                result = self._docker.exec(self._container_name, ["python", "-c", script, path, str(bounds[0]), str(bounds[1])])
-                output_summary = f"read lines {bounds[0]}-{bounds[1]} ({len(result.stdout)} characters)"
+                output_summary = f"read {len(output['content'])} characters"
         except (TypeError, ValueError) as exc:
             return ToolExecutionResult(ToolName.READ_FILE, Outcome.REJECTED, str(exc))
-        except (DockerCommandError, DockerCommandTimeout) as exc:
+        except DockerCommandError as exc:
+            try:
+                payload = json.loads(exc.result.stdout or "{}")
+            except json.JSONDecodeError:
+                return _docker_error(ToolName.READ_FILE, exc)
+            return ToolExecutionResult(ToolName.READ_FILE, Outcome.FAILED, str(payload.get("error") or exc))
+        except (DockerCommandTimeout, json.JSONDecodeError) as exc:
             return _docker_error(ToolName.READ_FILE, exc)
-        return ToolExecutionResult(
-            ToolName.READ_FILE,
-            Outcome.OK,
-            output_summary,
-            output={"content": result.stdout},
-        )
+        return ToolExecutionResult(ToolName.READ_FILE, Outcome.OK, output_summary, output=output)
 
     def apply_patch(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        """在容器内执行受限文件修改。
-
-        这里没有暴露任意 patch 命令，而是只支持 add_file/update/move 三类结构化操作，
-        便于记录修改摘要并保持与本地工具的行为一致。
-        """
         patch_type = tool_input.get("type", "")
         if patch_type not in ("add_file", "update", "move"):
             return ToolExecutionResult(
-                ToolName.APPLY_PATCH, Outcome.REJECTED,
+                ToolName.APPLY_PATCH,
+                Outcome.REJECTED,
                 f"patch type must be add_file, update, or move, got: {patch_type}",
             )
 
@@ -147,24 +178,36 @@ class ContainerToolExecutor:
             try:
                 path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
                 relative_path = posixpath.relpath(path, self._repo_path)
-                # stdin 承载文件内容，避免把大段文本拼进命令参数。
-                script = (
-                    "from pathlib import Path\n"
-                    "import sys\n"
+                newline = str(tool_input.get("newline", "lf"))
+                if newline not in {"lf", "crlf", "cr", "none"}:
+                    newline = "lf"
+                script = _container_textio_prelude() + (
                     "p=Path(sys.argv[1])\n"
+                    "newline=sys.argv[2]\n"
                     "if p.exists():\n"
-                    "    print('file exists')\n"
+                    "    print(json.dumps({'error':'file exists'}))\n"
                     "    sys.exit(1)\n"
                     "p.parent.mkdir(parents=True, exist_ok=True)\n"
-                    "p.write_text(sys.stdin.read(), encoding='utf-8')\n"
+                    "write_text(p, sys.stdin.read(), 'utf-8', newline)\n"
+                    "print(json.dumps({'status':'ok','encoding':'utf-8','newline':newline}))\n"
                 )
-                self._docker.exec(self._container_name, ["python", "-c", script, path], stdin=content)
+                result = self._docker.exec(self._container_name, ["python", "-c", script, path, newline], stdin=content)
+                output = json.loads(result.stdout or "{}")
             except ValueError as exc:
                 return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
-            except (DockerCommandError, DockerCommandTimeout) as exc:
+            except DockerCommandError as exc:
+                try:
+                    payload = json.loads(exc.result.stdout or "{}")
+                except json.JSONDecodeError:
+                    return _docker_error(ToolName.APPLY_PATCH, exc)
+                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, str(payload.get("error") or exc))
+            except (DockerCommandTimeout, json.JSONDecodeError) as exc:
                 return _docker_error(ToolName.APPLY_PATCH, exc)
             return ToolExecutionResult(
-                ToolName.APPLY_PATCH, Outcome.OK, f"created {relative_path}",
+                ToolName.APPLY_PATCH,
+                Outcome.OK,
+                f"created {relative_path}",
+                output={"encoding": output.get("encoding", "utf-8"), "newline": output.get("newline", "lf")},
                 modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
             )
 
@@ -178,15 +221,15 @@ class ContainerToolExecutor:
             try:
                 path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
                 relative_path = posixpath.relpath(path, self._repo_path)
-                # update 要求 old_string 只出现一次，促使模型提供足够上下文，避免误改。
-                script = (
-                    "from pathlib import Path\n"
-                    "import json\n"
-                    "import sys\n"
+                script = _container_textio_prelude() + (
                     "p=Path(sys.argv[1])\n"
                     "old=sys.argv[2]\n"
                     "new=sys.argv[3]\n"
-                    "content=p.read_text(encoding='utf-8')\n"
+                    "try:\n"
+                    "    content, enc, nl = read_text(p)\n"
+                    "except (BinaryFileError, TextDecodeError) as exc:\n"
+                    "    print(json.dumps({'error': str(exc)}))\n"
+                    "    sys.exit(1)\n"
                     "count=content.count(old)\n"
                     "if count == 0:\n"
                     "    print(json.dumps({'error':'not found'}))\n"
@@ -195,20 +238,29 @@ class ContainerToolExecutor:
                     "    print(json.dumps({'error':f'appears {count} times'}))\n"
                     "    sys.exit(1)\n"
                     "new_content=content.replace(old,new,1)\n"
-                    "p.write_text(new_content,encoding='utf-8')\n"
-                    "print(json.dumps({'status':'ok'}))"
+                    "write_text(p,new_content,enc,nl)\n"
+                    "print(json.dumps({'status':'ok','encoding':enc,'newline':nl}))"
                 )
-                self._docker.exec(self._container_name, ["python", "-c", script, path, old_string, new_string])
+                result = self._docker.exec(self._container_name, ["python", "-c", script, path, old_string, new_string])
+                output = json.loads(result.stdout or "{}")
             except ValueError as exc:
                 return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
-            except (DockerCommandError, DockerCommandTimeout) as exc:
+            except DockerCommandError as exc:
+                try:
+                    payload = json.loads(exc.result.stdout or "{}")
+                except json.JSONDecodeError:
+                    return _docker_error(ToolName.APPLY_PATCH, exc)
+                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, str(payload.get("error") or exc))
+            except (DockerCommandTimeout, json.JSONDecodeError) as exc:
                 return _docker_error(ToolName.APPLY_PATCH, exc)
             return ToolExecutionResult(
-                ToolName.APPLY_PATCH, Outcome.OK, f"applied edit to {relative_path}",
+                ToolName.APPLY_PATCH,
+                Outcome.OK,
+                f"applied edit to {relative_path}",
+                output={"encoding": output.get("encoding", "utf-8"), "newline": output.get("newline", "lf")},
                 modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
             )
 
-        # move
         old_path_str = tool_input.get("old_path", "")
         new_path_str = tool_input.get("new_path", "")
         if not old_path_str or not new_path_str:
@@ -231,7 +283,9 @@ class ContainerToolExecutor:
         except (DockerCommandError, DockerCommandTimeout) as exc:
             return _docker_error(ToolName.APPLY_PATCH, exc)
         return ToolExecutionResult(
-            ToolName.APPLY_PATCH, Outcome.OK, f"moved {old_relative} -> {new_relative}",
+            ToolName.APPLY_PATCH,
+            Outcome.OK,
+            f"moved {old_relative} -> {new_relative}",
             modifications=[
                 FileModification(path=old_relative, write_status=Outcome.OK),
                 FileModification(path=new_relative, write_status=Outcome.OK),
@@ -239,35 +293,34 @@ class ContainerToolExecutor:
         )
 
     def search_code(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        """在容器内递归搜索文本文件。
-
-        这是一版标准库实现，避免依赖容器中是否存在 rg。遇到非 UTF-8 文件会跳过，
-        与 read_file/apply_patch 的文本文件假设保持一致。
-        """
         query = str(tool_input.get("query", ""))
         if not query:
             return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, "query must not be empty")
         max_results = int(tool_input.get("max_results", 20))
-        script = (
-            "from pathlib import Path; import json, re, sys; "
-            "root=Path(sys.argv[1]); query=sys.argv[2]; limit=int(sys.argv[3]); matches=[]; truncated=False\n"
+        script = _container_textio_prelude() + (
+            "root=Path(sys.argv[1]); query=sys.argv[2]; limit=int(sys.argv[3]); matches=[]; truncated=False; binary_skipped=0\n"
             "try:\n"
             "    pattern=re.compile(query)\n"
             "except re.error as exc:\n"
             "    print(json.dumps({'error': f'invalid regular expression: {exc}'})); sys.exit(2)\n"
             "for path in sorted(p for p in root.rglob('*') if p.is_file()):\n"
-            "    try: lines=path.read_text(encoding='utf-8').splitlines()\n"
-            "    except UnicodeDecodeError: continue\n"
+            "    try:\n"
+            "        text, enc, nl = read_text(path)\n"
+            "        lines=text.splitlines()\n"
+            "    except BinaryFileError:\n"
+            "        binary_skipped += 1\n"
+            "        continue\n"
+            "    except TextDecodeError: continue\n"
             "    for idx,line in enumerate(lines,1):\n"
             "        if pattern.search(line):\n"
             "            if len(matches) >= limit: truncated=True; break\n"
-            "            matches.append({'path': path.relative_to(root).as_posix(), 'line': idx, 'text': line})\n"
+            "            matches.append({'path': path.relative_to(root).as_posix(), 'line': idx, 'text': line, 'encoding': enc, 'newline': nl})\n"
             "    if truncated: break\n"
-            "print(json.dumps({'matches': matches, 'truncated': truncated}))"
+            "print(json.dumps({'matches': matches, 'truncated': truncated, 'binary_skipped': binary_skipped}, ensure_ascii=False))"
         )
         try:
             result = self._docker.exec(self._container_name, ["python", "-c", script, self._repo_path, query, str(max_results)])
-            output = json.loads(result.stdout or '{"matches": [], "truncated": false}')
+            output = json.loads(result.stdout or '{"matches": [], "truncated": false, "binary_skipped": 0}')
             if isinstance(output, dict) and output.get("error"):
                 return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, str(output["error"]))
         except (DockerCommandError, DockerCommandTimeout, json.JSONDecodeError) as exc:
@@ -280,7 +333,6 @@ class ContainerToolExecutor:
         )
 
     def run_tests(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        """在容器内执行测试或诊断命令。"""
         command = str(tool_input.get("command", ""))
         started = time.monotonic()
         policy = validate_self_test_command(command)

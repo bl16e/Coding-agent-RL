@@ -5,7 +5,7 @@ from coding_agent.tools.executor import LocalToolExecutor
 
 
 def test_local_tool_executor_preserves_read_file_behavior(tmp_path: Path):
-    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+    (tmp_path / "README.md").write_bytes(b"hello\n")
     executor = LocalToolExecutor(
         workspace=tmp_path,
         allowed_test_commands=("python -m pytest",),
@@ -16,6 +16,8 @@ def test_local_tool_executor_preserves_read_file_behavior(tmp_path: Path):
 
     assert result.status is Outcome.OK
     assert result.output["content"] == "hello\n"
+    assert result.output["encoding"] == "utf-8"
+    assert result.output["newline"] == "lf"
 
 
 def test_local_tool_executor_preserves_run_tests_rejection(tmp_path: Path):

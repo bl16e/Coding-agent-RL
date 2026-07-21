@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.swesmith.evaluate import read_resolved_ids, run_official_eval
+from coding_agent.swesmith.evaluate import read_eval_reports, read_resolved_ids, run_official_eval
 
 
 def test_run_official_eval_invokes_swesmith_module(tmp_path: Path):
@@ -66,6 +66,41 @@ def test_run_official_eval_records_failed_wrapper_output(tmp_path: Path):
     assert (tmp_path / "eval_logs" / "wrapper.stderr.log").read_text(encoding="utf-8") == "missing dataset\n"
 
 
+def test_run_official_eval_writes_wrapper_report_summary(tmp_path: Path):
+    def fake_runner(command, **kwargs):
+        report_dir = tmp_path / "eval_logs" / "inst-1"
+        report_dir.mkdir(parents=True)
+        (report_dir / "report.json").write_text(json.dumps({"resolved": True}), encoding="utf-8")
+        (report_dir / "test_output.txt").write_text("pytest output\n", encoding="utf-8")
+
+        class Completed:
+            returncode = 0
+            stdout = "Resolved 1/1\n"
+            stderr = ""
+
+        return Completed()
+
+    assert (
+        run_official_eval(
+            dataset_path=tmp_path / "subset.json",
+            predictions_path=tmp_path / "preds.jsonl",
+            run_id="run-3",
+            workers=1,
+            reference_path=None,
+            log_dir=tmp_path / "eval_logs",
+            runner=fake_runner,
+        )
+        == 0
+    )
+
+    summary = json.loads((tmp_path / "eval_logs" / "wrapper.report.json").read_text(encoding="utf-8"))
+    assert summary["returncode"] == 0
+    assert summary["resolved_count"] == 1
+    assert summary["total_reports"] == 1
+    assert summary["reports"]["inst-1"]["resolved"] is True
+    assert "test_output.txt" in summary["artifacts"]["inst-1"]
+
+
 def test_run_official_eval_uses_resource_shim_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     calls = {}
 
@@ -108,3 +143,17 @@ def test_read_resolved_ids_reads_per_instance_reports(tmp_path: Path):
     (eval_dir / "inst-2" / "report.json").write_text(json.dumps({"resolved": False}), encoding="utf-8")
 
     assert read_resolved_ids(eval_dir) == {"inst-1"}
+
+
+def test_read_eval_reports_supports_official_nested_report_shape(tmp_path: Path):
+    eval_dir = tmp_path / "logs" / "run_evaluation" / "run-1"
+    (eval_dir / "inst-1").mkdir(parents=True)
+    (eval_dir / "inst-1" / "report.json").write_text(
+        json.dumps({"inst-1": {"resolved": True, "tests_status": {"FAIL_TO_PASS": {"success": ["a"], "failure": []}}}}),
+        encoding="utf-8",
+    )
+
+    reports = read_eval_reports(eval_dir)
+
+    assert reports["inst-1"]["resolved"] is True
+    assert reports["inst-1"]["fail_to_pass_success"] == ["a"]

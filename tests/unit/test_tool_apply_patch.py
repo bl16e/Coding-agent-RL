@@ -3,6 +3,41 @@ from pathlib import Path
 from coding_agent.tools.apply_patch import apply_patch
 
 
+def test_apply_patch_preserves_gbk_encoding_on_update(tmp_path: Path):
+    path = tmp_path / "legacy.txt"
+    path.write_bytes("你好，旧世界\r\n".encode("gbk"))
+
+    result = apply_patch(
+        tmp_path,
+        {"type": "update", "path": "legacy.txt", "old_string": "旧世界", "new_string": "新世界"},
+    )
+
+    assert result.status == "ok"
+    assert path.read_bytes() == "你好，新世界\r\n".encode("gbk")
+    assert result.output["encoding"] == "gbk"
+    assert result.output["newline"] == "crlf"
+
+
+def test_apply_patch_preserves_crlf_on_update(tmp_path: Path):
+    path = tmp_path / "app.py"
+    path.write_bytes(b"one\r\ntwo\r\n")
+
+    result = apply_patch(tmp_path, {"type": "update", "path": "app.py", "old_string": "two", "new_string": "three"})
+
+    assert result.status == "ok"
+    assert path.read_bytes() == b"one\r\nthree\r\n"
+    assert result.output["newline"] == "crlf"
+
+
+def test_apply_patch_rejects_binary_file_update(tmp_path: Path):
+    (tmp_path / "image.bin").write_bytes(b"\x00old\x00")
+
+    result = apply_patch(tmp_path, {"type": "update", "path": "image.bin", "old_string": "old", "new_string": "new"})
+
+    assert result.status == "failed"
+    assert "binary" in result.output_summary
+
+
 class TestApplyPatchUpdate:
     """apply_patch with type="update" — replaces exact string in existing file."""
 

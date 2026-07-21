@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from coding_agent.models import FileModification, Outcome, ToolName
+from coding_agent.textio import BinaryFileError, TextDecodeError, read_text_file, write_text_file
 from coding_agent.tools.result import ToolExecutionResult
 from coding_agent.workspace import WorkspacePathError, resolve_workspace_path, to_workspace_relative
 
@@ -31,11 +32,12 @@ def _apply_add_file(workspace: str | Path, path: Path, relative_path: str, tool_
         return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, f"file already exists: {relative_path}")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(tool_input["content"], encoding="utf-8")
+        write_text_file(path, tool_input["content"], encoding="utf-8", newline="lf")
     except OSError as exc:
         return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.ERROR, str(exc))
     return ToolExecutionResult(
         ToolName.APPLY_PATCH, Outcome.OK, f"created {relative_path}",
+        output={"encoding": "utf-8", "newline": "lf"},
         modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
     )
 
@@ -55,9 +57,10 @@ def _apply_update(workspace: str | Path, path: Path, relative_path: str, tool_in
     if not path.is_file():
         return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"file not found: {relative_path}")
     try:
-        content = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"file is not UTF-8 text: {exc}")
+        text_file = read_text_file(path)
+    except (BinaryFileError, TextDecodeError) as exc:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, str(exc))
+    content = text_file.content
     count = content.count(old_string)
     if count == 0:
         return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"old_string not found in {relative_path}")
@@ -69,12 +72,12 @@ def _apply_update(workspace: str | Path, path: Path, relative_path: str, tool_in
     new_content = content.replace(old_string, new_string, 1)
     diff = _generate_diff(relative_path, content, new_content)
     try:
-        path.write_text(new_content, encoding="utf-8")
+        write_text_file(path, new_content, encoding=text_file.encoding, newline=text_file.newline)
     except OSError as exc:
         return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.ERROR, str(exc))
     return ToolExecutionResult(
         ToolName.APPLY_PATCH, Outcome.OK, f"applied edit to {relative_path}",
-        output={"patch": diff},
+        output={"patch": diff, "encoding": text_file.encoding, "newline": text_file.newline},
         modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
     )
 

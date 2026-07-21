@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from coding_agent.models import Outcome, ToolName
+from coding_agent.textio import BinaryFileError, TextDecodeError, read_text_file
 from coding_agent.tools.result import ToolExecutionResult
 
 
@@ -27,10 +28,15 @@ def search_code(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecut
     max_results = int(tool_input.get("max_results", 20))
     matches: list[dict[str, Any]] = []
     truncated = False
+    binary_skipped = 0
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except UnicodeDecodeError:
+            text_file = read_text_file(path)
+            lines = text_file.content.splitlines()
+        except BinaryFileError:
+            binary_skipped += 1
+            continue
+        except TextDecodeError:
             # Binary or non-UTF-8 files cannot be represented cleanly in JSONL
             # trajectory output, so they are skipped consistently with patch
             # snapshot behavior.
@@ -40,12 +46,20 @@ def search_code(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecut
                 if len(matches) >= max_results:
                     truncated = True
                     break
-                matches.append({"path": path.relative_to(root).as_posix(), "line": line_number, "text": line})
+                matches.append(
+                    {
+                        "path": path.relative_to(root).as_posix(),
+                        "line": line_number,
+                        "text": line,
+                        "encoding": text_file.encoding,
+                        "newline": text_file.newline,
+                    }
+                )
         if truncated:
             break
     return ToolExecutionResult(
         ToolName.SEARCH_CODE,
         Outcome.OK,
         f"found {len(matches)} matches",
-        output={"matches": matches, "truncated": truncated},
+        output={"matches": matches, "truncated": truncated, "binary_skipped": binary_skipped},
     )

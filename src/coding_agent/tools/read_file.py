@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from coding_agent.models import Outcome, ToolName
+from coding_agent.textio import BinaryFileError, TextDecodeError, page_text, read_text_file
 from coding_agent.tools.result import ToolExecutionResult
 from coding_agent.workspace import WorkspacePathError, resolve_workspace_path
 
@@ -68,13 +69,17 @@ def read_file(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecutio
     if not path.is_file():
         return ToolExecutionResult(ToolName.READ_FILE, Outcome.FAILED, f"file not found: {tool_input.get('path')}")
     try:
-        content = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        return ToolExecutionResult(ToolName.READ_FILE, Outcome.FAILED, f"file is not UTF-8 text: {exc}")
-    content, output_summary = _slice_lines(content, bounds)
+        text_file = read_text_file(path)
+    except (BinaryFileError, TextDecodeError) as exc:
+        return ToolExecutionResult(ToolName.READ_FILE, Outcome.FAILED, str(exc))
+    page = page_text(text_file, bounds)
+    if page.line_start and (bounds is not None or page.truncated):
+        output_summary = f"read lines {page.line_start}-{page.line_end} ({len(page.content)} characters)"
+    else:
+        output_summary = f"read {len(page.content)} characters"
     return ToolExecutionResult(
         ToolName.READ_FILE,
         Outcome.OK,
         output_summary,
-        output={"content": content},
+        output=page.to_output(),
     )

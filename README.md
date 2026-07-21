@@ -35,6 +35,36 @@ Not supported in the refactored SWE-Bench runtime:
   `prepare --build-missing`.
 - Arbitrary shell command execution by the model.
 
+## Stage 1 / Stage 2 Boundary
+
+The project has two top-level experiment stages with separate model
+configuration files and scripts:
+
+| Stage | Purpose | Model source | Entry point |
+|-------|---------|--------------|-------------|
+| Stage 1 | Evaluate `Qwen2.5-Coder-7B-Instruct` on SWE-Bench Lite | local vLLM OpenAI-compatible endpoint | `./scripts/run_stage1_qwen_vllm.sh` or `coding-agent stage1 run-qwen-vllm` |
+| Stage 2 | Generate high-quality SWE-smith trajectories | teacher model API | `./scripts/run_stage2_teacher_trajectories.sh` or `coding-agent stage2 generate-teacher-trajectories` |
+
+Stage 1 reads local-vLLM settings from `.env.stage1` and should point
+`STAGE1_BASE_URL` at the vLLM server. Stage 2 reads teacher API credentials from
+`.env.stage2` and uses `STAGE2_API_KEY`, `STAGE2_BASE_URL`, and
+`TEACHER_MODEL`. Do not share one `.env` between the stages; that makes it too
+easy to run the Lite benchmark with the teacher model or generate SWE-smith data
+with the local Qwen endpoint.
+
+Bootstrap both templates with:
+
+```bash
+./scripts/deploy.sh
+```
+
+Then run the stages independently:
+
+```bash
+DATASET=data/swebench_lite.parquet ./scripts/run_stage1_qwen_vllm.sh
+./scripts/run_stage2_teacher_trajectories.sh
+```
+
 ## Installation
 
 ```powershell

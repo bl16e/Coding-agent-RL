@@ -191,35 +191,38 @@ def tool_definitions() -> list[dict[str, Any]]:
     return tools
 
 
-def _parse_tool_call_message(message: dict[str, Any]) -> AgentAction | None:
+def _parse_tool_calls_message(message: dict[str, Any]) -> list[AgentAction]:
+    """Parse all tool_calls from an OpenAI-compatible assistant message."""
     tool_calls = message.get("tool_calls")
     if not isinstance(tool_calls, list) or not tool_calls:
-        return None
-    tool_call = tool_calls[0]
-    function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
-    name = function.get("name")
-    arguments_text = function.get("arguments") or "{}"
-    try:
-        arguments = json.loads(arguments_text)
-    except json.JSONDecodeError as exc:
-        raise ModelBackendError(f"tool call arguments are not valid JSON for {name}") from exc
-    if not isinstance(arguments, dict):
-        raise ModelBackendError(f"tool call arguments must be a JSON object for {name}")
-    try:
-        action = AgentActionType(name)
-    except ValueError as exc:
-        raise ModelBackendError(f"Unsupported agent action: {name}") from exc
-    return AgentAction( 
-        action=action,
-        tool_input={} if action is AgentActionType.FINAL else arguments,
-        reasoning_summary=arguments.get("reasoning_summary") or "",
-        next_intent=arguments.get("next_intent") or "",
-        tool_selection_reason=arguments.get("tool_selection_reason") or "",
-        final_status=arguments.get("final_status") if action is AgentActionType.FINAL else None,
-        final_message=arguments.get("final_message") if action is AgentActionType.FINAL else None,
-        tool_call_id=tool_call.get("id"),
-        raw_message=message,
-    )
+        return []
+    actions: list[AgentAction] = []
+    for tool_call in tool_calls:
+        function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+        name = function.get("name")
+        arguments_text = function.get("arguments") or "{}"
+        try:
+            arguments = json.loads(arguments_text)
+        except json.JSONDecodeError as exc:
+            raise ModelBackendError(f"tool call arguments are not valid JSON for {name}") from exc
+        if not isinstance(arguments, dict):
+            raise ModelBackendError(f"tool call arguments must be a JSON object for {name}")
+        try:
+            action_type = AgentActionType(name)
+        except ValueError as exc:
+            raise ModelBackendError(f"Unsupported agent action: {name}") from exc
+        actions.append(AgentAction(
+            action=action_type,
+            tool_input={} if action_type is AgentActionType.FINAL else arguments,
+            reasoning_summary=arguments.get("reasoning_summary") or "",
+            next_intent=arguments.get("next_intent") or "",
+            tool_selection_reason=arguments.get("tool_selection_reason") or "",
+            final_status=arguments.get("final_status") if action_type is AgentActionType.FINAL else None,
+            final_message=arguments.get("final_message") if action_type is AgentActionType.FINAL else None,
+            tool_call_id=tool_call.get("id"),
+            raw_message=message,
+        ))
+    return actions
 
 
 def _payload_to_action_dict(payload: dict[str, Any] | str) -> dict[str, Any]:
@@ -245,27 +248,28 @@ def _payload_to_action_dict(payload: dict[str, Any] | str) -> dict[str, Any]:
     choices = payload.get("choices")
     if isinstance(choices, list) and choices:
         message = choices[0].get("message", {})
-        tool_action = _parse_tool_call_message(message)
-        if tool_action is not None:
-            return {"__agent_action__": tool_action}
+        tool_actions = _parse_tool_calls_message(message)
+        if tool_actions:
+            return {"__agent_actions__": tool_actions}
         content = message.get("content")
         if isinstance(content, str):
             return _payload_to_action_dict(content)
     return payload
 
 
-def parse_agent_action(payload: dict[str, Any] | str) -> AgentAction:
-    """Validate provider output and convert it into an executable action."""
+def parse_agent_action(payload: dict[str, Any] | str) -> list[AgentAction]:
+    """Validate provider output and convert it into executable actions."""
 
     action_dict = _payload_to_action_dict(payload)
-    if "__agent_action__" in action_dict:
-        return action_dict["__agent_action__"]
+    if "__agent_actions__" in action_dict:
+        return action_dict["__agent_actions__"]
+    # JSON text mode: single action (legacy path)
     action_value = action_dict.get("action")
     try:
         action = AgentActionType(action_value)
     except ValueError as exc:
         raise ModelBackendError(f"Unsupported agent action: {action_value}") from exc
-    return AgentAction(
+    return [AgentAction(
         action=action,
         tool_input=action_dict.get("tool_input") or {},
         reasoning_summary=action_dict.get("reasoning_summary") or "",
@@ -273,7 +277,7 @@ def parse_agent_action(payload: dict[str, Any] | str) -> AgentAction:
         tool_selection_reason=action_dict.get("tool_selection_reason") or "",
         final_status=action_dict.get("final_status"),
         final_message=action_dict.get("final_message"),
-    )
+    )]
 
 
 def map_request_error(error: APIError) -> ModelBackendError:
@@ -309,8 +313,8 @@ class OpenAICompatibleBackend:
             "tool_choice": "auto",
         }
 
-    def next_action(self, messages: list[dict[str, Any]]) -> AgentAction:
-        """Request the next tool/final action from the configured model."""
+    def next_action(self, messages: list[dict[str, Any]]) -> list[AgentAction]:
+        """Request the next tool/final action(s) from the configured model."""
 
         try:
             completion = self.client.chat.completions.create(**self.request_payload(messages))

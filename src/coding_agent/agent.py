@@ -335,8 +335,9 @@ def _detect_conflicts(actions: list[AgentAction]) -> list[list[int]]:
     for indices in write_targets.values():
         if len(indices) > 1:
             conflicting.update(indices)  # multiple writes to same file
-    for indices in read_targets.values():
-        conflicting.update(indices)  # read + write to same file
+    for fp, read_indices in read_targets.items():
+        conflicting.update(read_indices)       # reads on files being written
+        conflicting.update(write_targets[fp])  # writes on files being read
 
     if not conflicting:
         return [list(range(len(actions)))]

@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from coding_agent.trajectory.patch import generate_unified_patch, snapshot_workspace
+import subprocess
+
+from coding_agent.trajectory.patch import generate_unified_patch, generate_workspace_patch, snapshot_workspace
 from coding_agent.swebench.sandbox_run import filter_validation_patch_changes
 
 
@@ -23,6 +25,30 @@ def test_snapshot_workspace_uses_relative_text_paths(tmp_path: Path):
     snapshot = snapshot_workspace(tmp_path)
 
     assert snapshot == {"src/app.py": "print('ok')\n"}
+
+
+def test_generate_workspace_patch_uses_git_diff_binary_for_git_repo(tmp_path: Path):
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"diff --git a/app.py b/app.py\n", stderr=b"")
+
+    patch = generate_workspace_patch(tmp_path, {"app.py": "old\n"}, {"app.py": "new\n"}, runner=fake_run)
+
+    assert patch == "diff --git a/app.py b/app.py\n"
+    assert calls[0][:3] == ["git", "-C", str(tmp_path.resolve())]
+    assert "--binary" in calls[0]
+
+
+def test_generate_workspace_patch_falls_back_to_snapshot_diff_when_git_diff_fails(tmp_path: Path):
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 129, stdout=b"", stderr=b"not a git repo")
+
+    patch = generate_workspace_patch(tmp_path, {"app.py": "old\n"}, {"app.py": "new\n"}, runner=fake_run)
+
+    assert "--- a/app.py" in patch
+    assert "+new" in patch
 
 
 def test_filter_validation_patch_changes_removes_test_patch_files():

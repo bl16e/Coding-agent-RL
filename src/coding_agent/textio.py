@@ -18,6 +18,7 @@ class TextDecodeError(TextIOError):
 
 SUPPORTED_ENCODINGS = ("utf-8", "gbk")
 DEFAULT_PAGE_LINES = 1000
+DEFAULT_MAX_CHARS = 50000
 
 
 @dataclass(frozen=True)
@@ -111,7 +112,13 @@ def write_text_file(path: str | Path, content: str, *, encoding: str, newline: s
     Path(path).write_bytes(normalized.encode(encoding))
 
 
-def page_text(text_file: TextFile, bounds: tuple[int, int] | None, *, default_limit: int = DEFAULT_PAGE_LINES) -> TextPage:
+def page_text(
+    text_file: TextFile,
+    bounds: tuple[int, int] | None,
+    *,
+    default_limit: int = DEFAULT_PAGE_LINES,
+    max_chars: int = DEFAULT_MAX_CHARS,
+) -> TextPage:
     lines = text_file.content.splitlines(keepends=True)
     total_lines = len(text_file.content.splitlines())
     if bounds is None:
@@ -122,6 +129,11 @@ def page_text(text_file: TextFile, bounds: tuple[int, int] | None, *, default_li
     selected = "".join(lines[start - 1 : end])
     actual_end = min(end, total_lines)
     truncated = start > 1 or end < total_lines
+    if len(selected) > max_chars:
+        selected = selected[:max_chars]
+        returned_line_count = max(1, len(selected.splitlines()))
+        actual_end = min(total_lines, start + returned_line_count - 1)
+        truncated = True
     if total_lines == 0:
         actual_end = 0
         truncated = False

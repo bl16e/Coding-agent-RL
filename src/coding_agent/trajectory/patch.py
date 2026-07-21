@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import difflib
 from pathlib import Path
+import subprocess
+from typing import Callable
 
 
 def snapshot_workspace(workspace: str | Path) -> dict[str, str]:
@@ -42,3 +44,28 @@ def generate_unified_patch(before: dict[str, str], after: dict[str, str]) -> str
             )
         )
     return "".join(line + "\n" for line in chunks)
+
+
+Runner = Callable[..., subprocess.CompletedProcess]
+
+
+def generate_workspace_patch(
+    workspace: str | Path,
+    before: dict[str, str],
+    after: dict[str, str],
+    *,
+    runner: Runner = subprocess.run,
+) -> str:
+    """Generate the final patch, preferring git's native binary-aware diff."""
+
+    root = Path(workspace).resolve()
+    if not (set(after) - set(before)):
+        result = runner(
+            ["git", "-C", str(root), "diff", "--binary", "--no-ext-diff"],
+            capture_output=True,
+            check=False,
+        )
+        stdout = result.stdout.decode("utf-8", errors="replace") if isinstance(result.stdout, bytes) else result.stdout or ""
+        if result.returncode == 0:
+            return stdout
+    return generate_unified_patch(before, after)

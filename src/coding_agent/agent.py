@@ -25,7 +25,7 @@ from coding_agent.swebench.prediction import write_prediction_jsonl
 from coding_agent.tools import LocalToolExecutor, ToolExecutionResult, ToolExecutor
 from coding_agent.tools.schemas import FINAL_ACTION_SCHEMA, TOOL_SCHEMAS
 from coding_agent.trajectory.converter import convert_trajectory_to_summary_format
-from coding_agent.trajectory.patch import generate_unified_patch, snapshot_workspace
+from coding_agent.trajectory.patch import generate_workspace_patch, snapshot_workspace
 from coding_agent.trajectory.summary import write_summary
 from coding_agent.trajectory.writer import TrajectoryWriter
 
@@ -414,7 +414,7 @@ def run_task(
     after = snapshot_workspace(task.workspace)
     # final.patch 基于运行前后快照生成。Docker 沙箱模式下，传入的 workspace 是宿主侧
     # 占位目录，真正的容器变更由容器工具和后续扩展负责导出。
-    final_patch = generate_unified_patch(before, after)
+    final_patch = generate_workspace_patch(task.workspace, before, after)
     artifacts = {
         "trajectory": str(output_path / "trajectory.jsonl"),
         "final_patch": str(output_path / "final.patch"),

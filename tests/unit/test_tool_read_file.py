@@ -51,6 +51,17 @@ def test_read_file_pages_large_file_by_default(tmp_path: Path):
     assert result.output["total_lines"] == 2200
 
 
+def test_read_file_truncates_very_long_line_by_default(tmp_path: Path):
+    (tmp_path / "large.txt").write_text("a" * 60000, encoding="utf-8")
+
+    result = read_file(tmp_path, {"path": "large.txt"})
+
+    assert result.status == "ok"
+    assert len(result.output["content"]) == 50000
+    assert result.output["truncated"] is True
+    assert result.output["total_lines"] == 1
+
+
 def test_read_file_returns_file_content(tmp_path: Path):
     (tmp_path / "README.md").write_bytes(b"hello\n")
 

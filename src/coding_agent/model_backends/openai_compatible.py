@@ -12,6 +12,10 @@ from coding_agent.models import ModelConfig, ToolName
 from coding_agent.tools.schemas import COMMON_PROPERTIES, FINAL_ACTION_SCHEMA, TOOL_SCHEMAS
 
 REQUIRED_ENV_KEYS = ("PROVIDER", "MODEL", "API_KEY", "BASE_URL")
+STAGE_ENV_KEYS = {
+    "stage1": ("STAGE1_PROVIDER", "STAGE1_MODEL", "STAGE1_API_KEY", "STAGE1_BASE_URL"),
+    "stage2": ("STAGE2_PROVIDER", "STAGE2_MODEL", "STAGE2_API_KEY", "STAGE2_BASE_URL"),
+}
 ERROR_PREVIEW_CHARS = 160
 
 
@@ -73,6 +77,38 @@ def load_model_config(
         model=merged["MODEL"],
         api_key=merged["API_KEY"],
         base_url=merged["BASE_URL"],
+    )
+
+
+def load_stage_model_config(
+    stage: str,
+    env: dict[str, str] | None = None,
+    dotenv_path: Path | str = ".env",
+    model_override: str | None = None,
+) -> ModelConfig:
+    """Load model settings from stage-specific environment variables only."""
+
+    try:
+        provider_key, model_key, api_key_key, base_url_key = STAGE_ENV_KEYS[stage]
+    except KeyError as exc:
+        raise ValueError(f"unknown stage model config: {stage}") from exc
+
+    file_values = parse_dotenv(Path(dotenv_path))
+    env_values = dict(os.environ if env is None else env)
+    stage_keys = (provider_key, model_key, api_key_key, base_url_key)
+    merged = {key: file_values.get(key, "") for key in stage_keys}
+    merged.update({key: env_values[key] for key in stage_keys if env_values.get(key)})
+    if model_override:
+        merged[model_key] = model_override
+
+    missing = tuple(key for key in stage_keys if not merged.get(key))
+    if missing:
+        raise MissingModelConfigError(missing)
+    return ModelConfig(
+        provider=merged[provider_key],
+        model=merged[model_key],
+        api_key=merged[api_key_key],
+        base_url=merged[base_url_key],
     )
 
 

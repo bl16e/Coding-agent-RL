@@ -50,3 +50,70 @@ def test_model_override_only_replaces_model(tmp_path: Path):
     assert config.provider == "file-provider"
     assert config.model == "override-model"
 
+
+def test_load_stage_model_config_reads_stage1_values(tmp_path: Path):
+    from coding_agent.model_backends.openai_compatible import load_stage_model_config
+
+    config = load_stage_model_config(
+        "stage1",
+        env={
+            "STAGE1_PROVIDER": "openai",
+            "STAGE1_MODEL": "qwen2.5-coder-7b",
+            "STAGE1_API_KEY": "not-needed",
+            "STAGE1_BASE_URL": "http://vllm:8000/v1",
+            "PROVIDER": "generic-provider",
+            "MODEL": "generic-model",
+            "API_KEY": "generic-key",
+            "BASE_URL": "http://generic",
+        },
+        dotenv_path=tmp_path / ".env",
+    )
+
+    assert config.provider == "openai"
+    assert config.model == "qwen2.5-coder-7b"
+    assert config.api_key == "not-needed"
+    assert config.base_url == "http://vllm:8000/v1"
+
+
+def test_load_stage_model_config_does_not_fallback_to_generic_env(tmp_path: Path):
+    from coding_agent.model_backends.openai_compatible import load_stage_model_config
+
+    with pytest.raises(MissingModelConfigError) as exc_info:
+        load_stage_model_config(
+            "stage1",
+            env={
+                "PROVIDER": "generic-provider",
+                "MODEL": "generic-model",
+                "API_KEY": "generic-key",
+                "BASE_URL": "http://generic",
+            },
+            dotenv_path=tmp_path / ".env",
+        )
+
+    assert exc_info.value.missing_keys == (
+        "STAGE1_PROVIDER",
+        "STAGE1_MODEL",
+        "STAGE1_API_KEY",
+        "STAGE1_BASE_URL",
+    )
+
+
+def test_load_stage_model_config_model_override_only_replaces_stage_model(tmp_path: Path):
+    from coding_agent.model_backends.openai_compatible import load_stage_model_config
+
+    config = load_stage_model_config(
+        "stage2",
+        env={
+            "STAGE2_PROVIDER": "openai",
+            "STAGE2_MODEL": "teacher-default",
+            "STAGE2_API_KEY": "teacher-key",
+            "STAGE2_BASE_URL": "https://teacher.example/v1",
+        },
+        dotenv_path=tmp_path / ".env",
+        model_override="teacher-override",
+    )
+
+    assert config.provider == "openai"
+    assert config.model == "teacher-override"
+    assert config.api_key == "teacher-key"
+    assert config.base_url == "https://teacher.example/v1"

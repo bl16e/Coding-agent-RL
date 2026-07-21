@@ -32,6 +32,7 @@ def test_run_swesmith_instance_uses_container_diff_for_prediction(tmp_path: Path
         container_name = "container-1"
         repo_path = "/testbed"
         profile_key = "repo__name.abcdef12"
+        image_name = "swebench/swesmith.x86_64.repo__name.abcdef12:latest"
 
     def fake_create_official_container(row, *, reference_path):
         return Prepared()
@@ -70,6 +71,8 @@ def test_run_swesmith_instance_uses_container_diff_for_prediction(tmp_path: Path
     assert summary.status is RunStatus.SOLVED
     assert prediction["model_patch"].startswith("diff --git")
     assert sandbox["runtime"]["path"] == "swesmith_official"
+    assert sandbox["runtime"]["profile_key"] == "repo__name.abcdef12"
+    assert sandbox["runtime"]["image_name"] == "swebench/swesmith.x86_64.repo__name.abcdef12:latest"
     assert sandbox["container_name"] == "container-1"
 
 
@@ -107,9 +110,53 @@ def test_run_swesmith_subset_writes_ordered_predictions_and_summary(tmp_path: Pa
 
     preds = [json.loads(line) for line in (tmp_path / "batch" / "preds.jsonl").read_text(encoding="utf-8").splitlines()]
     batch = json.loads((tmp_path / "batch" / "batch_summary.json").read_text(encoding="utf-8"))
+    state = json.loads((tmp_path / "batch" / "batch_state.json").read_text(encoding="utf-8"))
     assert exit_code == 0
     assert [row["instance_id"] for row in preds] == ["repo__name.abcdef12.pr_1", "repo__name.abcdef12.pr_2"]
     assert batch["total"] == 2
+    assert state["total"] == 2
+    assert state["tasks"]["repo__name.abcdef12.pr_1"]["status"] == "solved"
+    assert state["tasks"]["repo__name.abcdef12.pr_1"]["run_dir"].endswith("repo__name.abcdef12.pr_1")
+    assert state["tasks"]["repo__name.abcdef12.pr_1"]["last_error"] is None
+
+
+def test_run_swesmith_subset_records_errored_task_in_batch_state(tmp_path: Path, monkeypatch):
+    subset = tmp_path / "subset.json"
+    rows = [
+        {"instance_id": "repo__name.abcdef12.pr_1", "problem_statement": "Fix 1", "FAIL_TO_PASS": ["a"]},
+        {"instance_id": "repo__name.abcdef12.pr_2", "problem_statement": "Fix 2", "FAIL_TO_PASS": ["b"]},
+    ]
+    subset.write_text(json.dumps(rows), encoding="utf-8")
+
+    def fake_run(instance, **kwargs):
+        if instance["instance_id"].endswith("pr_2"):
+            raise RuntimeError("container failed to start")
+        run_dir = Path(kwargs["output_dir"])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "prediction.jsonl").write_text(
+            json.dumps({"instance_id": instance["instance_id"], "model_name_or_path": "mock", "model_patch": ""}) + "\n",
+            encoding="utf-8",
+        )
+        return RunSummary("run", instance["instance_id"], "mock", RunStatus.SOLVED, kwargs["budget"])
+
+    monkeypatch.setattr("coding_agent.swesmith.run.run_swesmith_instance", fake_run)
+
+    exit_code = run_swesmith_subset(
+        subset_path=subset,
+        docker=FakeDocker(),
+        backend_factory=lambda: object(),
+        budget=RunBudget(1, 60, 10),
+        model_name="mock",
+        output_dir=tmp_path / "batch",
+        reference_path=None,
+        jobs=1,
+    )
+
+    state = json.loads((tmp_path / "batch" / "batch_state.json").read_text(encoding="utf-8"))
+    assert exit_code == 4
+    assert state["tasks"]["repo__name.abcdef12.pr_1"]["status"] == "solved"
+    assert state["tasks"]["repo__name.abcdef12.pr_2"]["status"] == "errored"
+    assert state["tasks"]["repo__name.abcdef12.pr_2"]["last_error"] == "container failed to start"
 
 
 def test_run_swesmith_subset_parallel_preserves_order(tmp_path: Path, monkeypatch):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import threading
 from collections.abc import Callable
@@ -16,6 +17,9 @@ from coding_agent.sandbox.tools import ContainerToolExecutor
 from coding_agent.swebench.prediction import prediction_to_dict
 from coding_agent.swesmith.dataset import _repo_key, load_subset
 from coding_agent.swesmith.runtime import SwesmithPreparedContainer, create_official_container, import_swesmith
+
+
+logger = logging.getLogger(__name__)
 
 
 SELF_TEST_COMMANDS = (
@@ -44,7 +48,11 @@ def _write_sandbox_json(path: Path, prepared: SwesmithPreparedContainer) -> None
             "container_name": prepared.container_name,
             "repo_path": prepared.repo_path,
             "profile_key": prepared.profile_key,
-            "runtime": {"path": "swesmith_official"},
+            "runtime": {
+                "path": "swesmith_official",
+                "profile_key": prepared.profile_key,
+                "image_name": getattr(prepared, "image_name", None),
+            },
         },
     )
 
@@ -152,6 +160,52 @@ def _run_instance_and_collect(
     return (instance_id, status, error, str(run_dir), pred)
 
 
+def _write_batch_state(path: Path, payload: dict[str, Any]) -> None:
+    _write_json(path, payload)
+
+
+def _initialize_batch_state(path: Path, rows: list[dict[str, Any]], root: Path) -> dict[str, Any]:
+    state = {
+        "schema": "coding-agent.swesmith.batch-state.v1",
+        "total": len(rows),
+        "output_dir": str(root),
+        "tasks": {
+            str(instance["instance_id"]): {
+                "instance_id": str(instance["instance_id"]),
+                "status": "pending",
+                "run_dir": str(root / _safe_instance_dir(str(instance["instance_id"]))),
+                "last_error": None,
+            }
+            for instance in rows
+        },
+    }
+    _write_batch_state(path, state)
+    return state
+
+
+def _update_batch_state_task(
+    path: Path,
+    lock: threading.Lock,
+    instance_id: str,
+    *,
+    status: str,
+    run_dir: str,
+    last_error: str | None,
+) -> None:
+    with lock:
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {"schema": "coding-agent.swesmith.batch-state.v1", "tasks": {}}
+        state.setdefault("tasks", {})[instance_id] = {
+            "instance_id": instance_id,
+            "status": status,
+            "run_dir": run_dir,
+            "last_error": last_error,
+        }
+        _write_batch_state(path, state)
+
+
 def _collect_image_names(
     instances: list[dict[str, Any]],
     reference_path: str | Path | None,
@@ -180,11 +234,16 @@ def _collect_image_names(
 def _cleanup_docker_images(image_names: list[str]) -> None:
     """Remove the listed Docker images (best-effort, non-fatal)."""
     for name in image_names:
-        subprocess.run(
+        completed = subprocess.run(
             ["docker", "rmi", name],
             check=False,
             capture_output=True,
         )
+        if completed.returncode != 0:
+            output = completed.stderr or completed.stdout
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            logger.warning("failed to remove SWE-smith image %s: %s", name, output)
 
 
 def run_swesmith_subset(
@@ -210,20 +269,39 @@ def run_swesmith_subset(
     # Same repo → same Docker image → pull once, reused for all instances.
     rows = sorted(rows, key=lambda inst: _repo_key(inst))
     repo_count = len({_repo_key(inst) for inst in rows})
-    import logging
-    _log = logging.getLogger(__name__)
-    _log.info("SWE-smith subset: %d instances across %d repos, jobs=%d", len(rows), repo_count, jobs)
+    logger.info("SWE-smith subset: %d instances across %d repos, jobs=%d", len(rows), repo_count, jobs)
 
     results: list[dict[str, Any]] = []
     predictions: list[Prediction] = []
+    state_path = root / "batch_state.json"
+    state_lock = threading.Lock()
+    _initialize_batch_state(state_path, rows, root)
 
     if jobs == 1:
         # ── Sequential path ────────────────────────────────────────────────
         for instance in rows:
+            instance_id = str(instance["instance_id"])
+            run_dir = root / _safe_instance_dir(instance_id)
+            _update_batch_state_task(
+                state_path,
+                state_lock,
+                instance_id,
+                status="running",
+                run_dir=str(run_dir),
+                last_error=None,
+            )
             instance_id, status, error, run_dir_str, pred = _run_instance_and_collect(
                 instance, docker=docker, backend_factory=backend_factory,
                 budget=budget, model_name=model_name, root=root,
                 reference_path=reference_path,
+            )
+            _update_batch_state_task(
+                state_path,
+                state_lock,
+                instance_id,
+                status=status,
+                run_dir=run_dir_str,
+                last_error=error,
             )
             predictions.append(pred)
             results.append({"instance_id": instance_id, "status": status, "error": error, "run_dir": run_dir_str})
@@ -238,10 +316,27 @@ def run_swesmith_subset(
 
         def _run_one(instance_id: str) -> None:
             inst = instance_map[instance_id]
+            run_dir = root / _safe_instance_dir(instance_id)
+            _update_batch_state_task(
+                state_path,
+                state_lock,
+                instance_id,
+                status="running",
+                run_dir=str(run_dir),
+                last_error=None,
+            )
             _, status, error, run_dir_str, pred = _run_instance_and_collect(
                 inst, docker=docker, backend_factory=backend_factory,
                 budget=budget, model_name=model_name, root=root,
                 reference_path=reference_path,
+            )
+            _update_batch_state_task(
+                state_path,
+                state_lock,
+                instance_id,
+                status=status,
+                run_dir=run_dir_str,
+                last_error=error,
             )
             with results_lock:
                 gathered[instance_id] = (status, error, run_dir_str, pred)
@@ -279,9 +374,9 @@ def run_swesmith_subset(
 
     # ── Optional image cleanup ──────────────────────────────────────────────
     if cleanup_images:
-        _log.info("Cleaning up Docker images...")
+        logger.info("Cleaning up Docker images...")
         image_names = _collect_image_names(rows, reference_path)
         _cleanup_docker_images(image_names)
-        _log.info("Removed %d Docker images", len(image_names))
+        logger.info("Removed %d Docker images", len(image_names))
 
     return 4 if any(result["status"] == "errored" for result in results) else 0

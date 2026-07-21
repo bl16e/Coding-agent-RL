@@ -17,6 +17,7 @@ def run_official_eval(
     run_id: str,
     workers: int,
     reference_path: str | Path | None,
+    log_dir: str | Path | None = None,
     runner: Callable[..., Any] = subprocess.run,
 ) -> int:
     eval_args = [
@@ -43,7 +44,17 @@ def run_official_eval(
     env = dict(os.environ)
     if reference_path is not None:
         env["PYTHONPATH"] = str(Path(reference_path).resolve()) + os.pathsep + env.get("PYTHONPATH", "")
-    completed = runner(command, text=True, check=False, env=env)
+    completed = runner(command, text=True, check=False, env=env, capture_output=True)
+    output_dir = Path(log_dir) if log_dir is not None else Path("logs") / "run_evaluation" / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stdout = getattr(completed, "stdout", "") or ""
+    stderr = getattr(completed, "stderr", "") or ""
+    (output_dir / "wrapper.stdout.log").write_text(str(stdout), encoding="utf-8")
+    (output_dir / "wrapper.stderr.log").write_text(str(stderr), encoding="utf-8")
+    (output_dir / "wrapper.command.json").write_text(
+        json.dumps({"command": [str(part) for part in command], "returncode": int(completed.returncode)}, indent=2),
+        encoding="utf-8",
+    )
     return int(completed.returncode)
 
 

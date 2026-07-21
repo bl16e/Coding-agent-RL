@@ -26,6 +26,7 @@ def test_run_official_eval_invokes_swesmith_module(tmp_path: Path):
         run_id="run-1",
         workers=2,
         reference_path=tmp_path / "Reference" / "SWE-smith",
+        log_dir=tmp_path / "logs" / "run_evaluation" / "run-1",
         runner=fake_runner,
     )
 
@@ -36,7 +37,33 @@ def test_run_official_eval_invokes_swesmith_module(tmp_path: Path):
     assert "--timeout" not in calls["command"]
     assert calls["kwargs"]["text"] is True
     assert calls["kwargs"]["check"] is False
-    assert "capture_output" not in calls["kwargs"]
+    assert calls["kwargs"]["capture_output"] is True
+    assert (tmp_path / "logs" / "run_evaluation" / "run-1" / "wrapper.stdout.log").read_text(encoding="utf-8") == "ok"
+    assert (tmp_path / "logs" / "run_evaluation" / "run-1" / "wrapper.stderr.log").read_text(encoding="utf-8") == ""
+
+
+def test_run_official_eval_records_failed_wrapper_output(tmp_path: Path):
+    def fake_runner(command, **kwargs):
+        class Completed:
+            returncode = 2
+            stdout = "starting eval\n"
+            stderr = "missing dataset\n"
+
+        return Completed()
+
+    exit_code = run_official_eval(
+        dataset_path=tmp_path / "missing.json",
+        predictions_path=tmp_path / "preds.jsonl",
+        run_id="run-2",
+        workers=1,
+        reference_path=None,
+        log_dir=tmp_path / "eval_logs",
+        runner=fake_runner,
+    )
+
+    assert exit_code == 2
+    assert (tmp_path / "eval_logs" / "wrapper.stdout.log").read_text(encoding="utf-8") == "starting eval\n"
+    assert (tmp_path / "eval_logs" / "wrapper.stderr.log").read_text(encoding="utf-8") == "missing dataset\n"
 
 
 def test_run_official_eval_uses_resource_shim_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -60,6 +87,7 @@ def test_run_official_eval_uses_resource_shim_on_windows(tmp_path: Path, monkeyp
             run_id="run-1",
             workers=1,
             reference_path=tmp_path / "Reference" / "SWE-smith",
+            log_dir=tmp_path / "logs" / "run_evaluation" / "run-1",
             runner=fake_runner,
         )
         == 0

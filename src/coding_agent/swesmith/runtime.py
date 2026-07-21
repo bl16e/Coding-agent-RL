@@ -21,6 +21,7 @@ class SwesmithPreparedContainer:
     profile_key: str
     raw_container: Any
     raw_profile: Any
+    image_name: str | None = None
 
 
 def import_swesmith(reference_path: str | Path | None = None) -> Any:
@@ -73,4 +74,5 @@ def create_official_container(
         profile_key=str(instance.get("repo") or str(instance["instance_id"]).rsplit(".", 1)[0]),
         raw_container=container,
         raw_profile=profile,
+        image_name=str(getattr(profile, "image_name", "")) or None,
     )

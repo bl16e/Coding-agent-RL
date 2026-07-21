@@ -12,10 +12,11 @@ from coding_agent.tools.apply_patch import apply_patch
 
 
 class ToolExecutor(Protocol):
-    """agent loop 与仓库工具执行位置之间的协议边界。
+    """Protocol boundary between the agent loop and tool execution.
 
-    本地工作区和 Docker 容器都实现这个接口，因此 agent.py 只需要选择工具名和输入，
-    不需要知道读写发生在哪个文件系统里。
+    Both local workspaces and Docker containers implement this interface so
+    agent.py only needs to select a tool name and input, without knowing
+    where reads/writes happen.
     """
 
     def execute(self, tool_name: ToolName, tool_input: dict) -> ToolExecutionResult:
@@ -23,25 +24,19 @@ class ToolExecutor(Protocol):
 
 
 class LocalToolExecutor:
-    """在已准备好的本地工作区中执行工具。"""
+    """Execute tools in a prepared local workspace."""
 
     def __init__(
         self,
         *,
         workspace: str | Path,
-        allowed_test_commands: tuple[str, ...],
         test_timeout_seconds: float,
     ) -> None:
         self.workspace = Path(workspace)
-        self.allowed_test_commands = tuple(allowed_test_commands)
         self.test_timeout_seconds = test_timeout_seconds
 
     def execute(self, tool_name: ToolName, tool_input: dict) -> ToolExecutionResult:
-        """按工具名分发到本地实现。
-
-        与 ContainerToolExecutor 保持同样入口，是本地模式和 Docker 模式复用 agent loop
-        的关键。
-        """
+        """Dispatch tool by name to the local implementation."""
         if tool_name is ToolName.READ_FILE:
             return read_file(self.workspace, tool_input)
         if tool_name is ToolName.APPLY_PATCH:
@@ -52,7 +47,6 @@ class LocalToolExecutor:
             return run_tests(
                 self.workspace,
                 tool_input,
-                self.allowed_test_commands,
-                self.test_timeout_seconds,
+                timeout_seconds=self.test_timeout_seconds,
             )
         raise ValueError(f"unsupported tool: {tool_name}")

@@ -17,7 +17,7 @@ class TextDecodeError(TextIOError):
 
 
 SUPPORTED_ENCODINGS = ("utf-8", "gbk")
-DEFAULT_PAGE_LINES = 1000
+DEFAULT_PAGE_LINES = 200
 DEFAULT_MAX_CHARS = 50000
 
 
@@ -112,6 +112,27 @@ def write_text_file(path: str | Path, content: str, *, encoding: str, newline: s
     Path(path).write_bytes(normalized.encode(encoding))
 
 
+def _format_with_line_numbers(content: str, start_line: int) -> str:
+    """Prefix each line with a right-aligned line number and a tab, matching cat -n output."""
+    if not content:
+        return ""
+    lines = content.splitlines(keepends=True)
+    # Determine padding width from the last line number
+    end_line = start_line + len(lines) - 1
+    width = max(4, len(str(end_line)))
+    formatted: list[str] = []
+    for i, line in enumerate(lines):
+        num = start_line + i
+        # Remove trailing newline for the last line to avoid double newline, then re-add
+        if line.endswith("\n"):
+            formatted.append(f"{num:>{width}}\t{line[:-1]}\n")
+        elif line.endswith("\r\n"):
+            formatted.append(f"{num:>{width}}\t{line[:-2]}\r\n")
+        else:
+            formatted.append(f"{num:>{width}}\t{line}")
+    return "".join(formatted)
+
+
 def page_text(
     text_file: TextFile,
     bounds: tuple[int, int] | None,
@@ -126,9 +147,9 @@ def page_text(
         end = min(default_limit, max(total_lines, 1))
     else:
         start, end = bounds
-    selected = "".join(lines[start - 1 : end])
     actual_end = min(end, total_lines)
-    truncated = start > 1 or end < total_lines
+    selected = "".join(lines[start - 1 : actual_end])
+    truncated = start > 1 or actual_end < total_lines
     if len(selected) > max_chars:
         selected = selected[:max_chars]
         returned_line_count = max(1, len(selected.splitlines()))
@@ -137,8 +158,14 @@ def page_text(
     if total_lines == 0:
         actual_end = 0
         truncated = False
+    # Format with line numbers (cat -n style)
+    formatted = _format_with_line_numbers(selected, start) if selected else ""
+    # Append truncation marker when content was cut off
+    if truncated and total_lines > actual_end:
+        remaining = total_lines - actual_end
+        formatted = formatted.rstrip("\n\r") + f"\n... [truncated, {remaining} lines remaining]\n"
     return TextPage(
-        content=selected,
+        content=formatted,
         encoding=text_file.encoding,
         newline=text_file.newline,
         line_start=start if total_lines else 0,

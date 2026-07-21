@@ -17,7 +17,7 @@ def _write_run(root: Path, instance_id: str, resolved: bool) -> None:
         + json.dumps(
             {
                 "action_type": "tool_result",
-                "tool_call": {"tool_name": "read_file", "input": {"path": "app.py"}},
+                "tool_call": {"tool_name": "read_file", "input": {"file_path": "app.py"}},
                 "tool_result": {"output": {"content": "print('hi')"}},
             }
         )

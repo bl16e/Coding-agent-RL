@@ -9,69 +9,57 @@ from coding_agent.tools.result import ToolExecutionResult
 from coding_agent.workspace import WorkspacePathError, resolve_workspace_path
 
 
-def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
-    """解析可选行号范围。
+def _parse_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
+    """Parse optional line range from offset/limit.
 
-    offset/limit 兼容分页式调用，line/end_line 兼容直接指定闭区间。内部统一返回
-    1-based 闭区间，便于生成稳定的 output_summary。
+    Returns (start, end) as a 1-based inclusive interval, or None to read the
+    default page.  offset is the 1-based start line; limit is the number of
+    lines to read.
     """
-    if "line" in tool_input:
-        start = int(tool_input["line"])
-        if "end_line" in tool_input:
-            end = int(tool_input["end_line"])
-        elif "limit" in tool_input:
-            limit = int(tool_input["limit"])
-            if limit < 1:
-                raise ValueError("limit must be a positive integer")
-            end = start + limit - 1
-        else:
-            end = start
-        if start < 1 or end < start:
-            raise ValueError("line range must be 1-based and end_line must be >= line")
-        return start, end
-    if "offset" in tool_input or "limit" in tool_input:
-        start = int(tool_input.get("offset", 1))
-        limit = int(tool_input.get("limit", 1))
-        if start < 1 or limit < 1:
-            raise ValueError("offset and limit must be 1-based positive integers")
-        return start, start + limit - 1
-    if "end_line" not in tool_input:
+    has_offset = "offset" in tool_input
+    has_limit = "limit" in tool_input
+    if not has_offset and not has_limit:
         return None
-    end = int(tool_input["end_line"])
-    if end < 1:
-        raise ValueError("line range must be 1-based and end_line must be >= line")
-    return 1, end
-
-
-def _slice_lines(content: str, bounds: tuple[int, int] | None) -> tuple[str, str]:
-    """根据行号范围截取文本，并返回面向轨迹的摘要。"""
-    if bounds is None:
-        return content, f"read {len(content)} characters"
-    start, end = bounds
-    selected = "".join(content.splitlines(keepends=True)[start - 1 : end])
-    return selected, f"read lines {start}-{end} ({len(selected)} characters)"
+    start = int(tool_input.get("offset", 1))
+    limit = int(tool_input.get("limit", 1))
+    if start < 1:
+        raise ValueError("offset must be >= 1")
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    return start, start + limit - 1
 
 
 def read_file(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecutionResult:
-    """读取任务工作区内的 UTF-8 文本文件。
+    """Read a UTF-8 text file from the workspace with cat -n style line numbers.
 
-    路径校验先于文件存在性检查。像 "../secret.py" 这样的输入会被归类为策略拒绝，
-    而不是普通文件不存在。
+    Path validation runs before existence checks so path-traversal attempts are
+    rejected as policy violations rather than opaque "not found" errors.
     """
 
     try:
-        path = resolve_workspace_path(workspace, tool_input.get("path", ""))
-        bounds = _line_bounds(tool_input)
+        path = resolve_workspace_path(workspace, tool_input.get("file_path", ""))
+        bounds = _parse_bounds(tool_input)
     except WorkspacePathError as exc:
         return ToolExecutionResult(ToolName.READ_FILE, Outcome.REJECTED, str(exc))
     except (TypeError, ValueError) as exc:
         return ToolExecutionResult(ToolName.READ_FILE, Outcome.REJECTED, str(exc))
+
+    if path.is_dir():
+        return ToolExecutionResult(
+            ToolName.READ_FILE, Outcome.FAILED,
+            f"path is a directory, not a file: {tool_input.get('file_path')}",
+        )
     if not path.is_file():
-        return ToolExecutionResult(ToolName.READ_FILE, Outcome.FAILED, f"file not found: {tool_input.get('path')}")
+        return ToolExecutionResult(
+            ToolName.READ_FILE, Outcome.FAILED,
+            f"file not found: {tool_input.get('file_path')}",
+        )
+
     try:
         text_file = read_text_file(path)
     except (BinaryFileError, TextDecodeError) as exc:
         return ToolExecutionResult(ToolName.READ_FILE, Outcome.FAILED, str(exc))
+
     page = page_text(text_file, bounds)
     if page.line_start and (bounds is not None or page.truncated):
         output_summary = f"read lines {page.line_start}-{page.line_end} ({len(page.content)} characters)"

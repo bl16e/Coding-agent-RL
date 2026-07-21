@@ -27,33 +27,23 @@ def _docker_error(tool_name: ToolName, exc: Exception) -> ToolExecutionResult:
     return ToolExecutionResult(tool_name, Outcome.ERROR, str(exc))
 
 
-def _line_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
-    if "line" in tool_input:
-        start = int(tool_input["line"])
-        if "end_line" in tool_input:
-            end = int(tool_input["end_line"])
-        elif "limit" in tool_input:
-            limit = int(tool_input["limit"])
-            if limit < 1:
-                raise ValueError("limit must be a positive integer")
-            end = start + limit - 1
-        else:
-            end = start
-        if start < 1 or end < start:
-            raise ValueError("line range must be 1-based and end_line must be >= line")
-        return start, end
-    if "offset" in tool_input or "limit" in tool_input:
-        start = int(tool_input.get("offset", 1))
-        limit = int(tool_input.get("limit", 1))
-        if start < 1 or limit < 1:
-            raise ValueError("offset and limit must be 1-based positive integers")
-        return start, start + limit - 1
-    if "end_line" not in tool_input:
+def _parse_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
+    """Parse optional line range from offset/limit.
+
+    Returns (start, end) as a 1-based inclusive interval, or None to read the
+    default page.
+    """
+    has_offset = "offset" in tool_input
+    has_limit = "limit" in tool_input
+    if not has_offset and not has_limit:
         return None
-    end = int(tool_input["end_line"])
-    if end < 1:
-        raise ValueError("line range must be 1-based and end_line must be >= line")
-    return 1, end
+    start = int(tool_input.get("offset", 1))
+    limit = int(tool_input.get("limit", 1))
+    if start < 1:
+        raise ValueError("offset must be >= 1")
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    return start, start + limit - 1
 
 
 def _container_textio_prelude() -> str:
@@ -97,13 +87,36 @@ def _container_textio_prelude() -> str:
 
 def _container_python_search_script() -> str:
     return _container_textio_prelude() + (
-        "root=Path(sys.argv[1]); query=sys.argv[2]; limit=int(sys.argv[3]); matches=[]; truncated=False; binary_skipped=0\n"
+        "root=Path(sys.argv[1]); pat=sys.argv[2]; limit=int(sys.argv[3]); matches=[]; truncated=False; binary_skipped=0\n"
+        "ignore_case=bool(int(sys.argv[4])) if len(sys.argv) > 4 else False\n"
+        "glob_pat=sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
+        "ctx_before=max(0, int(sys.argv[6])) if len(sys.argv) > 6 else 0\n"
+        "ctx_after=max(0, int(sys.argv[7])) if len(sys.argv) > 7 else 0\n"
+        "ctx_around=max(0, int(sys.argv[8])) if len(sys.argv) > 8 else 0\n"
+        "has_context=ctx_before > 0 or ctx_after > 0 or ctx_around > 0\n"
+        "flags=re.IGNORECASE if ignore_case else 0\n"
         "try:\n"
-        "    pattern=re.compile(query)\n"
+        "    compiled=re.compile(pat, flags)\n"
         "except re.error as exc:\n"
         "    print(json.dumps({'error': f'invalid regular expression: {exc}'})); sys.exit(2)\n"
-        "excluded={'.git','.venv','venv','node_modules','build','dist','.tox'}\n"
+        "excluded={'.git','.venv','venv','node_modules','build','dist','.tox','__pycache__','.pytest_cache'}\n"
+        "def _match_glob(rel_path, glob_pat):\n"
+        "    if glob_pat is None or glob_pat == '**/*': return True\n"
+        "    parts=glob_pat.split('/'); regex_parts=[]; prev_ds=False\n"
+        "    for part in parts:\n"
+        "        if part == '**':\n"
+        "            if regex_parts: regex_parts.append('/')\n"
+        "            regex_parts.append(r'(?:[^/]+/)*'); prev_ds=True\n"
+        "        else:\n"
+        "            escaped=re.escape(part); escaped=escaped.replace(r'\\*', '[^/]*'); escaped=escaped.replace(r'\\?', '[^/]')\n"
+        "            if regex_parts and not prev_ds: regex_parts.append('/')\n"
+        "            regex_parts.append(escaped); prev_ds=False\n"
+        "    regex='^'+''.join(regex_parts)+'$'\n"
+        "    return bool(re.match(regex, rel_path))\n"
         "for path in sorted(p for p in root.rglob('*') if p.is_file() and not any(part in excluded for part in p.relative_to(root).parts)):\n"
+        "    if glob_pat:\n"
+        "        rel=path.relative_to(root).as_posix()\n"
+        "        if not _match_glob(rel, glob_pat): continue\n"
         "    try:\n"
         "        text, enc, nl = read_text(path)\n"
         "        lines=text.splitlines()\n"
@@ -112,11 +125,16 @@ def _container_python_search_script() -> str:
         "        continue\n"
         "    except TextDecodeError: continue\n"
         "    for idx,line in enumerate(lines,1):\n"
-        "        if pattern.search(line):\n"
+        "        if compiled.search(line):\n"
         "            if len(matches) >= limit: truncated=True; break\n"
-        "            matches.append({'path': path.relative_to(root).as_posix(), 'line': idx, 'text': line, 'encoding': enc, 'newline': nl})\n"
+        "            entry={'path': path.relative_to(root).as_posix(), 'line': idx, 'text': line, 'encoding': enc, 'newline': nl}\n"
+        "            if has_context:\n"
+        "                bc=max(ctx_before, ctx_around); ac=max(ctx_after, ctx_around)\n"
+        "                entry['context_before']=[{'line': i+1, 'text': lines[i]} for i in range(max(0, idx-bc-1), idx-1)]\n"
+        "                entry['context_after']=[{'line': i+1, 'text': lines[i]} for i in range(idx, min(len(lines), idx+ac))]\n"
+        "            matches.append(entry)\n"
         "    if truncated: break\n"
-        "print(json.dumps({'matches': matches, 'truncated': truncated, 'binary_skipped': binary_skipped}, ensure_ascii=False))"
+        "print(json.dumps({'matches': matches, 'truncated': truncated, 'binary_skipped': binary_skipped, 'files_searched': 0}, ensure_ascii=False))"
     )
 
 
@@ -130,38 +148,82 @@ def _container_helper_script() -> str:
         "        if method == 'read_file':\n"
         "            p=Path(params['path']); bounds=params.get('bounds')\n"
         "            text, enc, nl = read_text(p); lines=text.splitlines(keepends=True); total=len(text.splitlines())\n"
-        "            if bounds is None: start=1; end=min(1000, max(total, 1))\n"
+        "            if bounds is None: start=1; end=min(200, max(total, 1))\n"
         "            else: start=int(bounds[0]); end=int(bounds[1])\n"
-        "            selected=''.join(lines[start-1:end]); actual_end=min(end, total) if total else 0\n"
-        "            truncated=(False if total == 0 else start > 1 or end < total)\n"
+        "            actual_end=min(end, total) if total else 0\n"
+        "            selected=''.join(lines[start-1:actual_end]); actual_end=min(end, total) if total else 0\n"
+        "            truncated=(False if total == 0 else start > 1 or actual_end < total)\n"
         "            if len(selected) > 50000:\n"
         "                selected=selected[:50000]; actual_end=min(total, start + max(1, len(selected.splitlines())) - 1); truncated=True\n"
-        "            return ok({'content': selected, 'encoding': enc, 'newline': nl, 'line_start': start if total else 0, 'line_end': actual_end, 'total_lines': total, 'truncated': truncated})\n"
-        "        if method == 'add_file':\n"
+        "            # Format with line numbers (cat -n style)\n"
+        "            formatted=''\n"
+        "            if selected:\n"
+        "                sel_lines=selected.splitlines(keepends=True)\n"
+        "                width=max(4, len(str(start + len(sel_lines) - 1)))\n"
+        "                for i, line in enumerate(sel_lines):\n"
+        "                    num = start + i\n"
+        "                    if line.endswith('\\n'): formatted += f'{num:>{width}}\\t{line[:-1]}\\n'\n"
+        "                    elif line.endswith('\\r\\n'): formatted += f'{num:>{width}}\\t{line[:-2]}\\r\\n'\n"
+        "                    else: formatted += f'{num:>{width}}\\t{line}'\n"
+        "            if truncated and total > actual_end:\n"
+        "                remaining = total - actual_end\n"
+        "                formatted = formatted.rstrip('\\n\\r') + f'\\n... [truncated, {remaining} lines remaining]\\n'\n"
+        "            return ok({'content': formatted, 'encoding': enc, 'newline': nl, 'line_start': start if total else 0, 'line_end': actual_end, 'total_lines': total, 'truncated': truncated})\n"
+        "        if method == 'write':\n"
         "            p=Path(params['path']); content=params.get('content',''); newline=params.get('newline','lf')\n"
-        "            if p.exists(): return fail('file exists')\n"
         "            p.parent.mkdir(parents=True, exist_ok=True); write_text(p, content, 'utf-8', newline)\n"
         "            return ok({'status':'ok','encoding':'utf-8','newline':newline})\n"
         "        if method == 'update':\n"
         "            p=Path(params['path']); old=params.get('old_string',''); new=params.get('new_string','')\n"
         "            text, enc, nl = read_text(p); count=text.count(old)\n"
-        "            if count == 0: return fail('not found')\n"
+        "            if count == 0:\n"
+        "                lines=text.splitlines()\n"
+        "                scored=[(l, sum(1 for a,b in zip(old,l) if a==b)/max(len(old),len(l),1)) for l in lines]\n"
+        "                scored.sort(key=lambda x: x[1], reverse=True)\n"
+        "                hints=[l[:120] for l,r in scored[:3] if r > 0.3]\n"
+        "                msg='not found'\n"
+        "                if hints: msg+='\\nMost similar lines in the file:\\n'+'\\n'.join('  > '+h for h in hints)\n"
+        "                return fail(msg)\n"
         "            if count > 1: return fail(f'appears {count} times')\n"
         "            write_text(p, text.replace(old,new,1), enc, nl)\n"
         "            return ok({'status':'ok','encoding':enc,'newline':nl})\n"
         "        if method == 'search_code':\n"
-        "            root=Path(params['root']); query=params['query']; limit=int(params['max_results']); matches=[]; truncated=False; binary_skipped=0\n"
-        "            pattern=re.compile(query); excluded={'.git','.venv','venv','node_modules','build','dist','.tox'}\n"
+        "            root=Path(params['root']); pat=params['pattern']; limit=int(params.get('head_limit', 250)); matches=[]; truncated=False; binary_skipped=0\n"
+        "            ignore_case=params.get('ignore_case', False); glob_pat=params.get('glob')\n"
+        "            ctx_before=max(0, int(params.get('context_before', 0))); ctx_after=max(0, int(params.get('context_after', 0)))\n"
+        "            ctx_around=max(0, int(params.get('context_around', 0))); has_context=ctx_before>0 or ctx_after>0 or ctx_around>0\n"
+        "            flags=re.IGNORECASE if ignore_case else 0; compiled=re.compile(pat, flags)\n"
+        "            excluded={'.git','.venv','venv','node_modules','build','dist','.tox','__pycache__','.pytest_cache'}\n"
+        "            def _glob_ok(rel_path, gpat):\n"
+        "                if gpat is None or gpat == '**/*': return True\n"
+        "                parts=gpat.split('/'); rparts=[]; prev_ds=False\n"
+        "                for pt in parts:\n"
+        "                    if pt == '**':\n"
+        "                        if rparts: rparts.append('/')\n"
+        "                        rparts.append(r'(?:[^/]+/)*'); prev_ds=True\n"
+        "                    else:\n"
+        "                        e=re.escape(pt); e=e.replace(r'\\\\*', '[^/]*'); e=e.replace(r'\\\\?', '[^/]')\n"
+        "                        if rparts and not prev_ds: rparts.append('/')\n"
+        "                        rparts.append(e); prev_ds=False\n"
+        "                return bool(re.match('^'+''.join(rparts)+'$', rel_path))\n"
         "            for path in sorted(p for p in root.rglob('*') if p.is_file() and not any(part in excluded for part in p.relative_to(root).parts)):\n"
+        "                if glob_pat:\n"
+        "                    rel=path.relative_to(root).as_posix()\n"
+        "                    if not _glob_ok(rel, glob_pat): continue\n"
         "                try: text, enc, nl = read_text(path); lines=text.splitlines()\n"
         "                except BinaryFileError: binary_skipped += 1; continue\n"
         "                except TextDecodeError: continue\n"
         "                for idx,line in enumerate(lines,1):\n"
-        "                    if pattern.search(line):\n"
+        "                    if compiled.search(line):\n"
         "                        if len(matches) >= limit: truncated=True; break\n"
-        "                        matches.append({'path': path.relative_to(root).as_posix(), 'line': idx, 'text': line, 'encoding': enc, 'newline': nl})\n"
+        "                        entry={'path': path.relative_to(root).as_posix(), 'line': idx, 'text': line, 'encoding': enc, 'newline': nl}\n"
+        "                        if has_context:\n"
+        "                            bc=max(ctx_before, ctx_around); ac=max(ctx_after, ctx_around)\n"
+        "                            entry['context_before']=[{'line': i+1, 'text': lines[i]} for i in range(max(0, idx-bc-1), idx-1)]\n"
+        "                            entry['context_after']=[{'line': i+1, 'text': lines[i]} for i in range(idx, min(len(lines), idx+ac))]\n"
+        "                        matches.append(entry)\n"
         "                if truncated: break\n"
-        "            return ok({'matches': matches, 'truncated': truncated, 'binary_skipped': binary_skipped})\n"
+        "            return ok({'matches': matches, 'truncated': truncated, 'binary_skipped': binary_skipped, 'files_searched': 0})\n"
         "    except Exception as exc:\n"
         "        return fail(str(exc))\n"
         "    return fail(f'unknown method: {method}')\n"
@@ -250,8 +312,8 @@ class ContainerToolExecutor:
 
     def read_file(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
         try:
-            path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
-            bounds = _line_bounds(tool_input)
+            path = _repo_file_path(self._repo_path, str(tool_input.get("file_path", "")))
+            bounds = _parse_bounds(tool_input)
             output = self._helper_request("read_file", {"path": path, "bounds": bounds})
             if output is not None:
                 if output.get("line_start") and (bounds is not None or output.get("truncated")):
@@ -270,15 +332,28 @@ class ContainerToolExecutor:
                 "lines=text.splitlines(keepends=True)\n"
                 "total=len(text.splitlines())\n"
                 "if start is None:\n"
-                "    start=1; end=min(1000, max(total, 1))\n"
-                "selected=''.join(lines[start-1:end])\n"
+                "    start=1; end=min(200, max(total, 1))\n"
                 "actual_end=min(end, total) if total else 0\n"
-                "truncated=(False if total == 0 else start > 1 or end < total)\n"
+                "selected=''.join(lines[start-1:actual_end])\n"
+                "truncated=(False if total == 0 else start > 1 or actual_end < total)\n"
                 "if len(selected) > 50000:\n"
                 "    selected=selected[:50000]\n"
                 "    actual_end=min(total, start + max(1, len(selected.splitlines())) - 1)\n"
                 "    truncated=True\n"
-                "payload={'content': selected, 'encoding': enc, 'newline': nl, 'line_start': start if total else 0, 'line_end': actual_end, 'total_lines': total, 'truncated': truncated}\n"
+                "# Format with line numbers (cat -n style)\n"
+                "formatted=''\n"
+                "if selected:\n"
+                "    sel_lines=selected.splitlines(keepends=True)\n"
+                "    width=max(4, len(str(start + len(sel_lines) - 1)))\n"
+                "    for i, line in enumerate(sel_lines):\n"
+                "        num = start + i\n"
+                "        if line.endswith('\\\\n'): formatted += f'{num:>{width}}\\\\t{line[:-1]}\\\\n'\n"
+                "        elif line.endswith('\\\\r\\\\n'): formatted += f'{num:>{width}}\\\\t{line[:-2]}\\\\r\\\\n'\n"
+                "        else: formatted += f'{num:>{width}}\\\\t{line}'\n"
+                "if truncated and total > actual_end:\n"
+                "    remaining = total - actual_end\n"
+                "    formatted = formatted.rstrip('\\\\n\\\\r') + f'\\\\n... [truncated, {remaining} lines remaining]\\\\n'\n"
+                "payload={'content': formatted, 'encoding': enc, 'newline': nl, 'line_start': start if total else 0, 'line_end': actual_end, 'total_lines': total, 'truncated': truncated}\n"
                 "print(json.dumps(payload, ensure_ascii=False))\n"
             )
             start_arg = "" if bounds is None else str(bounds[0])
@@ -303,38 +378,35 @@ class ContainerToolExecutor:
 
     def apply_patch(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
         patch_type = tool_input.get("type", "")
-        if patch_type not in ("add_file", "update", "move"):
+        if patch_type not in ("write", "update"):
             return ToolExecutionResult(
                 ToolName.APPLY_PATCH,
                 Outcome.REJECTED,
-                f"patch type must be add_file, update, or move, got: {patch_type}",
+                f"type must be write or update, got: {patch_type}",
             )
 
-        if patch_type == "add_file":
+        if patch_type == "write":
             content = tool_input.get("content", "")
             if not isinstance(content, str):
-                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "add_file requires string content")
+                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "write requires string content")
             try:
-                path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
+                path = _repo_file_path(self._repo_path, str(tool_input.get("file_path", "")))
                 relative_path = posixpath.relpath(path, self._repo_path)
                 newline = str(tool_input.get("newline", "lf"))
                 if newline not in {"lf", "crlf", "cr", "none"}:
                     newline = "lf"
-                output = self._helper_request("add_file", {"path": path, "content": content, "newline": newline})
+                output = self._helper_request("write", {"path": path, "content": content, "newline": newline})
                 if output is not None:
                     return ToolExecutionResult(
                         ToolName.APPLY_PATCH,
                         Outcome.OK,
-                        f"created {relative_path}",
+                        f"wrote {relative_path}",
                         output={"encoding": output.get("encoding", "utf-8"), "newline": output.get("newline", "lf")},
                         modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
                     )
                 script = _container_textio_prelude() + (
                     "p=Path(sys.argv[1])\n"
                     "newline=sys.argv[2]\n"
-                    "if p.exists():\n"
-                    "    print(json.dumps({'error':'file exists'}))\n"
-                    "    sys.exit(1)\n"
                     "p.parent.mkdir(parents=True, exist_ok=True)\n"
                     "write_text(p, sys.stdin.read(), 'utf-8', newline)\n"
                     "print(json.dumps({'status':'ok','encoding':'utf-8','newline':newline}))\n"
@@ -354,112 +426,102 @@ class ContainerToolExecutor:
             return ToolExecutionResult(
                 ToolName.APPLY_PATCH,
                 Outcome.OK,
-                f"created {relative_path}",
+                f"wrote {relative_path}",
                 output={"encoding": output.get("encoding", "utf-8"), "newline": output.get("newline", "lf")},
                 modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
             )
 
-        if patch_type == "update":
-            old_string = tool_input.get("old_string", "")
-            new_string = tool_input.get("new_string", "")
-            if not old_string:
-                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires non-empty old_string")
-            if not isinstance(new_string, str):
-                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires new_string")
-            try:
-                path = _repo_file_path(self._repo_path, str(tool_input.get("path", "")))
-                relative_path = posixpath.relpath(path, self._repo_path)
-                output = self._helper_request("update", {"path": path, "old_string": old_string, "new_string": new_string})
-                if output is not None:
-                    return ToolExecutionResult(
-                        ToolName.APPLY_PATCH,
-                        Outcome.OK,
-                        f"applied edit to {relative_path}",
-                        output={"encoding": output.get("encoding", "utf-8"), "newline": output.get("newline", "lf")},
-                        modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
-                    )
-                script = _container_textio_prelude() + (
-                    "p=Path(sys.argv[1])\n"
-                    "old=sys.argv[2]\n"
-                    "new=sys.argv[3]\n"
-                    "try:\n"
-                    "    content, enc, nl = read_text(p)\n"
-                    "except (BinaryFileError, TextDecodeError) as exc:\n"
-                    "    print(json.dumps({'error': str(exc)}))\n"
-                    "    sys.exit(1)\n"
-                    "count=content.count(old)\n"
-                    "if count == 0:\n"
-                    "    print(json.dumps({'error':'not found'}))\n"
-                    "    sys.exit(1)\n"
-                    "if count > 1:\n"
-                    "    print(json.dumps({'error':f'appears {count} times'}))\n"
-                    "    sys.exit(1)\n"
-                    "new_content=content.replace(old,new,1)\n"
-                    "write_text(p,new_content,enc,nl)\n"
-                    "print(json.dumps({'status':'ok','encoding':enc,'newline':nl}))"
-                )
-                result = self._docker.exec(self._container_name, ["python", "-c", script, path, old_string, new_string])
-                output = json.loads(result.stdout or "{}")
-            except ValueError as exc:
-                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
-            except DockerCommandError as exc:
-                try:
-                    payload = json.loads(exc.result.stdout or "{}")
-                except json.JSONDecodeError:
-                    return _docker_error(ToolName.APPLY_PATCH, exc)
-                return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, str(payload.get("error") or exc))
-            except (DockerCommandTimeout, json.JSONDecodeError) as exc:
-                return _docker_error(ToolName.APPLY_PATCH, exc)
-            return ToolExecutionResult(
-                ToolName.APPLY_PATCH,
-                Outcome.OK,
-                f"applied edit to {relative_path}",
-                output={"encoding": output.get("encoding", "utf-8"), "newline": output.get("newline", "lf")},
-                modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
-            )
-
-        old_path_str = tool_input.get("old_path", "")
-        new_path_str = tool_input.get("new_path", "")
-        if not old_path_str or not new_path_str:
-            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "move requires old_path and new_path")
+        # patch_type == "update"
+        old_string = tool_input.get("old_string", "")
+        new_string = tool_input.get("new_string", "")
+        if not old_string:
+            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires non-empty old_string")
+        if not isinstance(new_string, str):
+            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires new_string")
         try:
-            old_path = _repo_file_path(self._repo_path, old_path_str)
-            new_path = _repo_file_path(self._repo_path, new_path_str)
-            old_relative = posixpath.relpath(old_path, self._repo_path)
-            new_relative = posixpath.relpath(new_path, self._repo_path)
-            script = (
-                "from pathlib import Path; import sys; "
-                "old=Path(sys.argv[1]); new=Path(sys.argv[2]); "
-                "if not old.exists(): print('src missing'); sys.exit(1)\n"
-                "if new.exists(): print('dst exists'); sys.exit(1)\n"
-                "new.parent.mkdir(parents=True, exist_ok=True); old.rename(new)"
+            path = _repo_file_path(self._repo_path, str(tool_input.get("file_path", "")))
+            relative_path = posixpath.relpath(path, self._repo_path)
+            output = self._helper_request("update", {"path": path, "old_string": old_string, "new_string": new_string})
+            if output is not None:
+                return ToolExecutionResult(
+                    ToolName.APPLY_PATCH,
+                    Outcome.OK,
+                    f"applied edit to {relative_path}",
+                    output={"encoding": output.get("encoding", "utf-8"), "newline": output.get("newline", "lf")},
+                    modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
+                )
+            script = _container_textio_prelude() + (
+                "p=Path(sys.argv[1])\n"
+                "old=sys.argv[2]\n"
+                "new=sys.argv[3]\n"
+                "try:\n"
+                "    content, enc, nl = read_text(p)\n"
+                "except (BinaryFileError, TextDecodeError) as exc:\n"
+                "    print(json.dumps({'error': str(exc)}))\n"
+                "    sys.exit(1)\n"
+                "count=content.count(old)\n"
+                "if count == 0:\n"
+                "    lines=content.splitlines()\n"
+                "    scored=[(l, sum(1 for a,b in zip(old,l) if a==b)/max(len(old),len(l),1)) for l in lines]\n"
+                "    scored.sort(key=lambda x: x[1], reverse=True)\n"
+                "    hints=[l[:120] for l,r in scored[:3] if r > 0.3]\n"
+                "    msg='not found'\n"
+                "    if hints: msg+='\\nMost similar lines in the file:\\n'+'\\n'.join('  > '+h for h in hints)\n"
+                "    print(json.dumps({'error':msg}))\n"
+                "    sys.exit(1)\n"
+                "if count > 1:\n"
+                "    print(json.dumps({'error':f'appears {count} times'}))\n"
+                "    sys.exit(1)\n"
+                "new_content=content.replace(old,new,1)\n"
+                "write_text(p,new_content,enc,nl)\n"
+                "print(json.dumps({'status':'ok','encoding':enc,'newline':nl}))"
             )
-            self._docker.exec(self._container_name, ["python", "-c", script, old_path, new_path])
+            result = self._docker.exec(self._container_name, ["python", "-c", script, path, old_string, new_string])
+            output = json.loads(result.stdout or "{}")
         except ValueError as exc:
             return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
-        except (DockerCommandError, DockerCommandTimeout) as exc:
+        except DockerCommandError as exc:
+            try:
+                payload = json.loads(exc.result.stdout or "{}")
+            except json.JSONDecodeError:
+                return _docker_error(ToolName.APPLY_PATCH, exc)
+            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, str(payload.get("error") or exc))
+        except (DockerCommandTimeout, json.JSONDecodeError) as exc:
             return _docker_error(ToolName.APPLY_PATCH, exc)
         return ToolExecutionResult(
             ToolName.APPLY_PATCH,
             Outcome.OK,
-            f"moved {old_relative} -> {new_relative}",
-            modifications=[
-                FileModification(path=old_relative, write_status=Outcome.OK),
-                FileModification(path=new_relative, write_status=Outcome.OK),
-            ],
+            f"applied edit to {relative_path}",
+            output={"encoding": output.get("encoding", "utf-8"), "newline": output.get("newline", "lf")},
+            modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
         )
 
     def search_code(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        query = str(tool_input.get("query", ""))
-        if not query:
-            return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, "query must not be empty")
-        max_results = int(tool_input.get("max_results", 20))
+        pattern = str(tool_input.get("pattern", ""))
+        if not pattern:
+            return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, "pattern must not be empty")
+        head_limit = int(tool_input.get("head_limit", 250))
+        ignore_case = bool(tool_input.get("ignore_case", False))
+        glob_pat = tool_input.get("glob") or ""
+        context_before = max(0, int(tool_input.get("context_before", 0)))
+        context_after = max(0, int(tool_input.get("context_after", 0)))
+        context_around = max(0, int(tool_input.get("context_around", 0)))
         try:
-            output = self._search_code_with_rg(query, max_results)
+            output = self._search_code_with_rg(pattern, head_limit, ignore_case, glob_pat, context_before, context_after, context_around)
             if output is None:
-                output = self._helper_request("search_code", {"root": self._repo_path, "query": query, "max_results": max_results})
+                output = self._helper_request("search_code", {
+                    "root": self._repo_path, "pattern": pattern, "head_limit": head_limit,
+                    "ignore_case": ignore_case, "glob": glob_pat or None,
+                    "context_before": context_before, "context_after": context_after,
+                    "context_around": context_around,
+                })
             if output is None:
-                result = self._docker.exec(self._container_name, ["python", "-c", _container_python_search_script(), self._repo_path, query, str(max_results)])
+                result = self._docker.exec(self._container_name, [
+                    "python", "-c", _container_python_search_script(),
+                    self._repo_path, pattern, str(head_limit),
+                    "1" if ignore_case else "0", glob_pat,
+                    str(context_before), str(context_after), str(context_around),
+                ])
                 output = json.loads(result.stdout or '{"matches": [], "truncated": false, "binary_skipped": 0}')
             if isinstance(output, dict) and output.get("error"):
                 return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, str(output["error"]))
@@ -472,7 +534,10 @@ class ContainerToolExecutor:
             output=output,
         )
 
-    def _search_code_with_rg(self, query: str, max_results: int) -> dict[str, Any] | None:
+    def _search_code_with_rg(
+        self, pattern: str, head_limit: int, ignore_case: bool, glob_pat: str,
+        context_before: int, context_after: int, context_around: int,
+    ) -> dict[str, Any] | None:
         try:
             probe = self._docker.exec(self._container_name, ["sh", "-lc", "command -v rg >/dev/null 2>&1"])
             if probe.returncode != 0:
@@ -482,31 +547,31 @@ class ContainerToolExecutor:
                 "--json",
                 "--line-number",
                 "--max-count",
-                str(max_results),
-                "--glob",
-                "!.git/**",
-                "--glob",
-                "!.venv/**",
-                "--glob",
-                "!venv/**",
-                "--glob",
-                "!node_modules/**",
-                "--glob",
-                "!build/**",
-                "--glob",
-                "!dist/**",
-                "--glob",
-                "!.tox/**",
-                query,
-                self._repo_path,
+                str(head_limit),
             ]
+            if ignore_case:
+                command.append("--ignore-case")
+            if context_before > 0:
+                command.extend(["-B", str(context_before)])
+            if context_after > 0:
+                command.extend(["-A", str(context_after)])
+            if context_around > 0:
+                command.extend(["-C", str(context_around)])
+            # Exclude directories
+            for d in [".git", ".venv", "venv", "node_modules", "build", "dist", ".tox", "__pycache__", ".pytest_cache"]:
+                command.extend(["--glob", f"!{d}/**"])
+            # User glob
+            if glob_pat:
+                command.extend(["--glob", glob_pat])
+            command.append(pattern)
+            command.append(self._repo_path)
             result = self._docker.exec(self._container_name, command)
         except (DockerCommandError, DockerCommandTimeout):
             return None
 
         matches: list[dict[str, Any]] = []
         for line in result.stdout.splitlines():
-            if len(matches) >= max_results:
+            if len(matches) >= head_limit:
                 break
             try:
                 event = json.loads(line)
@@ -528,24 +593,32 @@ class ContainerToolExecutor:
                     "newline": "unknown",
                 }
             )
-        return {"matches": matches, "truncated": len(matches) >= max_results, "binary_skipped": 0, "engine": "rg"}
+        return {"matches": matches, "truncated": len(matches) >= head_limit, "binary_skipped": 0, "engine": "rg"}
 
     def run_tests(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
         command = str(tool_input.get("command", ""))
         started = time.monotonic()
         policy = validate_self_test_command(command)
-        use_shell = command in self._allowed_test_commands and not policy.allowed
-        if not use_shell and not policy.allowed:
+        # Official eval scripts (from validation.allowed_commands) contain
+        # multi-line shell with "set -euxo pipefail" and won't pass policy.
+        # They still need shell=True execution.
+        is_eval = command in self._allowed_test_commands
+        if policy.allowed:
+            exec_command = list(policy.argv)
+            workdir = self._repo_path
+        elif is_eval:
+            exec_command = ["sh", "-lc", f"cd {self._repo_path} && {command}"]
+            workdir = None
+        else:
             output_summary = f"command is not allowed: {policy.reason}"
             test_result = TestResult(command, TestStatus.REJECTED, 0.0, output_summary=output_summary)
             return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, output_summary, test_result=test_result)
-        exec_command = ["sh", "-lc", f"cd {self._repo_path} && {command}"] if use_shell else list(policy.argv)
         try:
             result = self._docker.exec(
                 self._container_name,
                 exec_command,
                 timeout_seconds=self._test_timeout_seconds,
-                workdir=None if use_shell else self._repo_path,
+                workdir=workdir,
             )
         except DockerCommandTimeout:
             duration = time.monotonic() - started

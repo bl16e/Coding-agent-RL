@@ -10,11 +10,10 @@ from coding_agent.tools.result import ToolExecutionResult
 from coding_agent.workspace import WorkspacePathError, resolve_workspace_path, to_workspace_relative
 
 
-PATCH_TYPES = ("add_file", "update", "move")
+VALID_TYPES = ("write", "update")
 
 
 def _generate_diff(path: str, old_text: str, new_text: str) -> str:
-    """为单文件更新生成 unified diff，写入工具输出供轨迹审计。"""
     old_lines = old_text.splitlines(keepends=True)
     new_lines = new_text.splitlines(keepends=True)
     diff = difflib.unified_diff(
@@ -24,51 +23,102 @@ def _generate_diff(path: str, old_text: str, new_text: str) -> str:
     return "".join(diff)
 
 
-def _apply_add_file(workspace: str | Path, path: Path, relative_path: str, tool_input: dict[str, Any]) -> ToolExecutionResult:
-    """创建新文件，拒绝覆盖已有路径。"""
+def _find_similar_lines(content: str, target: str, *, max_hints: int = 3) -> list[str]:
+    """Return lines from *content* that are most similar to *target*.
+
+    Used to give the model actionable hints when ``old_string`` isn't found.
+    """
+    lines = content.splitlines()
+    if not lines or not target.strip():
+        return []
+    scored = [
+        (line, difflib.SequenceMatcher(None, target, line).ratio())
+        for line in lines
+    ]
+    scored.sort(key=lambda item: item[1], reverse=True)
+    hints: list[str] = []
+    for line, ratio in scored:
+        if ratio < 0.3:
+            break
+        hints.append(line[:120])
+        if len(hints) >= max_hints:
+            break
+    return hints
+
+
+def _apply_write(
+    workspace: str | Path,
+    path: Path,
+    relative_path: str,
+    tool_input: dict[str, Any],
+) -> ToolExecutionResult:
+    """Create or overwrite a file in the workspace."""
     if "content" not in tool_input or not isinstance(tool_input.get("content"), str):
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "add_file requires string content")
-    if path.exists():
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, f"file already exists: {relative_path}")
+        return ToolExecutionResult(
+            ToolName.APPLY_PATCH, Outcome.REJECTED, "write requires string content",
+        )
+    existed = path.exists()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         write_text_file(path, tool_input["content"], encoding="utf-8", newline="lf")
     except OSError as exc:
         return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.ERROR, str(exc))
+    summary = f"{'overwrote' if existed else 'created'} {relative_path}"
     return ToolExecutionResult(
-        ToolName.APPLY_PATCH, Outcome.OK, f"created {relative_path}",
+        ToolName.APPLY_PATCH, Outcome.OK, summary,
         output={"encoding": "utf-8", "newline": "lf"},
         modifications=[FileModification(path=relative_path, write_status=Outcome.OK)],
     )
 
 
-def _apply_update(workspace: str | Path, path: Path, relative_path: str, tool_input: dict[str, Any]) -> ToolExecutionResult:
-    """用精确字符串替换更新文件。
+def _apply_update(
+    workspace: str | Path,
+    path: Path,
+    relative_path: str,
+    tool_input: dict[str, Any],
+) -> ToolExecutionResult:
+    """Replace *old_string* with *new_string* via exact match.
 
-    old_string 必须非空且只出现一次。这个约束牺牲一点便利性，但能显著降低模型把
-    相似代码块误改掉的风险。
+    ``old_string`` must be non-empty and appear exactly once in the file.
+    When the match fails, the error includes the closest-looking lines from
+    the file so the model can adjust indentation or surrounding context.
     """
     old_string = tool_input.get("old_string", "")
     new_string = tool_input.get("new_string", "")
     if not old_string:
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires non-empty old_string")
+        return ToolExecutionResult(
+            ToolName.APPLY_PATCH, Outcome.REJECTED,
+            "update requires non-empty old_string",
+        )
     if not isinstance(new_string, str):
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires new_string")
+        return ToolExecutionResult(
+            ToolName.APPLY_PATCH, Outcome.REJECTED, "update requires new_string",
+        )
     if not path.is_file():
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"file not found: {relative_path}")
+        return ToolExecutionResult(
+            ToolName.APPLY_PATCH, Outcome.FAILED, f"file not found: {relative_path}",
+        )
     try:
         text_file = read_text_file(path)
     except (BinaryFileError, TextDecodeError) as exc:
         return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, str(exc))
+
     content = text_file.content
     count = content.count(old_string)
     if count == 0:
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"old_string not found in {relative_path}")
+        hints = _find_similar_lines(content, old_string)
+        msg = f"old_string not found in {relative_path}"
+        if hints:
+            quoted = "\n".join(f"  > {h}" for h in hints)
+            msg += f"\nMost similar lines in the file:\n{quoted}"
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, msg)
     if count > 1:
         return ToolExecutionResult(
             ToolName.APPLY_PATCH, Outcome.FAILED,
-            f"old_string appears {count} times in {relative_path}. Include more surrounding context.",
+            f"old_string appears {count} times in {relative_path}. "
+            "Include more surrounding context to make it unique.",
         )
+
     new_content = content.replace(old_string, new_string, 1)
     diff = _generate_diff(relative_path, content, new_content)
     try:
@@ -82,71 +132,38 @@ def _apply_update(workspace: str | Path, path: Path, relative_path: str, tool_in
     )
 
 
-def _apply_move(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecutionResult:
-    """移动工作区内文件，拒绝覆盖目标路径。"""
-    old_path_str = tool_input.get("old_path", "")
-    new_path_str = tool_input.get("new_path", "")
-    if not old_path_str or not new_path_str:
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, "move requires old_path and new_path")
-    try:
-        old_path = resolve_workspace_path(workspace, old_path_str)
-        old_relative = to_workspace_relative(workspace, old_path)
-        new_path = resolve_workspace_path(workspace, new_path_str)
-        new_relative = to_workspace_relative(workspace, new_path)
-    except WorkspacePathError as exc:
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
-    if not old_path.exists():
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"source not found: {old_relative}")
-    if new_path.exists():
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.FAILED, f"destination exists: {new_relative}")
-    try:
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        old_path.rename(new_path)
-    except OSError as exc:
-        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.ERROR, str(exc))
-    return ToolExecutionResult(
-        ToolName.APPLY_PATCH, Outcome.OK, f"moved {old_relative} -> {new_relative}",
-        modifications=[
-            FileModification(path=old_relative, write_status=Outcome.OK),
-            FileModification(path=new_relative, write_status=Outcome.OK),
-        ],
-    )
-
-
 def apply_patch(workspace: str | Path, tool_input: dict[str, Any]) -> ToolExecutionResult:
-    """统一的结构化文件修改工具。
+    """Structured file modification tool.
 
-    根据 ``type`` 参数分发：
+    Two operations:
 
-    - ``add_file``：在 ``path`` 创建新文件。
-    - ``update``：把已有文件中的精确 ``old_string`` 替换为 ``new_string``。
-    - ``move``：把 ``old_path`` 重命名为 ``new_path``。
+    - ``write``: create or overwrite ``file_path`` with ``content``.
+    - ``update``: replace ``old_string`` with ``new_string`` in ``file_path``
+      via exact match. ``old_string`` must appear exactly once.
 
-    路径解析统一走 workspace.py，确保模型无法通过相对路径逃出任务工作区。
+    All paths are validated through workspace.py so the model cannot escape the
+    task workspace.
     """
 
     patch_type = tool_input.get("type", "")
-    if patch_type not in PATCH_TYPES:
+    if patch_type not in VALID_TYPES:
         return ToolExecutionResult(
             ToolName.APPLY_PATCH, Outcome.REJECTED,
-            f"patch type must be one of {', '.join(PATCH_TYPES)}, got: {patch_type}",
+            f"type must be one of {', '.join(VALID_TYPES)}, got: {patch_type}",
         )
 
-    if patch_type == "add_file":
+    if patch_type == "write":
         try:
-            path = resolve_workspace_path(workspace, tool_input.get("path", ""))
+            path = resolve_workspace_path(workspace, tool_input.get("file_path", ""))
             relative_path = to_workspace_relative(workspace, path)
         except WorkspacePathError as exc:
             return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
-        return _apply_add_file(workspace, path, relative_path, tool_input)
+        return _apply_write(workspace, path, relative_path, tool_input)
 
-    if patch_type == "update":
-        try:
-            path = resolve_workspace_path(workspace, tool_input.get("path", ""))
-            relative_path = to_workspace_relative(workspace, path)
-        except WorkspacePathError as exc:
-            return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
-        return _apply_update(workspace, path, relative_path, tool_input)
-
-    # 剩下的合法类型只能是 move。
-    return _apply_move(workspace, tool_input)
+    # patch_type == "update"
+    try:
+        path = resolve_workspace_path(workspace, tool_input.get("file_path", ""))
+        relative_path = to_workspace_relative(workspace, path)
+    except WorkspacePathError as exc:
+        return ToolExecutionResult(ToolName.APPLY_PATCH, Outcome.REJECTED, str(exc))
+    return _apply_update(workspace, path, relative_path, tool_input)

@@ -22,9 +22,9 @@ def test_agent_records_only_allowed_tool_types(tmp_path: Path):
     )
     backend = MockBackend(
         [
-            AgentAction(action=AgentActionType.READ_FILE, tool_input={"path": "app.py"}),
-            AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={"type": "update", "path": "app.py", "old_string": "old", "new_string": "new"}),
-            AgentAction(action=AgentActionType.SEARCH_CODE, tool_input={"query": "new"}),
+            AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "app.py"}),
+            AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={"type": "update", "file_path": "app.py", "old_string": "old", "new_string": "new"}),
+            AgentAction(action=AgentActionType.SEARCH_CODE, tool_input={"pattern": "new"}),
             AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": allowed}),
             AgentAction(action=AgentActionType.FINAL, final_status="solved"),
         ]

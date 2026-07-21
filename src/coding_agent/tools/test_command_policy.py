@@ -14,45 +14,98 @@ class CommandPolicyResult:
 _SHELL_CONTROL_TOKENS = {"&&", "||", "|", ">", "<"}
 _SHELL_CONTROL_CHARS = (";", "|", ">", "<")
 _SHELL_CONTROL_SUBSTRINGS = ("$(", "`")
-_DANGEROUS_COMMANDS = {
-    "apt",
-    "apt-get",
-    "curl",
-    "docker",
-    "git",
-    "pip",
-    "rm",
-    "sudo",
-    "wget",
+
+# Commands that are never allowed.
+_BLOCKED_COMMANDS = {
+    "apt", "apt-get", "curl", "docker", "pip", "rm", "sudo", "wget",
 }
-_DANGEROUS_PYTHON_MODULES = {"pip"}
+
+# Read-only git subcommands that are safe to allow.
+_READONLY_GIT_SUBCOMMANDS = {
+    "diff", "status", "log", "show", "branch", "rev-parse", "config",
+}
+
+# Allowed patterns shown to the model on rejection.
+_ALLOWED_PATTERNS = (
+    "pytest ...",
+    "python -m pytest ...",
+    "./tests/runtests.py ...",
+    'python -c "..."',
+    "python path/to/diagnostic.py",
+    "git diff",
+    "git status",
+    "git log --oneline",
+)
 
 
 def validate_self_test_command(command: str) -> CommandPolicyResult:
+    """Validate a self-test / diagnostic command.
+
+    Returns a policy result with ``allowed=True`` and parsed *argv* when the
+    command passes all safety checks.  Otherwise returns ``allowed=False``
+    with a human-readable *reason*.
+    """
     command = command.strip()
     if not command:
         return CommandPolicyResult(False, "command is empty")
+
     try:
         parts = shlex.split(command, posix=True)
-    except ValueError as exc:
-        return CommandPolicyResult(False, f"command is not parseable: {exc}")
+    except ValueError:
+        # posix=True may fail on Windows paths with backslashes; retry with posix=False
+        try:
+            parts = shlex.split(command, posix=False)
+        except ValueError as exc:
+            return CommandPolicyResult(False, f"command is not parseable: {exc}")
+
     if not parts:
         return CommandPolicyResult(False, "command is empty")
-    python_code_index = 2 if len(parts) >= 3 and parts[0] in {"python", "python3"} and parts[1] == "-c" else None
+
+    # Identify python -c code argument so shell controls inside it are ignored.
+    python_code_index = (
+        2 if len(parts) >= 3 and parts[0] in {"python", "python3"} and parts[1] == "-c"
+        else None
+    )
+
     shell_result = _validate_no_shell_controls(parts, skip_index=python_code_index)
     if not shell_result.allowed:
         return shell_result
 
     executable = parts[0]
-    if executable in _DANGEROUS_COMMANDS:
+
+    # Block dangerous commands.
+    if executable in _BLOCKED_COMMANDS:
         return CommandPolicyResult(False, f"{executable} is not allowed")
+
+    # --- pytest and test runners ---
     if executable in {"pytest", "./pytest"}:
         return CommandPolicyResult(True, argv=tuple(parts))
     if executable == "./tests/runtests.py":
         return CommandPolicyResult(True, argv=tuple(parts))
-    if executable not in {"python", "python3"}:
-        return CommandPolicyResult(False, "only test and Python diagnostic commands are allowed")
-    return _validate_python_command(parts)
+
+    # --- git (read-only subcommands) ---
+    if executable == "git":
+        if len(parts) < 2:
+            return CommandPolicyResult(False, "git requires a subcommand")
+        sub = parts[1]
+        if sub in _READONLY_GIT_SUBCOMMANDS:
+            return CommandPolicyResult(True, argv=tuple(parts))
+        return CommandPolicyResult(
+            False,
+            f"git {sub} is not allowed. Read-only git subcommands: "
+            + ", ".join(sorted(_READONLY_GIT_SUBCOMMANDS)),
+        )
+
+    # --- python / python3 ---
+    if executable in {"python", "python3"}:
+        return _validate_python_command(parts)
+
+    return CommandPolicyResult(
+        False,
+        f"command not allowed: {executable}. "
+        "Allowed patterns: pytest, python -m pytest, python -c, "
+        "python <script>.py, git diff/status/log",
+    )
 
 
 def _validate_no_shell_controls(parts: list[str], *, skip_index: int | None = None) -> CommandPolicyResult:
@@ -71,16 +124,21 @@ def _validate_no_shell_controls(parts: list[str], *, skip_index: int | None = No
 def _validate_python_command(parts: list[str]) -> CommandPolicyResult:
     if len(parts) >= 3 and parts[1] == "-m":
         module = parts[2]
-        if module in _DANGEROUS_PYTHON_MODULES:
+        if module in {"pip"}:
             return CommandPolicyResult(False, f"python -m {module} is not allowed")
         if module == "pytest":
             return CommandPolicyResult(True, argv=tuple(parts))
         return CommandPolicyResult(False, "only python -m pytest is allowed")
+
     if len(parts) == 3 and parts[1] == "-c":
         return CommandPolicyResult(True, argv=tuple(parts))
+
     if len(parts) >= 2 and _is_repo_relative_python_script(parts[1]):
         return CommandPolicyResult(True, argv=tuple(parts))
-    return CommandPolicyResult(False, "python command must be -m pytest, -c, or a repo-relative .py script")
+
+    return CommandPolicyResult(
+        False, "python command must be -m pytest, -c, or a repo-relative .py script"
+    )
 
 
 def _is_repo_relative_python_script(path: str) -> bool:

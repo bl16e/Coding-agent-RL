@@ -49,7 +49,7 @@ def test_agent_persists_reasoning_intent_and_tool_selection_reason(tmp_path: Pat
 def test_summary_trajectory_preserves_failed_apply_patch_status(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "temp_test.py").write_text("existing", encoding="utf-8")
+    (workspace / "app.py").write_text("def foo():\n    pass\n", encoding="utf-8")
     problem = tmp_path / "problem.txt"
     problem.write_text("Fix it.", encoding="utf-8")
     task = create_task_from_paths(
@@ -62,7 +62,7 @@ def test_summary_trajectory_preserves_failed_apply_patch_status(tmp_path: Path):
         [
             AgentAction(
                 action=AgentActionType.APPLY_PATCH,
-                tool_input={"type": "add_file", "path": "temp_test.py", "content": "new"},
+                tool_input={"type": "update", "file_path": "app.py", "old_string": "nope", "new_string": "yep"},
             ),
             AgentAction(action=AgentActionType.FINAL, final_status="incomplete"),
         ]
@@ -77,5 +77,5 @@ def test_summary_trajectory_preserves_failed_apply_patch_status(tmp_path: Path):
     )
 
     trajectory = json.loads((tmp_path / "run" / "trajectory.json").read_text(encoding="utf-8"))
-    assert trajectory["steps"][0]["observation"]["status"] == "rejected"
-    assert "file already exists" in trajectory["steps"][0]["observation"]["output"]
+    assert trajectory["steps"][0]["observation"]["status"] == "failed"
+    assert "not found" in trajectory["steps"][0]["observation"]["output"]

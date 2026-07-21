@@ -28,7 +28,7 @@ def test_fake_swesmith_pipeline_exports_only_resolved(tmp_path: Path, monkeypatc
                 + json.dumps(
                     {
                         "action_type": "tool_result",
-                        "tool_call": {"tool_name": "read_file", "input": {"path": "app.py"}},
+                        "tool_call": {"tool_name": "read_file", "input": {"file_path": "app.py"}},
                         "tool_result": {"output": {"content": "x"}},
                     }
                 )

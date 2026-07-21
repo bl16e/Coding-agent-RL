@@ -332,7 +332,6 @@ def run_task(
     tracker = BudgetTracker(budget)
     executor = tool_executor or LocalToolExecutor(
         workspace=task.workspace,
-        allowed_test_commands=task.allowed_test_commands,
         test_timeout_seconds=budget.test_timeout_seconds,
     )
     agent_run = AgentRun(

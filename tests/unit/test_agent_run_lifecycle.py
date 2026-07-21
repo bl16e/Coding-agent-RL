@@ -28,7 +28,7 @@ class TwoStepCapturingBackend:
     def next_action(self, messages: list[dict[str, str]]) -> AgentAction:
         self.messages_by_call.append(messages)
         if len(self.messages_by_call) == 1:
-            return AgentAction(action=AgentActionType.READ_FILE, tool_input={"path": "README.md"})
+            return AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "README.md"})
         return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
 
 
@@ -48,14 +48,14 @@ class NativeToolCallCapturingBackend:
                         "type": "function",
                         "function": {
                             "name": "read_file",
-                            "arguments": '{"path":"README.md"}',
+                            "arguments": '{"file_path":"README.md"}',
                         },
                     }
                 ],
             }
             return AgentAction(
                 action=AgentActionType.READ_FILE,
-                tool_input={"path": "README.md"},
+                tool_input={"file_path": "README.md"},
                 tool_call_id="call_read",
                 raw_message=raw_message,
             )
@@ -169,7 +169,8 @@ def test_agent_summary_classifies_self_authored_existing_and_diagnostic_self_tes
         budget=RunBudget(max_steps=5, timeout_seconds=60, test_timeout_seconds=10),
         backend=MockBackend(
             [
-                AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={"path": "tests/test_issue.py"}),
+                AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={"type": "write", "file_path": "tests/test_issue.py", "content": "test"}),
+
                 AgentAction(
                     action=AgentActionType.RUN_TESTS,
                     tool_input={"command": "python -m pytest tests/test_issue.py::test_new"},
@@ -271,7 +272,7 @@ def test_read_file_history_shows_source_text_without_json_escaping(tmp_path: Pat
         def next_action(self, messages: list[dict[str, str]]) -> AgentAction:
             self.messages_by_call.append(messages)
             if len(self.messages_by_call) == 1:
-                return AgentAction(action=AgentActionType.READ_FILE, tool_input={"path": "validators.py"})
+                return AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "validators.py"})
             return AgentAction(action=AgentActionType.FINAL, final_status="incomplete")
 
     backend = ReadValidatorsBackend()

@@ -24,12 +24,12 @@ class FakeDocker:
             self.next_stdout = None
             return DockerResult(stdout, "", 0)
         joined = " ".join(command)
-        if len(command) >= 3 and command[-1].isdigit() and not command[-2].isdigit():
+        if len(command) >= 5 and "_match_glob" in joined:
             return DockerResult(json.dumps({"matches": [{"path": "app.py", "line": 1, "text": "hello", "encoding": "utf-8", "newline": "lf"}], "truncated": False, "binary_skipped": 0}), "", 0)
         if len(command) >= 2 and command[-2:] == ["", ""]:
-            return DockerResult(json.dumps({"content": "hello\n", "encoding": "utf-8", "newline": "lf", "line_start": 1, "line_end": 1, "total_lines": 1, "truncated": False}), "", 0)
+            return DockerResult(json.dumps({"content": "   1\thello\n", "encoding": "utf-8", "newline": "lf", "line_start": 1, "line_end": 1, "total_lines": 1, "truncated": False}), "", 0)
         if "splitlines" in joined:
-            return DockerResult(json.dumps({"content": "two\nthree\n", "encoding": "utf-8", "newline": "lf", "line_start": 2, "line_end": 3, "total_lines": 4, "truncated": False}), "", 0)
+            return DockerResult(json.dumps({"content": "   2\ttwo\n   3\tthree\n", "encoding": "utf-8", "newline": "lf", "line_start": 2, "line_end": 3, "total_lines": 4, "truncated": False}), "", 0)
         if "write_text" in joined:
             return DockerResult(json.dumps({"status": "ok", "encoding": "utf-8", "newline": "lf"}), "", 0)
         return DockerResult("tests passed", "", 0)
@@ -62,10 +62,10 @@ def test_container_executor_reads_file_from_repo_path():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"path": "README.md"})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md"})
 
     assert result.status is Outcome.OK
-    assert result.output["content"] == "hello\n"
+    assert result.output["content"] == "   1\thello\n"
     assert result.output["encoding"] == "utf-8"
     assert result.output["newline"] == "lf"
     assert "/workspace/repo/README.md" in docker.calls[0][1]
@@ -75,7 +75,7 @@ def test_container_executor_prefers_json_rpc_helper_for_read_file():
     docker = FakeDocker()
     helper = FakeHelper(
         {
-            "content": "hello\n",
+            "content": "   1\thello\n",
             "encoding": "utf-8",
             "newline": "lf",
             "line_start": 1,
@@ -93,10 +93,10 @@ def test_container_executor_prefers_json_rpc_helper_for_read_file():
         helper=helper,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"path": "README.md"})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md"})
 
     assert result.status is Outcome.OK
-    assert result.output["content"] == "hello\n"
+    assert result.output["content"] == "   1\thello\n"
     assert helper.calls == [("read_file", {"path": "/workspace/repo/README.md", "bounds": None})]
     assert docker.calls == []
 
@@ -113,17 +113,17 @@ def test_container_executor_falls_back_when_json_rpc_helper_fails():
         helper=helper,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"path": "README.md"})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md"})
 
     assert result.status is Outcome.OK
-    assert result.output["content"] == "hello\n"
+    assert result.output["content"] == "   1\thello\n"
     assert len(docker.calls) == 1
 
 
 def test_container_executor_reads_gbk_metadata_from_helper_payload():
     docker = FakeDocker()
     docker.next_stdout = json.dumps(
-        {"content": "中文\n", "encoding": "gbk", "newline": "lf", "line_start": 1, "line_end": 1, "total_lines": 1, "truncated": False}
+        {"content": "   1\t中文\n", "encoding": "gbk", "newline": "lf", "line_start": 1, "line_end": 1, "total_lines": 1, "truncated": False}
     )
     executor = ContainerToolExecutor(
         docker=docker,
@@ -133,10 +133,10 @@ def test_container_executor_reads_gbk_metadata_from_helper_payload():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"path": "legacy.txt"})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "legacy.txt"})
 
     assert result.status is Outcome.OK
-    assert result.output["content"] == "中文\n"
+    assert result.output["content"] == "   1\t中文\n"
     assert result.output["encoding"] == "gbk"
 
 
@@ -150,10 +150,10 @@ def test_container_executor_reads_requested_line_range():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"path": "README.md", "line": 2, "end_line": 3})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md", "offset": 2, "limit": 2})
 
     assert result.status is Outcome.OK
-    assert result.output["content"] == "two\nthree\n"
+    assert result.output["content"] == "   2\ttwo\n   3\tthree\n"
     assert "lines 2-3" in result.output_summary
 
 
@@ -167,7 +167,7 @@ def test_container_read_file_script_limits_default_characters():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"path": "README.md"})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md"})
 
     assert result.status is Outcome.OK
     script = docker.calls[0][1][2]
@@ -184,14 +184,14 @@ def test_container_executor_treats_offset_limit_as_line_window():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"path": "README.md", "offset": 2, "limit": 2})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md", "offset": 2, "limit": 2})
 
     assert result.status is Outcome.OK
-    assert result.output["content"] == "two\nthree\n"
+    assert result.output["content"] == "   2\ttwo\n   3\tthree\n"
     assert "lines 2-3" in result.output_summary
 
 
-def test_container_executor_treats_line_limit_as_line_window():
+def test_container_executor_applies_write():
     docker = FakeDocker()
     executor = ContainerToolExecutor(
         docker=docker,
@@ -201,25 +201,7 @@ def test_container_executor_treats_line_limit_as_line_window():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"path": "README.md", "line": 2, "limit": 2})
-
-    assert result.status is Outcome.OK
-    assert result.output["content"] == "two\nthree\n"
-    assert "lines 2-3" in result.output_summary
-    assert docker.calls[0][1][-2:] == ["2", "3"]
-
-
-def test_container_executor_applies_add_file():
-    docker = FakeDocker()
-    executor = ContainerToolExecutor(
-        docker=docker,
-        container_name="task-1",
-        repo_path="/workspace/repo",
-        allowed_test_commands=("python -m pytest tests/test_issue.py",),
-        test_timeout_seconds=30,
-    )
-
-    result = executor.execute(ToolName.APPLY_PATCH, {"type": "add_file", "path": "app.py", "content": "print('fixed')\n"})
+    result = executor.execute(ToolName.APPLY_PATCH, {"type": "write", "file_path": "app.py", "content": "print('fixed')\n"})
 
     assert result.status is Outcome.OK
     assert docker.calls[0][2] == "print('fixed')\n"
@@ -227,7 +209,7 @@ def test_container_executor_applies_add_file():
     assert result.output["newline"] == "lf"
 
 
-def test_container_executor_add_file_script_is_valid_python():
+def test_container_executor_write_script_is_valid_python():
     docker = FakeDocker()
     executor = ContainerToolExecutor(
         docker=docker,
@@ -237,7 +219,7 @@ def test_container_executor_add_file_script_is_valid_python():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.APPLY_PATCH, {"type": "add_file", "path": "app.py", "content": "print('fixed')\n"})
+    result = executor.execute(ToolName.APPLY_PATCH, {"type": "write", "file_path": "app.py", "content": "print('fixed')\n"})
 
     assert result.status is Outcome.OK
     script = docker.calls[0][1][2]
@@ -258,7 +240,7 @@ def test_container_executor_update_script_is_valid_python():
         ToolName.APPLY_PATCH,
         {
             "type": "update",
-            "path": "app.py",
+            "file_path": "app.py",
             "old_string": "old",
             "new_string": "new",
         },
@@ -280,7 +262,7 @@ def test_container_executor_searches_with_bounded_results():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.SEARCH_CODE, {"query": "hello", "max_results": 5})
+    result = executor.execute(ToolName.SEARCH_CODE, {"pattern": "hello", "head_limit": 5})
 
     assert result.status is Outcome.OK
     assert result.output["matches"][0]["path"] == "app.py"
@@ -311,6 +293,10 @@ def test_container_executor_search_prefers_rg_json_when_available():
             "!dist/**",
             "--glob",
             "!.tox/**",
+            "--glob",
+            "!__pycache__/**",
+            "--glob",
+            "!.pytest_cache/**",
             "hello",
             "/workspace/repo",
         ]
@@ -328,7 +314,7 @@ def test_container_executor_search_prefers_rg_json_when_available():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.SEARCH_CODE, {"query": "hello", "max_results": 5})
+    result = executor.execute(ToolName.SEARCH_CODE, {"pattern": "hello", "head_limit": 5})
 
     assert result.status is Outcome.OK
     assert result.output["matches"] == [{"path": "app.py", "line": 3, "text": "hello", "encoding": "unknown", "newline": "unknown"}]
@@ -346,13 +332,15 @@ def test_container_executor_search_script_uses_regular_expressions():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.SEARCH_CODE, {"query": r"^class CharField\(Field\):", "max_results": 5})
+    result = executor.execute(ToolName.SEARCH_CODE, {"pattern": r"^class CharField\(Field\):", "head_limit": 5})
 
     assert result.status is Outcome.OK
     script = docker.calls[1][1][2]
     compile(script, "<container-search-script>", "exec")
     assert "re.compile" in script
-    assert docker.calls[1][1][-2:] == [r"^class CharField\(Field\):", "5"]
+    # pattern at index -7, head_limit at -6 (followed by ignore_case, glob, ctx_before, ctx_after, ctx_around)
+    assert docker.calls[1][1][-7] == r"^class CharField\(Field\):"
+    assert docker.calls[1][1][-6] == "5"
 
 
 def test_container_executor_rejects_dangerous_test_command():
@@ -449,8 +437,8 @@ def test_container_executor_confines_official_prepared_environment_to_repo_path(
         test_timeout_seconds=30,
     )
 
-    ok = executor.execute(ToolName.READ_FILE, {"path": "README.md"})
-    escaped = executor.execute(ToolName.READ_FILE, {"path": "../outside.txt"})
+    ok = executor.execute(ToolName.READ_FILE, {"file_path": "README.md"})
+    escaped = executor.execute(ToolName.READ_FILE, {"file_path": "../outside.txt"})
 
     assert ok.status is Outcome.OK
     assert "/testbed/README.md" in docker.calls[0][1]

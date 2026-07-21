@@ -29,8 +29,8 @@ Stage 1 baseline
   -> Stage 2 teacher trajectory generation
   -> Stage 3 QLoRA/LoRA SFT
   -> Stage 3 evaluation against baseline
-  -> Stage 4 small-scale GRPO smoke
-  -> Stage 4 expanded RL only if held-out results improve
+  -> Stage 4 GRPO pilot validation
+  -> Stage 4 adaptive GRPO rollout/training loop only if held-out results improve
 ```
 
 ## Curriculum Learning 设计
@@ -45,13 +45,20 @@ Stage 1 baseline
 - GRPO 阶段需要大量 rollouts，用环境 reward 让模型从尝试中学习。
 - GRPO 的难度提升应该由任务复杂度、测试成本、reward 稳定性和当前模型成功率共同决定。
 
-推荐 GRPO 课程顺序：
+GRPO 不采用显式的 `early`、`core`、`hardening` 阶段。正式训练时应该使用动态采样器，
+根据当前训练效果连续调整 `easy`、`medium`、`hard` 的采样概率。
 
-| 阶段 | 数据 | 目标 |
-|------|------|------|
-| GRPO smoke | 从 easy 和少量 medium 剩余任务中做大量 rollouts | 验证 reward pipeline 和冷启动策略 |
-| GRPO core | easy 全量、medium 扣除 SFT 后剩余部分、hard 全量，按课程采样生成数千到数万次 rollouts | 用环境 reward 提升真实任务解决率 |
-| GRPO hardening | 提高 hard 采样率，并加入更慢、更复杂 repo 的 rollouts | 提升泛化和鲁棒性 |
+动态采样器的输入信号包括：
+
+- 各难度 bucket 的近期 resolved rate；
+- reward 均值、方差和正 reward 比例；
+- invalid patch、tool protocol violation、timeout 的比例；
+- 每个难度 bucket 的平均 wall time 和 reward worker 吞吐；
+- held-out eval 是否提升，以及是否出现过拟合迹象。
+
+采样策略应该是平滑变化的。例如 hard 采样率不应因为单次评测突然从低权重跳到高权重；
+更合理的方式是使用滑动窗口指标、指数移动平均或 bandit-style weighting，让训练过程
+自然从 easy-heavy 逐渐过渡到更多 medium/hard，而不是手工切换阶段。
 
 SWE-smith 任务应先分成 `easy`、`medium`、`hard` 三档。SFT 只从 `medium`
 中选高质量 teacher trajectories；GRPO 使用 `easy` 全部、`medium` 扣除 SFT
@@ -68,9 +75,9 @@ SWE-smith 任务应先分成 `easy`、`medium`、`hard` 三档。SFT 只从 `med
 - 任务来源：先程序化/清晰任务，再加入 PR mirror 或问题描述更复杂的任务。
 
 不要把 curriculum learning 误解为 SFT 也要分难度逐步训练。正确做法是先用 medium
-的高质量 teacher trajectories 做一次 SFT，然后在 GRPO 中从 easy-heavy 采样逐步过渡到
-medium-heavy 和 hard-mixed 采样。每一层都必须保留 held-out 检查，防止只在当前难度层
-过拟合。
+的高质量 teacher trajectories 做一次 SFT，然后在 GRPO 中用动态采样器根据训练信号
+连续调节 easy、medium 和 hard 的比例。采样器必须定期用 held-out 检查约束，防止只在
+当前训练分布上过拟合。
 
 ## Stage 3：基于 Teacher Trajectories 的 SFT
 
@@ -197,8 +204,8 @@ GRPO 应该优化真实解决 benchmark tasks 的 patch，同时保持干净的�
 
 1. 使用 Stage 3 模型做 offline best-of-N 或 rejection sampling。
 2. 构建小型 reward-evaluation harness。
-3. 在很小的任务子集上做 GRPO smoke。
-4. 只有 held-out evaluation 提升后，才扩大规模。
+3. 在很小的任务子集上做 GRPO pilot，验证 reward、rollout、训练闭环。
+4. 只有 held-out evaluation 提升后，才进入动态采样的正式 GRPO 训练。
 
 ### Reward 设计
 
@@ -235,6 +242,15 @@ GRPO 应该优化真实解决 benchmark tasks 的 patch，同时保持干净的�
 
 GRPO 需要 rollout generation 和训练显存。单张 4090 上更现实的方式是
 QLoRA/LoRA、小 batch、短 completion，以及谨慎安排 vLLM。
+
+双 4090 会显著改善 Stage 4 的可行性：
+
+- 可以把 rollout serving 和 GRPO training 分开，降低互相抢显存的风险；
+- 可以提高并发 rollout 数量，让 reward worker 更持续地吃满任务；
+- 可以使用更大的 effective batch size 或更多 samples per prompt，提高 GRPO 更新稳定性；
+- 可以在一张卡保留稳定 checkpoint/serving，另一张卡做训练迭代，便于失败恢复；
+- 仍然需要控制上下文长度、completion 长度和并发数，否则瓶颈会转移到 CPU、Docker、
+  disk IO 或 reward evaluation。
 
 Reward hacking：
 
@@ -296,9 +312,9 @@ GRPO 需要大量 rollout attempts 和 environment rewards。
 | 阶段 | 推荐数据规模 | 说明 |
 |------|--------------|------|
 | SFT dataset | medium 中 1,000-3,000 条高质量 resolved trajectories，最多不超过 5,000 条，且不超过 medium 总量的 30% | 单次监督微调数据集，不做课程学习 |
-| GRPO smoke | easy 为主，少量 medium 剩余任务，每题多次 rollout | 验证 reward 和冷启动策略 |
-| GRPO core | easy 全部、medium 剩余部分、hard 全部，生成大量 rollouts | 主要 RL 信号来源 |
-| GRPO expansion | 增加 hard 采样率和每题 rollout 次数 | 只在 reward 稳定且 held-out 提升后扩大 |
+| GRPO task pool | easy 全部、medium 剩余部分、hard 全部 | 与 SFT task instance 严格互斥 |
+| GRPO rollout budget | 每个 task instance 多次 rollout，总量按 reward 吞吐和训练稳定性扩大 | 主要 RL 信号来源 |
+| GRPO adaptive sampling | 根据近期训练效果动态调整 easy、medium、hard 采样概率 | 实现平滑课程学习，不手工切换 early/core/hardening 阶段 |
 
 推荐原则：
 
@@ -363,14 +379,20 @@ SFT 与 GRPO 的互斥粒度应该是 `instance_id`。同一个 task instance �
 tool calls 和 final patch；GRPO 只能读取 problem statement、repo environment 和
 reward path，不允许读取对应的 teacher trajectory。
 
-GRPO 课程学习采样率可以按阶段调整：
+GRPO 课程学习由动态采样器实现，不设置显式的 `early`、`core`、`hardening` 阶段。
+采样器维护 `easy`、`medium`、`hard` 三个 bucket 的权重，并根据滑动窗口指标持续更新。
 
-| GRPO 阶段 | easy | medium 剩余 | hard | 目的 |
-|-----------|------|-------------|------|------|
-| smoke | 高 | 低 | 0 | 验证 reward、rollout、训练闭环 |
-| early | 高 | 中 | 低 | 让模型先获得足够正 reward |
-| core | 中 | 高 | 中 | 提升真实任务解决能力 |
-| hardening | 低 | 中 | 高 | 强化复杂任务和泛化能力 |
+推荐的权重更新信号：
+
+- 如果整体 positive reward 过低，提高 easy 权重，降低 hard 权重；
+- 如果 easy resolved rate 已经稳定较高，提高 medium 权重；
+- 如果 medium 的正 reward 比例稳定且 timeout 可控，逐步提高 hard 权重；
+- 如果 hard 导致 timeout、invalid patch 或 reward 全负比例过高，降低 hard 权重；
+- 如果 held-out 指标回退，回滚到最近稳定采样分布和 checkpoint；
+- 对每次权重更新设置最大步长，避免采样分布突然跳变。
+
+动态采样器的目标不是固定比例，而是在训练过程中持续维持足够的正 reward 密度，同时
+逐步增加更难任务的覆盖率。
 
 更严格的防污染策略：
 
@@ -412,9 +434,19 @@ repo-disjoint 方案能提供更干净的泛化信号，但会让训练更难，
 
 - Stage 1 vLLM inference；
 - Stage 3 QLoRA/LoRA SFT；
-- Stage 4 小规模 GRPO training 和 rollout generation。
+- Stage 4 GRPO training 和 rollout generation。
 
-Stage 4 中，如果 4090 显存受限，可以考虑分离 rollout serving 和 training。
+如果使用双 4090，Stage 4 的推荐部署方式是分离 rollout serving 和 training：
+
+```text
+GPU 0: vLLM rollout serving / sampling
+GPU 1: QLoRA/LoRA GRPO training
+CPU bare metal: Docker reward workers, repo checkout/cache, artifact storage
+```
+
+当 rollout 需求更高时，也可以让两张 4090 都参与 rollout generation，再用梯度累积和较小
+micro-batch 做训练；但这种方式需要更严格的队列控制，避免训练进程因为 rollout 或 reward
+延迟而长时间空等。
 
 ## Checkpoints 和 Promotion Gates
 
@@ -440,7 +472,7 @@ Stage 4 中，如果 4090 显存受限，可以考虑分离 rollout serving 和 
 
 ### Gate 4：扩大 GRPO 之前
 
-- 小规模 GRPO smoke 产生稳定训练指标。
+- 小规模 GRPO pilot 产生稳定训练指标。
 - reward distribution 不是全 0 或全负。
 - held-out evaluation 提升，或至少保住 Stage 3 的收益。
 - 每个 resolved improvement 的 runtime cost 可接受。

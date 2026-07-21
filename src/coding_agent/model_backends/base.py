@@ -31,5 +31,5 @@ class ModelBackendError(RuntimeError):
 
 
 class ModelBackend(Protocol):
-    def next_action(self, messages: list[dict[str, Any]]) -> AgentAction:
+    def next_action(self, messages: list[dict[str, Any]]) -> list[AgentAction]:
         ...

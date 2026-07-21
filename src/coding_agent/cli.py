@@ -156,6 +156,31 @@ def build_parser() -> argparse.ArgumentParser:
     stage1_run_parser.add_argument("--arch", choices=("x86_64", "arm64"), default="x86_64")
     stage1_run_parser.add_argument("--model")
     stage1_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
+    stage2_parser = subparsers.add_parser("stage2", help="Stage 2 teacher SWE-smith trajectory workflows")
+    stage2_subparsers = stage2_parser.add_subparsers(dest="stage2_command")
+    stage2_generate_parser = stage2_subparsers.add_parser(
+        "generate-teacher-trajectories",
+        help="generate teacher API SWE-smith trajectories and export resolved SFT data",
+    )
+    stage2_generate_parser.add_argument("--subset")
+    stage2_generate_parser.add_argument("--create-subset", action="store_true")
+    stage2_generate_parser.add_argument("--split", default="train")
+    stage2_generate_parser.add_argument("--min-fail-to-pass", type=int, default=2)
+    stage2_generate_parser.add_argument("--max-fail-to-pass", type=int, default=5)
+    stage2_generate_parser.add_argument("--require-pr", action="store_true")
+    stage2_generate_parser.add_argument("--languages", help="comma-separated language filter, e.g. python,cpp")
+    stage2_generate_parser.add_argument("--output-dir", required=True)
+    stage2_generate_parser.add_argument("--reference-path")
+    stage2_generate_parser.add_argument("--max-steps", type=int, required=True)
+    stage2_generate_parser.add_argument("--timeout-seconds", type=int, required=True)
+    stage2_generate_parser.add_argument("--test-timeout-seconds", type=int, required=True)
+    stage2_generate_parser.add_argument("--jobs", type=int, default=1)
+    stage2_generate_parser.add_argument("--eval-workers", type=int, default=4)
+    stage2_generate_parser.add_argument("--run-id", required=True)
+    stage2_generate_parser.add_argument("--sft-output", required=True)
+    stage2_generate_parser.add_argument("--cleanup-images", action="store_true")
+    stage2_generate_parser.add_argument("--model")
+    stage2_generate_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
     swebench_parser = subparsers.add_parser("swebench", help="SWE-Bench commands")
     swebench_subparsers = swebench_parser.add_subparsers(dest="swebench_command")
     swebench_official_prepare_parser = swebench_subparsers.add_parser(
@@ -709,6 +734,80 @@ def _stage1_run_qwen_vllm_command(args: argparse.Namespace) -> int:
         return 4
 
 
+def _stage2_generate_teacher_trajectories_command(args: argparse.Namespace) -> int:
+    """Run Stage 2 teacher SWE-smith trajectory generation pipeline."""
+    try:
+        output_dir = Path(args.output_dir)
+        subset_path = Path(args.subset) if args.subset else output_dir / "subset.json"
+        if args.subset is None and not args.create_subset:
+            raise ValueError("--subset is required unless --create-subset is supplied")
+        if args.create_subset:
+            languages_list = (
+                [lang.strip() for lang in (args.languages or "").split(",") if lang.strip()]
+                if args.languages
+                else None
+            )
+            instances = load_huggingface_swesmith(split=args.split)
+            create_subset_file(
+                subset_path,
+                instances=instances,
+                require_pr=args.require_pr,
+                min_fail_to_pass=args.min_fail_to_pass,
+                max_fail_to_pass=args.max_fail_to_pass,
+                languages=languages_list,
+                reference_path=args.reference_path,
+            )
+
+        budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
+        if args.backend == "mock":
+            model_name = args.model or "mock-model"
+
+            def backend_factory():
+                return MockBackend()
+
+        else:
+            config = load_stage_model_config("stage2", model_override=args.model)
+            model_name = config.model
+
+            def backend_factory():
+                return OpenAICompatibleBackend(config)
+
+        run_exit = run_swesmith_subset(
+            subset_path=str(subset_path),
+            docker=DockerCli(),
+            backend_factory=backend_factory,
+            budget=budget,
+            model_name=model_name,
+            output_dir=output_dir,
+            reference_path=args.reference_path,
+            jobs=args.jobs,
+            cleanup_images=args.cleanup_images,
+        )
+        predictions_path = output_dir / "preds.jsonl"
+        eval_exit = run_official_eval(
+            dataset_path=str(subset_path),
+            predictions_path=str(predictions_path),
+            run_id=args.run_id,
+            workers=args.eval_workers,
+            reference_path=args.reference_path,
+        )
+        eval_dir = Path("logs/run_evaluation") / args.run_id
+        count = export_sft(runs_dir=str(output_dir), eval_dir=str(eval_dir), output=args.sft_output, style="xml")
+        print(json.dumps({"output": args.sft_output, "count": count}, indent=2))
+        if eval_exit != 0:
+            return eval_exit
+        return run_exit
+    except (ValueError, SwesmithDatasetError, SwesmithRuntimeError, MissingModelConfigError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ArtifactPersistenceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+
+
 def _swebench_batch_run_command(args: argparse.Namespace) -> int:
     """Run every task in one or more SWE-Bench Lite datasets through prepare -> run."""
     logger.info("swebench batch-run started: datasets=%s output_dir=%s jobs=%s", args.datasets, args.output_dir, args.jobs)
@@ -919,6 +1018,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if getattr(args, "stage1_command", None) == "run-qwen-vllm":
             return _stage1_run_qwen_vllm_command(args)
         parser.error("stage1 subcommand is required")
+        return 2
+    if args.command == "stage2":
+        if getattr(args, "stage2_command", None) == "generate-teacher-trajectories":
+            return _stage2_generate_teacher_trajectories_command(args)
+        parser.error("stage2 subcommand is required")
         return 2
     if args.command == "swebench":
         if getattr(args, "swebench_command", None) == "prepare":

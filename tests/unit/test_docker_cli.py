@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from coding_agent.sandbox.docker_cli import DockerCli, DockerCommandError, DockerCommandTimeout, DockerResult
+from coding_agent.sandbox_manager import DockerCli, DockerCommandError, DockerCommandTimeout, DockerResult
 
 
 def test_docker_cli_returns_stdout_for_successful_command():

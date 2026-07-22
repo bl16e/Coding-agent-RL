@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from coding_agent.models import Prediction
-from coding_agent.sandbox.docker_cli import DockerCli
+from coding_agent.sandbox_manager import DockerCli
 
 
 def prediction_to_dict(prediction: Prediction) -> dict[str, str]:

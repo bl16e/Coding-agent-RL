@@ -7,7 +7,7 @@ from typing import Any
 
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
-from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackendError, TurnResult
+from coding_agent.model_backend import AgentAction, AgentActionType, ModelBackendError, TurnResult
 from coding_agent.models import ModelConfig, ToolName
 from coding_agent.tools.schemas import COMMON_PROPERTIES, TOOL_SCHEMAS
 

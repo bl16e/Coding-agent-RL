@@ -1,5 +1,5 @@
 from coding_agent.agent import _detect_conflicts
-from coding_agent.model_backends.base import AgentAction, AgentActionType
+from coding_agent.model_backend import AgentAction, AgentActionType
 
 
 def test_all_non_conflicting_grouped_together():

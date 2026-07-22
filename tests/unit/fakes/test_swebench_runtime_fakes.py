@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from coding_agent.sandbox.docker_cli import DockerResult
+from coding_agent.sandbox_manager import DockerResult
 
 
 @dataclass

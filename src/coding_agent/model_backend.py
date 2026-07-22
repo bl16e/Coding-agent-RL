@@ -64,3 +64,41 @@ class ModelBackend:
     @property
     def n_calls(self) -> int:
         return self._model.n_calls
+
+# === Legacy ModelBackend protocol (merged from old model_backends/base.py) ===
+
+from dataclasses import dataclass as _dc, field as _field
+from enum import Enum as _Enum
+from typing import Protocol as _Protocol
+
+
+class AgentActionType(str, _Enum):
+    READ_FILE = "read_file"
+    APPLY_PATCH = "apply_patch"
+    SEARCH_CODE = "search_code"
+    RUN_TESTS = "run_tests"
+
+
+@_dc(frozen=True)
+class AgentAction:
+    action: AgentActionType
+    tool_input: dict = _field(default_factory=dict)
+    reasoning_summary: str = ""
+    next_intent: str = ""
+    tool_selection_reason: str = ""
+    tool_call_id: str | None = None
+    raw_message: dict | None = None
+
+
+@_dc(frozen=True)
+class TurnResult:
+    actions: list[AgentAction]
+    assistant_messages: list[dict]
+
+
+class ModelBackendError(RuntimeError):
+    pass
+
+
+class LegacyModelBackend(_Protocol):
+    def next_action(self, messages: list[dict]) -> TurnResult: ...

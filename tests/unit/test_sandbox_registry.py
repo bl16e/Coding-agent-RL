@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.sandbox.registry import (
+from coding_agent.sandbox_registry import (
     SandboxRegistry,
     SandboxRegistryError,
     load_base_image_from_registry,

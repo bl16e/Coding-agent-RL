@@ -9,8 +9,16 @@ from pathlib import Path
 
 from coding_agent.agent import ToolAgent, AgentConfig
 from coding_agent.model_backend import ModelBackend
-from coding_agent.models import BenchmarkTask, RunBudget, RunStatus
-from coding_agent.sandbox_manager import SandboxManager
+from coding_agent.models import BenchmarkTask, RunBudget, RunStatus, UnsupportedLegacyOperation, UnsupportedLegacySurface
+from coding_agent.legacy_mock_backend import MockBackend
+from coding_agent.legacy_openai_backend import (
+    MissingModelConfigError,
+    OpenAICompatibleBackend,
+    load_model_config,
+    load_stage_model_config,
+)
+from coding_agent.sandbox_manager import DockerCli, SandboxManager
+from coding_agent.sandbox_registry import SandboxRegistry, SandboxRegistryError, register_base_image
 from coding_agent.tools.executor import SweRexToolExecutor
 from coding_agent.trajectory_exporter import TrajectoryExporter
 from coding_agent.swebench.dataset import SwebenchDatasetError
@@ -32,7 +40,7 @@ from coding_agent.swesmith.evaluate import run_official_eval
 from coding_agent.swesmith.export_sft import export_sft
 from coding_agent.swesmith.run import run_swesmith_subset
 from coding_agent.swesmith.runtime import SwesmithRuntimeError
-from coding_agent.trajectory.summary import load_summary, load_trajectory, render_inspect_report
+from coding_agent.trajectory_exporter import load_summary, load_trajectory, render_inspect_report
 
 
 logger = logging.getLogger(__name__)

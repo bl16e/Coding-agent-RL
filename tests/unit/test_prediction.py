@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from coding_agent.models import Prediction
-from coding_agent.sandbox.docker_cli import DockerResult
+from coding_agent.sandbox_manager import DockerResult
 from coding_agent.swebench.prediction import export_prepared_environment_patch, prediction_to_dict, write_prediction_jsonl
 
 

@@ -3,8 +3,8 @@ from pathlib import Path
 
 from coding_agent.agent import create_task_from_paths, run_task
 from coding_agent.models import RunBudget
-from coding_agent.model_backends.base import AgentAction, AgentActionType
-from coding_agent.model_backends.mock import MockBackend
+from coding_agent.model_backend import AgentAction, AgentActionType
+from coding_agent.legacy_mock_backend import MockBackend
 
 
 def test_agent_records_only_allowed_tool_types(tmp_path: Path):

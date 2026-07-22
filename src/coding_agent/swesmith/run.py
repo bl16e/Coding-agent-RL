@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from coding_agent.agent import run_task
-from coding_agent.model_backends.base import ModelBackend
+from coding_agent.model_backend import LegacyModelBackend
 from coding_agent.models import BenchmarkTask, Prediction, RunBudget, RunSummary
-from coding_agent.sandbox.docker_cli import DockerCli
-from coding_agent.sandbox.tools import ContainerToolExecutor
+from coding_agent.sandbox_manager import DockerCli
+from coding_agent.tools.container_executor import ContainerToolExecutor
 from coding_agent.swebench.prediction import prediction_to_dict
 from coding_agent.swesmith.dataset import _repo_key, load_subset
 from coding_agent.swesmith.runtime import SwesmithPreparedContainer, create_official_container, import_swesmith
@@ -68,7 +68,7 @@ def run_swesmith_instance(
     instance: dict[str, Any],
     *,
     docker: DockerCli,
-    backend: ModelBackend,
+    backend: LegacyModelBackend,
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,
@@ -132,7 +132,7 @@ def _read_prediction(run_dir: Path, instance_id: str, model_name: str) -> Predic
 def _run_instance_and_collect(
     instance: dict[str, Any],
     docker: DockerCli,
-    backend_factory: Callable[[], ModelBackend],
+    backend_factory: Callable[[], LegacyModelBackend],
     budget: RunBudget,
     model_name: str,
     root: Path,
@@ -250,7 +250,7 @@ def run_swesmith_subset(
     *,
     subset_path: str | Path,
     docker: DockerCli,
-    backend_factory: Callable[[], ModelBackend],
+    backend_factory: Callable[[], LegacyModelBackend],
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,

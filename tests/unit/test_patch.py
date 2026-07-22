@@ -2,7 +2,7 @@ from pathlib import Path
 
 import subprocess
 
-from coding_agent.trajectory.patch import generate_unified_patch, generate_workspace_patch, snapshot_workspace
+# REMOVED: trajectory.patch deleted
 from coding_agent.swebench.sandbox_run import filter_validation_patch_changes
 
 

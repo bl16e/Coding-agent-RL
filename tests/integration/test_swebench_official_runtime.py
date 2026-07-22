@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.model_backends.base import AgentAction, AgentActionType
-from coding_agent.model_backends.mock import MockBackend
+from coding_agent.model_backend import AgentAction, AgentActionType
+from coding_agent.legacy_mock_backend import MockBackend
 from coding_agent.models import RunBudget
-from coding_agent.sandbox.docker_cli import DockerCommandError
-from coding_agent.sandbox.docker_cli import DockerResult
+from coding_agent.sandbox_manager import DockerCommandError
+from coding_agent.sandbox_manager import DockerResult
 from coding_agent.swebench import sandbox_run
 from coding_agent.swebench.sandbox_run import (
     SandboxedRunInputError,

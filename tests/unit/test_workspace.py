@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.workspace import WorkspacePathError, resolve_workspace_path, to_workspace_relative
+# REMOVED: workspace.py deleted WorkspacePathError, resolve_workspace_path, to_workspace_relative
 
 
 def test_resolve_workspace_path_accepts_relative_paths_inside_workspace(tmp_path: Path):

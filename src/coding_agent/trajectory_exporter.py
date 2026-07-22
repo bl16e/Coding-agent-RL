@@ -179,3 +179,115 @@ class TrajectoryExporter:
             if msg.get("role") == "user":
                 return str(msg.get("content", ""))
         return ""
+
+# === Legacy trajectory functions (merged from old trajectory/) ===
+
+def write_summary(path, summary):
+    """Write RunSummary to JSON file."""
+    import json as _json
+    from pathlib import Path as _Path
+    destination = _Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(_json.dumps(summary.to_dict(), indent=2, ensure_ascii=True), encoding="utf-8")
+
+
+def load_summary(path):
+    """Load summary.json as dict."""
+    import json as _json
+    from pathlib import Path as _Path
+    return _json.loads(_Path(path).read_text(encoding="utf-8"))
+
+
+def load_trajectory(path):
+    """Load trajectory.jsonl as list of dicts."""
+    import json as _json
+    from pathlib import Path as _Path
+    return [_json.loads(line) for line in _Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def render_inspect_report(summary, trajectory_steps):
+    """Render human-readable inspect report."""
+    changed_files = summary.get("changed_files") or []
+    last_tool = None
+    for step in reversed(trajectory_steps):
+        tool_call = step.get("tool_call") or {}
+        if step.get("action_type") == "tool_result" and tool_call.get("status") == "ok":
+            last_tool = tool_call.get("tool_name")
+            break
+    last_tool = last_tool or summary.get("last_successful_tool_call") or "none"
+    error = summary.get("error") or "none"
+    return "\n".join([
+        f"Final status: {summary.get('status', 'unknown')}",
+        "Changed files: " + (", ".join(changed_files) if changed_files else "none"),
+        f"Last successful tool call: {last_tool}",
+        f"Error point or budget stop: {error}",
+    ])
+
+
+def convert_trajectory_to_summary_format(*, trajectory_jsonl, task_id, issue, final_diff, resolved, output_path):
+    """Convert detailed JSONL trajectory to simplified summary format."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    with open(trajectory_jsonl, "r", encoding="utf-8") as f:
+        raw_steps = [_json.loads(line) for line in f if line.strip()]
+
+    steps = []
+    i = 0
+    step_counter = 0
+
+    while i < len(raw_steps):
+        current = raw_steps[i]
+        if current.get("action_type") != "model":
+            i += 1
+            continue
+
+        thought = current.get("reasoning_summary", "")
+
+        if i + 1 < len(raw_steps) and raw_steps[i + 1].get("action_type") == "tool_result":
+            tool_result = raw_steps[i + 1]
+            tool_call = tool_result.get("tool_call", {})
+            tool_name = tool_call.get("tool_name", "")
+            tool_input = tool_call.get("input", {})
+            tool_status = str(tool_call.get("status") or tool_result.get("outcome") or "")
+            output_summary = str(tool_call.get("output_summary") or "")
+
+            args = {k: v for k, v in tool_input.items() if k not in ("reasoning_summary", "next_intent", "tool_selection_reason")}
+            result = tool_result.get("tool_result", {})
+            observation = _fmt_obs(tool_name, result, tool_status=tool_status, output_summary=output_summary)
+
+            steps.append({"step": step_counter, "thought": thought, "action": {"tool": tool_name, "args": args}, "observation": observation})
+            step_counter += 1
+            i += 2
+        else:
+            i += 1
+
+    reward = 1.0 if resolved else 0.0
+    summary = {"task_id": task_id, "issue": issue, "steps": steps, "final_diff": final_diff, "resolved": resolved, "reward": reward}
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        _json.dump(summary, f, indent=2, ensure_ascii=False)
+
+
+def _fmt_obs(tool_name, result, *, tool_status="", output_summary=""):
+    if tool_name == "read_file":
+        output = result.get("output", {})
+        return {"content": output.get("content", "")}
+    elif tool_name == "apply_patch":
+        output = result.get("output", {})
+        patch = output.get("patch", "")
+        modifications = result.get("modifications", [])
+        if patch:
+            return {"patch": patch}
+        if modifications:
+            mod = modifications[0]
+            return {"status": "success" if mod.get("write_status") == "ok" else "failed", "path": mod.get("path", "")}
+        return {"status": tool_status or "unknown", "output": output_summary}
+    elif tool_name == "search_code":
+        output = result.get("output", {})
+        matches = output.get("matches", [])
+        return {"matches": len(matches), "results": matches[:5]}
+    elif tool_name == "run_tests":
+        test_result = result.get("test_result", {})
+        return {"status": test_result.get("status", ""), "passed": test_result.get("status") == "passed", "output": test_result.get("output_summary", "")}
+    return {"raw": result}

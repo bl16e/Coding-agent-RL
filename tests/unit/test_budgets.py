@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from coding_agent.budgets import BudgetTracker, Deadline, validate_budget
+# REMOVED: budgets.py deleted BudgetTracker, Deadline, validate_budget
 from coding_agent.models import RunBudget
 
 

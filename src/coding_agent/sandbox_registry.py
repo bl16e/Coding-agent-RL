@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from coding_agent.models import BaseImage, utc_now
-from coding_agent.sandbox.docker_cli import DockerCli
+from coding_agent.sandbox_manager import DockerCli
 
 
 class SandboxRegistryError(ValueError):

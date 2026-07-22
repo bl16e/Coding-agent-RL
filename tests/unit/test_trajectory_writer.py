@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from coding_agent.models import Outcome, StepActionType, TrajectoryStep
-from coding_agent.trajectory.writer import TrajectoryWriter
+from coding_agent.trajectory_exporter import TrajectoryWriter
 
 
 def test_trajectory_writer_preserves_order_and_flushes_each_step(tmp_path: Path):

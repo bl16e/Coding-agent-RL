@@ -11,7 +11,7 @@ from threading import Lock
 from typing import Any
 
 from coding_agent.agent import ArtifactPersistenceError, run_task
-from coding_agent.model_backends.base import ModelBackend
+from coding_agent.model_backend import LegacyModelBackend
 from coding_agent.models import (
     BaseImage,
     BenchmarkTask,
@@ -27,9 +27,8 @@ from coding_agent.models import (
     EvalReport,
     utc_now,
 )
-from coding_agent.sandbox.docker_cli import DockerCli, DockerCommandError, DockerCommandTimeout
-from coding_agent.sandbox.manager import TaskSandboxManager
-from coding_agent.sandbox.tools import ContainerToolExecutor
+from coding_agent.sandbox_manager import DockerCli, DockerCommandError, DockerCommandTimeout, TaskSandboxManager
+from coding_agent.tools.container_executor import ContainerToolExecutor
 from coding_agent.swebench.dataset import SwebenchTaskRecord, load_task_record, load_task_records, normalize_benchmark_task_record
 from coding_agent.swebench.grading import EvalOutputParseError, parse_eval_report
 from coding_agent.swebench.images import build_missing_images, inspect_image_graph
@@ -41,8 +40,7 @@ from coding_agent.swebench.prediction import (
 )
 from coding_agent.swebench.testspec import build_adapted_testspec
 from coding_agent.swebench.validation import build_official_validation_set
-from coding_agent.trajectory.converter import convert_trajectory_to_summary_format
-from coding_agent.trajectory.summary import write_summary
+from coding_agent.trajectory_exporter import convert_trajectory_to_summary_format, write_summary
 
 
 logger = logging.getLogger(__name__)
@@ -681,7 +679,7 @@ def run_prepared_swebench_runtime(
     dataset_path: str | Path,
     instance_id: str,
     docker: DockerCli,
-    backend: ModelBackend,
+    backend: LegacyModelBackend,
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,
@@ -1151,7 +1149,7 @@ def run_official_swebench_batch(
     *,
     dataset_paths: Sequence[str | Path],
     docker: DockerCli,
-    backend_factory: Callable[[], ModelBackend],
+    backend_factory: Callable[[], LegacyModelBackend],
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,

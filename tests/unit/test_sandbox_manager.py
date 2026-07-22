@@ -1,6 +1,6 @@
 from coding_agent.models import BaseImage
-from coding_agent.sandbox.manager import TaskSandboxManager
-from coding_agent.sandbox.docker_cli import DockerResult
+from coding_agent.sandbox_manager import TaskSandboxManager
+from coding_agent.sandbox_manager import DockerResult
 
 
 class RecordingDocker:

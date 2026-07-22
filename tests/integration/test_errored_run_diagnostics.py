@@ -3,9 +3,9 @@ from pathlib import Path
 
 from coding_agent.agent import create_task_from_paths, run_task
 from coding_agent.models import RunBudget
-from coding_agent.model_backends.base import AgentAction, AgentActionType
-from coding_agent.model_backends.mock import MockBackend
-from coding_agent.sandbox.docker_cli import DockerResult
+from coding_agent.model_backend import AgentAction, AgentActionType
+from coding_agent.legacy_mock_backend import MockBackend
+from coding_agent.sandbox_manager import DockerResult
 from coding_agent.swebench import sandbox_run
 from coding_agent.swebench.sandbox_run import prepare_official_swebench_runtime
 from tests.helpers.swebench_fixtures import write_swebench_parquet

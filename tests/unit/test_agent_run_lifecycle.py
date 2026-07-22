@@ -5,8 +5,8 @@ from coding_agent.agent import create_task_from_paths, run_task
 from coding_agent.models import FileModification, Outcome, RunBudget, RunStatus, TestResult as ModelTestResult
 from coding_agent.models import TestStatus as ModelTestStatus
 from coding_agent.models import ToolName
-from coding_agent.model_backends.base import AgentAction, AgentActionType, TurnResult
-from coding_agent.model_backends.mock import MockBackend
+from coding_agent.model_backend import AgentAction, AgentActionType, TurnResult
+from coding_agent.legacy_mock_backend import MockBackend
 from coding_agent.tools import ToolExecutionResult, ToolExecutor
 
 

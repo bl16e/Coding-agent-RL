@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from coding_agent.model_backends.base import AgentAction, AgentActionType, TurnResult
+from coding_agent.model_backend import AgentAction, AgentActionType, TurnResult
 
 
 class MockBackend:

@@ -1,8 +1,8 @@
 import json
 
 from coding_agent.models import Outcome, ToolName
-from coding_agent.sandbox.docker_cli import DockerResult
-from coding_agent.sandbox.tools import ContainerToolExecutor, _container_helper_script
+from coding_agent.sandbox_manager import DockerResult
+from coding_agent.tools.container_executor import ContainerToolExecutor, _container_helper_script
 
 
 class FakeDocker:

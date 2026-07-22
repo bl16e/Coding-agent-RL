@@ -7,7 +7,7 @@ import time
 from typing import Any, Protocol
 
 from coding_agent.models import FileModification, Outcome, TestResult, TestStatus, ToolName
-from coding_agent.sandbox.docker_cli import DockerCli, DockerCommandError, DockerCommandTimeout
+from coding_agent.sandbox_manager import DockerCli, DockerCommandError, DockerCommandTimeout
 from coding_agent.tools.result import ToolExecutionResult
 from coding_agent.tools.test_command_policy import validate_self_test_command
 

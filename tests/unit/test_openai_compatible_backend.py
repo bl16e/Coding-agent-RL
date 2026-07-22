@@ -4,8 +4,8 @@ import pytest
 from openai import APIConnectionError
 
 from coding_agent.models import ModelConfig
-from coding_agent.model_backends.base import AgentAction, AgentActionType, ModelBackendError, TurnResult
-from coding_agent.model_backends.openai_compatible import (
+from coding_agent.model_backend import AgentAction, AgentActionType, ModelBackendError, TurnResult
+from coding_agent.legacy_openai_backend import (
     OpenAICompatibleBackend,
     map_request_error,
     parse_agent_action,

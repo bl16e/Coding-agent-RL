@@ -21,16 +21,102 @@ from coding_agent.models import (
     RunSummary,
     ToolName,
 )
-from coding_agent.tools.executor import ToolExecutor
+from coding_agent.tools.executor import LocalToolExecutor, ToolExecutor
 from coding_agent.tools.schemas import TOOL_SCHEMAS
 from coding_agent.trajectory_exporter import TrajectoryExporter
 
 logger = logging.getLogger(__name__)
 
 # -- Compatibility re-exports for old swebench/swesmith modules --
-ArtifactPersistenceError = RuntimeError  # old persisted-error type
-create_task_from_paths = None  # replaced by BenchmarkTask constructor
-run_task = None  # replaced by ToolAgent.run
+
+
+class ArtifactPersistenceError(RuntimeError):
+    """Raised when required run artifacts cannot be reliably written."""
+
+
+class _LegacyBackendAdapter:
+    """Adapt old ModelBackend.next_action() → new query() interface."""
+
+    def __init__(self, backend: Any):
+        self._backend = backend
+        self.model_name = getattr(backend, "model_name", "unknown")
+
+    def query(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
+        turn = self._backend.next_action(messages)
+        assistant_messages = turn.assistant_messages
+        raw_msg = assistant_messages[0] if assistant_messages else {"role": "assistant", "content": ""}
+
+        if not turn.actions:
+            # Model stopped naturally — return raw message as-is
+            result = dict(raw_msg)
+            result.setdefault("extra", {})
+            return result
+
+        # Build tool_calls from actions, using proper arguments
+        tool_calls = []
+        for action in turn.actions:
+            tool_calls.append({
+                "id": action.tool_call_id or str(uuid.uuid4()),
+                "type": "function",
+                "function": {
+                    "name": action.action.value,
+                    "arguments": json.dumps(action.tool_input),
+                },
+            })
+        return {
+            "role": "assistant",
+            "content": raw_msg.get("content"),
+            "tool_calls": tool_calls,
+            "extra": {},
+        }
+
+    @property
+    def cost(self) -> float:
+        return 0.0
+
+    @property
+    def n_calls(self) -> int:
+        return 0
+
+
+def run_task(
+    *,
+    task: BenchmarkTask,
+    budget: RunBudget,
+    backend: Any,
+    model_name: str,
+    output_dir: str | Path,
+    run_id: str | None = None,
+    tool_executor: ToolExecutor | None = None,
+) -> RunSummary:
+    """Compatibility bridge: old run_task interface → new ToolAgent.
+
+    Adapts the old ModelBackend (next_action) to the new model interface
+    (query), then delegates entirely to ToolAgent.run().
+    """
+    output_path = Path(output_dir)
+    template_dir = Path(__file__).resolve().parent / "config" / "templates"
+    system_template = (template_dir / "system.j2").read_text(encoding="utf-8")
+    instance_template = (template_dir / "instance.j2").read_text(encoding="utf-8")
+
+    config = AgentConfig(
+        system_template=system_template,
+        instance_template=instance_template,
+        step_limit=budget.max_steps,
+        time_limit_seconds=budget.timeout_seconds,
+        output_path=output_path,
+    )
+
+    adapted_model = _LegacyBackendAdapter(backend)
+    adapted_model.model_name = model_name
+
+    executor = tool_executor or LocalToolExecutor(
+        workspace=task.workspace,
+        test_timeout_seconds=budget.test_timeout_seconds,
+    )
+
+    agent = ToolAgent(model=adapted_model, executor=executor, config=config)
+    return agent.run(task=task)
 
 
 

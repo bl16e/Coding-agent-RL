@@ -7,7 +7,14 @@ name = "coding-agent"
 version = "0.1.0"
 description = "SWE-Bench Lite coding agent CLI and library"
 requires-python = ">=3.11"
-dependencies = ["openai>=1.0", "pyarrow>=16.0"]
+dependencies = [
+    "mini-swe-agent>=2.3.0",
+    "swe-rex>=1.4.0",
+    "jinja2",
+    "pyyaml",
+    "pydantic>=2.0",
+    "pyarrow>=16.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

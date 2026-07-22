@@ -7,17 +7,12 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from coding_agent.agent import ArtifactPersistenceError, create_task_from_paths, run_task
-from coding_agent.model_backends.mock import MockBackend
-from coding_agent.model_backends.openai_compatible import (
-    MissingModelConfigError,
-    OpenAICompatibleBackend,
-    load_model_config,
-    load_stage_model_config,
-)
-from coding_agent.models import RunBudget, RunStatus, UnsupportedLegacyOperation, UnsupportedLegacySurface
-from coding_agent.sandbox.docker_cli import DockerCli
-from coding_agent.sandbox.registry import SandboxRegistry, SandboxRegistryError, register_base_image
+from coding_agent.agent import ToolAgent, AgentConfig
+from coding_agent.model_backend import ModelBackend
+from coding_agent.models import BenchmarkTask, RunBudget, RunStatus
+from coding_agent.sandbox_manager import SandboxManager
+from coding_agent.tools.executor import SweRexToolExecutor
+from coding_agent.trajectory_exporter import TrajectoryExporter
 from coding_agent.swebench.dataset import SwebenchDatasetError
 from coding_agent.swebench.prediction import export_prediction_from_run
 from coding_agent.swebench.evaluate import (
@@ -280,46 +275,62 @@ def _configure_logging(args: argparse.Namespace) -> None:
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    """运行已准备好的本地工作区任务。
+    """Run a single task using the ecosystem refactored agent.
 
-    退出码约定：
-    2 表示用户输入或配置错误，3 表示产物写入失败，4 表示运行期未知错误。
-    Docker/SWE-Bench 路径也沿用这个约定，方便 CI 脚本统一处理。
+    Exit codes: 2 = input/config error, 3 = artifact persistence error, 4 = runtime error.
     """
     try:
         budget = RunBudget(args.max_steps, args.timeout_seconds, args.test_timeout_seconds)
-        task = create_task_from_paths(
+        problem_path = Path(args.problem_statement_file)
+        if not problem_path.is_file():
+            raise ValueError("problem_statement_file must exist")
+        task = BenchmarkTask(
             instance_id=args.instance_id,
             workspace=Path(args.workspace),
-            problem_statement_file=Path(args.problem_statement_file),
+            problem_statement=problem_path.read_text(encoding="utf-8"),
             allowed_test_commands=tuple(args.allowed_tests or ()),
         )
-        if args.backend == "mock":
-            backend = MockBackend()
-            model_name = args.model or "mock-model"
-        else:
-            # 真实后端配置从环境或 .env 读取；CLI 层只允许 --model 覆盖模型名，
-            # 不在命令行暴露 API_KEY，避免 shell history 泄露敏感信息。
-            config = load_model_config(model_override=args.model)
-            backend = OpenAICompatibleBackend(config)
-            model_name = config.model
-        run_task(
-            task=task,
-            budget=budget,
-            backend=backend,
-            model_name=model_name,
-            output_dir=Path(args.output_dir),
+
+        # Read templates
+        template_dir = Path(__file__).resolve().parent / "config" / "templates"
+        system_template = (template_dir / "system.j2").read_text(encoding="utf-8")
+        instance_template = (template_dir / "instance.j2").read_text(encoding="utf-8")
+
+        config = AgentConfig(
+            system_template=system_template,
+            instance_template=instance_template,
+            step_limit=args.max_steps,
+            time_limit_seconds=args.timeout_seconds,
+            output_path=Path(args.output_dir),
         )
-    except (ValueError, MissingModelConfigError) as exc:
+
+        if args.backend == "mock":
+            model = ModelBackend(model_name=args.model or "mock-model")
+        else:
+            model_name = args.model or "openai/gpt-4o"
+            model = ModelBackend(model_name=model_name)
+
+        # Local executor (no Docker sandbox for plain 'run')
+        from coding_agent.tools.executor import LocalToolExecutor
+        executor = LocalToolExecutor(
+            workspace=task.workspace,
+            test_timeout_seconds=args.test_timeout_seconds,
+        )
+
+        agent = ToolAgent(model=model, executor=executor, config=config)
+        summary = agent.run(task=task)
+
+        print(f"Run {summary.run_id}: {summary.status.value}")
+        return 0 if summary.status == RunStatus.SOLVED else 1
+    except (ValueError,) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    except ArtifactPersistenceError as exc:
+    except OSError as exc:
         print(str(exc), file=sys.stderr)
         return 3
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 4
-    return 0
 
 
 def _inspect_command(args: argparse.Namespace) -> int:

@@ -23,9 +23,15 @@ from coding_agent.models import (
 )
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.schemas import TOOL_SCHEMAS
-from coding_agent.trajectory import TrajectoryExporter
+from coding_agent.trajectory_exporter import TrajectoryExporter
 
 logger = logging.getLogger(__name__)
+
+# -- Compatibility re-exports for old swebench/swesmith modules --
+ArtifactPersistenceError = RuntimeError  # old persisted-error type
+create_task_from_paths = None  # replaced by BenchmarkTask constructor
+run_task = None  # replaced by ToolAgent.run
+
 
 
 # ---------------------------------------------------------------------------

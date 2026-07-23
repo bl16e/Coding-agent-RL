@@ -4,12 +4,12 @@ from coding_agent.tools.apply_patch import apply_patch
 
 
 def test_apply_patch_preserves_gbk_encoding_on_update(tmp_path: Path):
-    path = tmp_path / "legacy.txt"
+    path = tmp_path / "encoded.txt"
     path.write_bytes("你好，旧世界\r\n".encode("gbk"))
 
     result = apply_patch(
         tmp_path,
-        {"type": "update", "file_path": "legacy.txt", "old_string": "旧世界", "new_string": "新世界"},
+        {"type": "update", "file_path": "encoded.txt", "old_string": "旧世界", "new_string": "新世界"},
     )
 
     assert result.status == "ok"

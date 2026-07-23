@@ -15,13 +15,13 @@ def test_search_code_finds_utf8_text_and_reports_file_metadata(tmp_path: Path):
 
 
 def test_search_code_finds_gbk_text_without_reencoding(tmp_path: Path):
-    (tmp_path / "legacy.txt").write_bytes("第一行\r\n中文 needle\r\n".encode("gbk"))
+    (tmp_path / "encoded.txt").write_bytes("第一行\r\n中文 needle\r\n".encode("gbk"))
 
     result = search_code(tmp_path, {"pattern": "中文"})
 
     assert result.status == "ok"
     assert result.output["matches"] == [
-        {"path": "legacy.txt", "line": 2, "text": "中文 needle", "encoding": "gbk", "newline": "crlf"}
+        {"path": "encoded.txt", "line": 2, "text": "中文 needle", "encoding": "gbk", "newline": "crlf"}
     ]
 
 

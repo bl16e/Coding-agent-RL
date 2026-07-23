@@ -23,7 +23,7 @@ COMMON_PROPERTIES = {
 # Tool schema registry - single source of truth for tool definitions
 TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
     ToolName.READ_FILE: {
-        "description": "Read a UTF-8 text file from the repository. Output is formatted with line numbers (cat -n style). Use offset and limit for large files.",
+        "description": "Read a UTF-8 text file from the repository. Output is formatted with line numbers (cat -n style). Use offset to start at a specific line in large files.",
         "parameters": {
             "file_path": {
                 "type": "string",
@@ -35,20 +35,14 @@ TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
                 "minimum": 1,
                 "description": "1-based start line number (default 1).",
             },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Number of lines to read (default 200).",
-            },
         },
         "examples": [
             '{"file_path": "src/main.py"}',
-            '{"file_path": "README.md", "offset": 10, "limit": 50}',
             '{"file_path": "src/main.py", "offset": 100}',
         ],
     },
     ToolName.APPLY_PATCH: {
-        "description": "Modify the repository by writing files or applying exact string replacements. Use write to create or overwrite a file. Use update to replace old_string with new_string via exact match (old_string must appear exactly once).",
+        "description": "Modify the repository. The tool name is apply_patch. Set type=\"write\" to create or overwrite a file, or type=\"update\" to replace old_string with new_string via exact match. Do not call separate write or update tools.",
         "parameters": {
             "type": {
                 "type": "string",
@@ -127,23 +121,31 @@ TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
         ],
     },
     ToolName.RUN_TESTS: {
-        "description": "Run a self-test or diagnostic command in the repository. Allowed: pytest, python -m pytest, python -c, python <script>.py, git diff/status/log. Blocked: curl, rm, git push/commit, pip install, sudo.",
+        "description": (
+            "Run pytest only. Provide one or more pytest targets: file paths, "
+            "test names, or node IDs. The tool always runs with -x (stop on "
+            "first failure) and --tb=short. Do not pass shell commands, Python "
+            "scripts, pytest command lines, cd, pipes, redirects, or shell "
+            "operators."
+        ),
         "parameters": {
-            "command": {
+            "targets": {
                 "type": "string",
                 "required": True,
-                "description": "Shell command to run. Use single-quoted strings or shlex-safe syntax.",
-            },
-            "description": {
-                "type": "string",
-                "description": "Brief description of what this command does and why.",
+                "description": (
+                    "Pytest target(s) only: a file path (test/test_foo.py), a "
+                    "node id (test/test_foo.py::test_case), or space-separated "
+                    "targets. Do not pass shell commands such as python "
+                    "script.py, python reproduce_issue.py, pytest test/foo.py, "
+                    "or cd repo && pytest. If you need a diagnostic, write a "
+                    "pytest-style test file and run that file as the target."
+                ),
             },
         },
         "examples": [
-            '{"command": "pytest tests/test_main.py", "description": "Run the main test suite"}',
-            '{"command": "python -c \\"import django; print(django.VERSION)\\"", "description": "Check Django version"}',
-            '{"command": "git diff", "description": "Review pending changes"}',
-            '{"command": "git log --oneline -5", "description": "Check recent commits"}',
+            '{"targets": "test/cli/commands_test.py::test__cli__command_directed"}',
+            '{"targets": "test/rules/"}',
+            '{"targets": "test/rules/std_test.py test/rules/yaml_test_cases_test.py"}',
         ],
     },
 }

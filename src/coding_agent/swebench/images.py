@@ -131,6 +131,7 @@ def base_dockerfile(testspec: AdaptedTestSpec) -> str:
             "locales \\",
             "locales-all \\",
             "tzdata \\",
+            "ripgrep \\",
             "&& rm -rf /var/lib/apt/lists/*",
             "",
             "RUN wget 'https://repo.anaconda.com/miniconda/Miniconda3-"

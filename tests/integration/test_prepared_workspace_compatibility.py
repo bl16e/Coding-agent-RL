@@ -1,11 +1,9 @@
 import json
 from pathlib import Path
 
-from coding_agent.agent import create_task_from_paths, run_task
-from coding_agent.model_backend import AgentAction, AgentActionType
-from coding_agent.legacy_mock_backend import MockBackend
 from coding_agent.models import Outcome, RunBudget, ToolName
 from coding_agent.tools.result import ToolExecutionResult
+from tests.helpers.query_backend import ScriptedQueryBackend, ToolCallSpec, make_task, run_agent_for_test
 
 
 class RecordingExecutor:
@@ -23,37 +21,19 @@ class RecordingExecutor:
 
 
 def test_existing_run_accepts_custom_executor_without_changing_artifacts(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("hello\n", encoding="utf-8")
-    problem = tmp_path / "problem.txt"
-    problem.write_text("Read the file.", encoding="utf-8")
-    task = create_task_from_paths(
-        instance_id="example__repo-1",
-        workspace=workspace,
-        problem_statement_file=problem,
-        allowed_test_commands=("python -m pytest",),
-    )
+    task = make_task(tmp_path, problem_statement="Read the file.")
     executor = RecordingExecutor()
 
-    run_task(
+    run_agent_for_test(
         task=task,
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
-        backend=MockBackend(
-            [
-                AgentAction(
-                    action=AgentActionType.READ_FILE,
-                    tool_input={"path": "README.md"},
-                    reasoning_summary="Need context",
-                ),
-                
-            ]
+        backend=ScriptedQueryBackend(
+            [ToolCallSpec(ToolName.READ_FILE, {"file_path": "README.md"})]
         ),
-        model_name="mock-model",
         output_dir=tmp_path / "run",
         tool_executor=executor,
     )
 
-    assert executor.calls == [(ToolName.READ_FILE, {"path": "README.md"})]
+    assert executor.calls == [(ToolName.READ_FILE, {"file_path": "README.md"})]
     summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
     assert summary["instance_id"] == "example__repo-1"

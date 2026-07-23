@@ -65,7 +65,7 @@ def test_stage1_run_qwen_vllm_uses_stage1_config_and_official_batch(tmp_path, mo
 
 
 def test_stage1_run_qwen_vllm_rejects_registry(tmp_path, capsys):
-    exit_code = main([*_stage1_args(tmp_path), "--registry", "legacy.json"])
+    exit_code = main([*_stage1_args(tmp_path), "--registry", "registry.json"])
 
     assert exit_code == 2
     assert "registry" in capsys.readouterr().err

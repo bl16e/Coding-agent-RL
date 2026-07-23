@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.legacy_openai_backend import (
+from coding_agent.openai_compatible_backend import (
     MissingModelConfigError,
     load_model_config,
 )
@@ -52,7 +52,7 @@ def test_model_override_only_replaces_model(tmp_path: Path):
 
 
 def test_load_stage_model_config_reads_stage1_values(tmp_path: Path):
-    from coding_agent.legacy_openai_backend import load_stage_model_config
+    from coding_agent.openai_compatible_backend import load_stage_model_config
 
     config = load_stage_model_config(
         "stage1",
@@ -76,7 +76,7 @@ def test_load_stage_model_config_reads_stage1_values(tmp_path: Path):
 
 
 def test_load_stage_model_config_does_not_fallback_to_generic_env(tmp_path: Path):
-    from coding_agent.legacy_openai_backend import load_stage_model_config
+    from coding_agent.openai_compatible_backend import load_stage_model_config
 
     with pytest.raises(MissingModelConfigError) as exc_info:
         load_stage_model_config(
@@ -99,7 +99,7 @@ def test_load_stage_model_config_does_not_fallback_to_generic_env(tmp_path: Path
 
 
 def test_load_stage_model_config_model_override_only_replaces_stage_model(tmp_path: Path):
-    from coding_agent.legacy_openai_backend import load_stage_model_config
+    from coding_agent.openai_compatible_backend import load_stage_model_config
 
     config = load_stage_model_config(
         "stage2",

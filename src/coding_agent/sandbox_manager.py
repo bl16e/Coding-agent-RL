@@ -156,12 +156,12 @@ class DockerCli:
     def build_image(self, *, image: str, dockerfile: str, context: str = ".") -> DockerResult:
         return self.run(["build", "-t", image, "-f", "-", context], stdin=dockerfile)
 
-    def exec(self, container: str, command: list[str], *, timeout_seconds: float | None = None, stdin: str | None = None, workdir: str | None = None) -> DockerResult:
+    def exec(self, container: str, command: list[str], *, timeout_seconds: float | None = None, stdin: str | None = None, workdir: str | None = None, check: bool = True) -> DockerResult:
         args = ["exec", "-i"]
         if workdir is not None:
             args.extend(["-w", workdir])
         args.extend([container, *command])
-        return self.run(args, timeout_seconds=timeout_seconds, stdin=stdin)
+        return self.run(args, timeout_seconds=timeout_seconds, stdin=stdin, check=check)
 
 
 # === TaskSandboxManager (merged from old sandbox/manager.py) ===

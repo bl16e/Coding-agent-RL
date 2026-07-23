@@ -15,9 +15,10 @@ _SHELL_CONTROL_TOKENS = {"&&", "||", "|", ">", "<"}
 _SHELL_CONTROL_CHARS = (";", "|", ">", "<")
 _SHELL_CONTROL_SUBSTRINGS = ("$(", "`")
 
-# Commands that are never allowed.
+# Commands that are never allowed — these duplicate dedicated tools.
 _BLOCKED_COMMANDS = {
-    "apt", "apt-get", "curl", "docker", "pip", "rm", "sudo", "wget",
+    "apt", "apt-get", "awk", "cat", "curl", "docker", "find", "grep",
+    "head", "less", "more", "pip", "rm", "sed", "sudo", "tail", "wget",
 }
 
 # Read-only git subcommands that are safe to allow.
@@ -73,9 +74,10 @@ def validate_self_test_command(command: str) -> CommandPolicyResult:
 
     executable = parts[0]
 
-    # Block dangerous commands.
+    # Block dangerous commands and commands that duplicate tools.
     if executable in _BLOCKED_COMMANDS:
-        return CommandPolicyResult(False, f"{executable} is not allowed")
+        suggestion = _tool_suggestion(executable)
+        return CommandPolicyResult(False, f"{executable} is not allowed — use the {suggestion} tool instead")
 
     # --- pytest and test runners ---
     if executable in {"pytest", "./pytest"}:

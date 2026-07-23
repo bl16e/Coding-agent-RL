@@ -9,8 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from coding_agent.agent import run_task
-from coding_agent.model_backend import LegacyModelBackend
+from coding_agent.agent import AgentConfig, ToolAgent
 from coding_agent.models import BenchmarkTask, Prediction, RunBudget, RunSummary
 from coding_agent.sandbox_manager import DockerCli
 from coding_agent.tools.container_executor import ContainerToolExecutor
@@ -68,7 +67,7 @@ def run_swesmith_instance(
     instance: dict[str, Any],
     *,
     docker: DockerCli,
-    backend: LegacyModelBackend,
+    backend: Any,
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,
@@ -94,14 +93,24 @@ def run_swesmith_instance(
         allowed_test_commands=SELF_TEST_COMMANDS,
         test_timeout_seconds=budget.test_timeout_seconds,
     )
-    summary = run_task(
-        task=task,
-        budget=budget,
-        backend=backend,
-        model_name=model_name,
-        output_dir=output_path,
-        tool_executor=executor,
+    template_dir = Path(__file__).resolve().parents[1] / "config" / "templates"
+    agent = ToolAgent(
+        model=backend,
+        executor=executor,
+        config=AgentConfig(
+            system_template=(template_dir / "system.j2").read_text(encoding="utf-8"),
+            instance_template=(template_dir / "instance.j2").read_text(encoding="utf-8"),
+            step_limit=budget.max_steps,
+            time_limit_seconds=budget.timeout_seconds,
+            test_timeout_seconds=budget.test_timeout_seconds,
+            output_path=output_path,
+        ),
     )
+    if not getattr(agent.model, "model_name", ""):
+        agent.model.model_name = model_name
+    summary = agent.run(task)
+    if summary.error == "AgentException":
+        raise RuntimeError("agent execution failed")
     patch = _export_container_diff(docker, prepared)
     (output_path / "final.patch").write_text(patch, encoding="utf-8")
     _write_prediction(output_path / "prediction.jsonl", Prediction(prepared.instance_id, model_name, patch))
@@ -132,7 +141,7 @@ def _read_prediction(run_dir: Path, instance_id: str, model_name: str) -> Predic
 def _run_instance_and_collect(
     instance: dict[str, Any],
     docker: DockerCli,
-    backend_factory: Callable[[], LegacyModelBackend],
+    backend_factory: Callable[[], Any],
     budget: RunBudget,
     model_name: str,
     root: Path,
@@ -250,7 +259,7 @@ def run_swesmith_subset(
     *,
     subset_path: str | Path,
     docker: DockerCli,
-    backend_factory: Callable[[], LegacyModelBackend],
+    backend_factory: Callable[[], Any],
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,

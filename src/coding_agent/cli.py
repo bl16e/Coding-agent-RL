@@ -7,11 +7,11 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from coding_agent.agent import ToolAgent, AgentConfig
+from coding_agent.agent import ArtifactPersistenceError, ToolAgent, AgentConfig
 from coding_agent.model_backend import ModelBackend
 from coding_agent.models import BenchmarkTask, RunBudget, RunStatus, UnsupportedLegacyOperation, UnsupportedLegacySurface
-from coding_agent.legacy_mock_backend import MockBackend
-from coding_agent.legacy_openai_backend import (
+from coding_agent.mock_backend import MockBackend
+from coding_agent.openai_compatible_backend import (
     MissingModelConfigError,
     OpenAICompatibleBackend,
     load_model_config,
@@ -309,6 +309,7 @@ def _run_command(args: argparse.Namespace) -> int:
             instance_template=instance_template,
             step_limit=args.max_steps,
             time_limit_seconds=args.timeout_seconds,
+            test_timeout_seconds=args.test_timeout_seconds,
             output_path=Path(args.output_dir),
         )
 

@@ -13,7 +13,6 @@ from coding_agent.tools.apply_patch import apply_patch as _apply_remote
 from coding_agent.tools.search_code import search_code as _search_remote
 from coding_agent.tools.run_tests import run_tests as _run_tests_remote
 from coding_agent.tools.result import ToolExecutionResult
-from coding_agent.tools.test_command_policy import validate_self_test_command
 
 
 class ToolExecutor(Protocol):
@@ -165,23 +164,23 @@ def _local_search_code(workspace: Path, tool_input: dict) -> ToolExecutionResult
 
 
 def _local_run_tests(workspace: Path, tool_input: dict, timeout_seconds: float) -> ToolExecutionResult:
-    command = str(tool_input.get("command", ""))
+    targets = str(tool_input.get("targets", "")).strip()
+    if not targets:
+        tr = TestResult("", TestStatus.REJECTED, 0.0, output_summary="targets is required")
+        return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, "targets must not be empty", test_result=tr)
     started = time.monotonic()
-    policy = validate_self_test_command(command)
-    if not policy.allowed:
-        tr = TestResult(command, TestStatus.REJECTED, 0.0, output_summary=policy.reason)
-        return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, policy.reason, test_result=tr)
+    argv = ["python", "-m", "pytest"] + targets.split() + ["-x", "--tb=short"]
     try:
-        completed = subprocess.run(list(policy.argv), cwd=workspace, shell=False, text=True, capture_output=True, timeout=timeout_seconds, check=False)
+        completed = subprocess.run(argv, cwd=workspace, shell=False, text=True, capture_output=True, timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired:
-        tr = TestResult(command, TestStatus.TIMEOUT, time.monotonic() - started, output_summary="timeout")
+        tr = TestResult(targets, TestStatus.TIMEOUT, time.monotonic() - started, output_summary="timeout")
         return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.TIMEOUT, "timeout", test_result=tr)
     except OSError as exc:
-        tr = TestResult(command, TestStatus.EXECUTION_ERROR, time.monotonic() - started, output_summary=str(exc))
+        tr = TestResult(targets, TestStatus.EXECUTION_ERROR, time.monotonic() - started, output_summary=str(exc))
         return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.ERROR, str(exc), test_result=tr)
     duration = time.monotonic() - started
     status = TestStatus.PASSED if completed.returncode == 0 else TestStatus.FAILED
     outcome = Outcome.OK if completed.returncode == 0 else Outcome.FAILED
     summary = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()[:4000]
-    tr = TestResult(command, status, duration, completed.returncode, output_summary=summary)
+    tr = TestResult(targets, status, duration, completed.returncode, output_summary=summary)
     return ToolExecutionResult(ToolName.RUN_TESTS, outcome, summary or status.value, test_result=tr)

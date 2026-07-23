@@ -146,18 +146,24 @@ class TrajectoryExporter:
                     ))
                 step_idx += 1
             elif role == "tool":
-                try:
-                    data = json.loads(msg.get("content", "{}"))
-                except json.JSONDecodeError:
-                    data = {}
+                extra = msg.get("extra") or {}
+                data = extra.get("tool_result")
+                if not isinstance(data, dict):
+                    try:
+                        data = json.loads(msg.get("content", "{}"))
+                    except json.JSONDecodeError:
+                        data = {}
                 tool_name_str = data.get("tool_name", "unknown")
                 try:
                     tool_name = ToolName(tool_name_str)
                 except ValueError:
                     continue
+                tool_input = data.get("tool_input", {})
+                if not isinstance(tool_input, dict):
+                    tool_input = {}
                 tool_call = ToolCall(
                     tool_name=tool_name,
-                    input={},
+                    input=tool_input,
                     output_summary=data.get("output_summary", ""),
                     status=Outcome(data.get("status", "ok")),
                     started_at=now,
@@ -180,7 +186,7 @@ class TrajectoryExporter:
                 return str(msg.get("content", ""))
         return ""
 
-# === Legacy trajectory functions (merged from old trajectory/) ===
+# === Trajectory compatibility helpers ===
 
 def write_summary(path, summary):
     """Write RunSummary to JSON file."""
@@ -286,7 +292,11 @@ def _fmt_obs(tool_name, result, *, tool_status="", output_summary=""):
     elif tool_name == "search_code":
         output = result.get("output", {})
         matches = output.get("matches", [])
-        return {"matches": len(matches), "results": matches[:5]}
+        return {
+            "matches": len(matches),
+            "results": matches,
+            "truncated": output.get("truncated", False),
+        }
     elif tool_name == "run_tests":
         test_result = result.get("test_result", {})
         return {"status": test_result.get("status", ""), "passed": test_result.get("status") == "passed", "output": test_result.get("output_summary", "")}

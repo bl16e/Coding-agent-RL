@@ -10,8 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from coding_agent.agent import ArtifactPersistenceError, run_task
-from coding_agent.model_backend import LegacyModelBackend
+from coding_agent.agent import AgentConfig, ArtifactPersistenceError, ToolAgent
 from coding_agent.models import (
     BaseImage,
     BenchmarkTask,
@@ -59,11 +58,9 @@ class SandboxedRunRuntimeError(RuntimeError):
 
 
 SELF_TEST_COMMAND_GUIDANCE = (
-    "pytest ...",
-    "python -m pytest ...",
-    "./tests/runtests.py ...",
-    'python -c "..."',
-    "python path/to/diagnostic.py",
+    "test/test_file.py::test_name",
+    "test/rules/",
+    "test/rules/std_test.py test/rules/yaml_test_cases_test.py",
 )
 
 
@@ -513,6 +510,8 @@ def _write_official_summary(
     )
     if "self_test_coverage" in summary.metadata:
         metadata["self_test_coverage"] = summary.metadata["self_test_coverage"]
+    else:
+        metadata["self_test_coverage"] = _default_self_test_coverage(summary.test_summary)
     metadata["agent_status"] = summary.status.value
     metadata["agent_error"] = summary.error
     rewritten = RunSummary(
@@ -530,6 +529,19 @@ def _write_official_summary(
     )
     write_summary(output_path / "summary.json", rewritten)
     return rewritten
+
+
+def _default_self_test_coverage(test_summary: Mapping[str, int]) -> dict[str, dict[str, int]]:
+    statuses = ("passed", "failed", "rejected", "timeout", "execution_error")
+    empty = {status: 0 for status in statuses}
+    return {
+        "existing_tests": {
+            status: int(test_summary.get(status, 0))
+            for status in statuses
+        },
+        "self_authored_tests": dict(empty),
+        "diagnostic_tests": dict(empty),
+    }
 
 
 def _ensure_trajectory_json(*, output_path: Path, task_record: Any, patch: str, resolved: bool) -> None:
@@ -679,7 +691,7 @@ def run_prepared_swebench_runtime(
     dataset_path: str | Path,
     instance_id: str,
     docker: DockerCli,
-    backend: LegacyModelBackend,
+    backend: Any,
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,
@@ -737,6 +749,7 @@ def run_prepared_swebench_runtime(
         workspace=host_workspace,
         problem_statement=task_record.problem_statement,
         allowed_test_commands=SELF_TEST_COMMAND_GUIDANCE,
+        fail_to_pass=validation.fail_to_pass,
         repo=task_record.repo,
         base_commit=task_record.base_commit,
     )
@@ -750,15 +763,24 @@ def run_prepared_swebench_runtime(
     run_id = str(uuid.uuid4())
     try:
         logger.info("agent run started: instance_id=%s run_id=%s model=%s", task_record.instance_id, run_id, model_name)
-        summary = run_task(
-            task=task,
-            budget=budget,
-            backend=backend,
-            model_name=model_name,
-            output_dir=output_path,
-            run_id=run_id,
-            tool_executor=executor,
+        template_dir = Path(__file__).resolve().parents[1] / "config" / "templates"
+        agent = ToolAgent(
+            model=backend,
+            executor=executor,
+            config=AgentConfig(
+                system_template=(template_dir / "system.j2").read_text(encoding="utf-8"),
+                instance_template=(template_dir / "instance.j2").read_text(encoding="utf-8"),
+                step_limit=budget.max_steps,
+                time_limit_seconds=budget.timeout_seconds,
+                test_timeout_seconds=budget.test_timeout_seconds,
+                output_path=output_path,
+            ),
         )
+        if not getattr(agent.model, "model_name", ""):
+            agent.model.model_name = model_name
+        summary = agent.run(task)
+        if summary.error == "AgentException":
+            raise RuntimeError("agent execution failed")
         logger.info("agent run completed: instance_id=%s run_id=%s status=%s", task_record.instance_id, run_id, summary.status.value)
     except ArtifactPersistenceError:
         raise
@@ -1149,7 +1171,7 @@ def run_official_swebench_batch(
     *,
     dataset_paths: Sequence[str | Path],
     docker: DockerCli,
-    backend_factory: Callable[[], LegacyModelBackend],
+    backend_factory: Callable[[], Any],
     budget: RunBudget,
     model_name: str,
     output_dir: str | Path,

@@ -9,7 +9,6 @@ from typing import Any, Protocol
 from coding_agent.models import FileModification, Outcome, TestResult, TestStatus, ToolName
 from coding_agent.sandbox_manager import DockerCli, DockerCommandError, DockerCommandTimeout
 from coding_agent.tools.result import ToolExecutionResult
-from coding_agent.tools.test_command_policy import validate_self_test_command
 
 
 def _repo_file_path(repo_path: str, requested_path: str) -> str:
@@ -28,22 +27,20 @@ def _docker_error(tool_name: ToolName, exc: Exception) -> ToolExecutionResult:
 
 
 def _parse_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
-    """Parse optional line range from offset/limit.
+    """Parse optional line range from offset.
 
     Returns (start, end) as a 1-based inclusive interval, or None to read the
-    default page.
+    default page (first 100 lines).
+
+    - no offset: read first 100 lines
+    - offset=N: read 100 lines starting at line N
     """
-    has_offset = "offset" in tool_input
-    has_limit = "limit" in tool_input
-    if not has_offset and not has_limit:
+    if "offset" not in tool_input:
         return None
     start = int(tool_input.get("offset", 1))
-    limit = int(tool_input.get("limit", 1))
     if start < 1:
         raise ValueError("offset must be >= 1")
-    if limit < 1:
-        raise ValueError("limit must be >= 1")
-    return start, start + limit - 1
+    return start, start + 99
 
 
 def _container_textio_prelude() -> str:
@@ -69,6 +66,7 @@ def _container_textio_prelude() -> str:
         "    if cr: return 'cr'\n"
         "    return 'lf'\n"
         "def read_text(path):\n"
+        "    if path.is_dir(): raise IsADirectoryError(f'Is a directory: {path}')\n"
         "    data=path.read_bytes()\n"
         "    if looks_binary(data): raise BinaryFileError('binary file is not supported')\n"
         "    for enc in ('utf-8','gbk'):\n"
@@ -148,7 +146,7 @@ def _container_helper_script() -> str:
         "        if method == 'read_file':\n"
         "            p=Path(params['path']); bounds=params.get('bounds')\n"
         "            text, enc, nl = read_text(p); lines=text.splitlines(keepends=True); total=len(text.splitlines())\n"
-        "            if bounds is None: start=1; end=min(200, max(total, 1))\n"
+        "            if bounds is None: start=1; end=min(100, max(total, 1))\n"
         "            else: start=int(bounds[0]); end=int(bounds[1])\n"
         "            actual_end=min(end, total) if total else 0\n"
         "            selected=''.join(lines[start-1:actual_end]); actual_end=min(end, total) if total else 0\n"
@@ -202,7 +200,7 @@ def _container_helper_script() -> str:
         "                        if rparts: rparts.append('/')\n"
         "                        rparts.append(r'(?:[^/]+/)*'); prev_ds=True\n"
         "                    else:\n"
-        "                        e=re.escape(pt); e=e.replace(r'\\\\*', '[^/]*'); e=e.replace(r'\\\\?', '[^/]')\n"
+        "                        e=re.escape(pt); e=e.replace(r'\\*', '[^/]*'); e=e.replace(r'\\?', '[^/]')\n"
         "                        if rparts and not prev_ds: rparts.append('/')\n"
         "                        rparts.append(e); prev_ds=False\n"
         "                return bool(re.match('^'+''.join(rparts)+'$', rel_path))\n"
@@ -286,6 +284,7 @@ class ContainerToolExecutor:
         self._test_timeout_seconds = test_timeout_seconds
         self._helper = helper
         self._helper_enabled = helper is not None or isinstance(docker, DockerCli)
+        self._rg_available: bool | None = None  # cached probe result
 
     def _helper_request(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
         if not self._helper_enabled:
@@ -327,12 +326,12 @@ class ContainerToolExecutor:
                 "end=int(sys.argv[3]) if sys.argv[3] else None\n"
                 "try:\n"
                 "    text, enc, nl = read_text(p)\n"
-                "except (BinaryFileError, TextDecodeError) as exc:\n"
+                "except (BinaryFileError, TextDecodeError, IsADirectoryError) as exc:\n"
                 "    print(json.dumps({'error': str(exc)})); sys.exit(1)\n"
                 "lines=text.splitlines(keepends=True)\n"
                 "total=len(text.splitlines())\n"
                 "if start is None:\n"
-                "    start=1; end=min(200, max(total, 1))\n"
+                "    start=1; end=min(100, max(total, 1))\n"
                 "actual_end=min(end, total) if total else 0\n"
                 "selected=''.join(lines[start-1:actual_end])\n"
                 "truncated=(False if total == 0 else start > 1 or actual_end < total)\n"
@@ -538,10 +537,14 @@ class ContainerToolExecutor:
         self, pattern: str, head_limit: int, ignore_case: bool, glob_pat: str,
         context_before: int, context_after: int, context_around: int,
     ) -> dict[str, Any] | None:
+        if self._rg_available is False:
+            return None
         try:
-            probe = self._docker.exec(self._container_name, ["sh", "-lc", "command -v rg >/dev/null 2>&1"])
+            probe = self._docker.exec(self._container_name, ["sh", "-lc", "command -v rg >/dev/null 2>&1"], check=False)
             if probe.returncode != 0:
+                self._rg_available = False
                 return None
+            self._rg_available = True
             command = [
                 "rg",
                 "--json",
@@ -565,8 +568,8 @@ class ContainerToolExecutor:
                 command.extend(["--glob", glob_pat])
             command.append(pattern)
             command.append(self._repo_path)
-            result = self._docker.exec(self._container_name, command)
-        except (DockerCommandError, DockerCommandTimeout):
+            result = self._docker.exec(self._container_name, command, check=False)
+        except DockerCommandTimeout:
             return None
 
         matches: list[dict[str, Any]] = []
@@ -596,40 +599,49 @@ class ContainerToolExecutor:
         return {"matches": matches, "truncated": len(matches) >= head_limit, "binary_skipped": 0, "engine": "rg"}
 
     def run_tests(self, tool_input: dict[str, Any]) -> ToolExecutionResult:
-        command = str(tool_input.get("command", ""))
+        targets = str(tool_input.get("targets", "")).strip()
+        if not targets:
+            return ToolExecutionResult(
+                ToolName.RUN_TESTS, Outcome.REJECTED,
+                "targets must not be empty",
+                test_result=TestResult("", TestStatus.REJECTED, 0.0, output_summary="targets is required"),
+            )
+        # Reject shell commands masquerading as pytest targets.
+        _SHELL_CHARS = {"|", ";", "&", ">", "<", "$", "`", "(", ")", "[", "]", "{", "}", "'", "\"", "\\"}
+        if any(c in targets for c in _SHELL_CHARS):
+            return ToolExecutionResult(
+                ToolName.RUN_TESTS, Outcome.REJECTED,
+                f"targets contains shell characters: {targets!r}. targets must be pytest file paths or node IDs (e.g. test/test_foo.py::test_case). Use read_file or search_code for file operations.",
+                test_result=TestResult(targets, TestStatus.REJECTED, 0.0, output_summary="shell characters in targets"),
+            )
+        first_word = targets.split(None, 1)[0] if targets else ""
+        if first_word in {"python", "python3", "pytest", "find", "grep", "cat", "head", "tail",
+                           "pip", "git", "ls", "cd", "echo", "bash", "sh", "sudo", "apt",
+                           "curl", "wget", "rm", "cp", "mv", "awk", "sed", "docker"}:
+            return ToolExecutionResult(
+                ToolName.RUN_TESTS, Outcome.REJECTED,
+                f"targets must be pytest paths or node IDs, not a shell command: {targets!r}",
+                test_result=TestResult(targets, TestStatus.REJECTED, 0.0, output_summary=f"not a pytest target: {first_word}"),
+            )
         started = time.monotonic()
-        policy = validate_self_test_command(command)
-        # Official eval scripts (from validation.allowed_commands) contain
-        # multi-line shell with "set -euxo pipefail" and won't pass policy.
-        # They still need shell=True execution.
-        is_eval = command in self._allowed_test_commands
-        if policy.allowed:
-            exec_command = list(policy.argv)
-            workdir = self._repo_path
-        elif is_eval:
-            exec_command = ["sh", "-lc", f"cd {self._repo_path} && {command}"]
-            workdir = None
-        else:
-            output_summary = f"command is not allowed: {policy.reason}"
-            test_result = TestResult(command, TestStatus.REJECTED, 0.0, output_summary=output_summary)
-            return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.REJECTED, output_summary, test_result=test_result)
+        pytest_cmd = f"cd {self._repo_path} && source /opt/miniconda3/bin/activate && conda activate testbed && python -m pytest {targets} -x --tb=short"
+        exec_command = ["bash", "-lc", pytest_cmd]
         try:
             result = self._docker.exec(
                 self._container_name,
                 exec_command,
                 timeout_seconds=self._test_timeout_seconds,
-                workdir=workdir,
+                check=False,
             )
         except DockerCommandTimeout:
             duration = time.monotonic() - started
-            test_result = TestResult(command, TestStatus.TIMEOUT, duration, output_summary="test command timed out")
+            test_result = TestResult(targets, TestStatus.TIMEOUT, duration, output_summary="test command timed out")
             return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.TIMEOUT, "test command timed out", test_result=test_result)
-        except DockerCommandError as exc:
-            duration = time.monotonic() - started
-            output = (exc.result.stdout + exc.result.stderr).strip()[:4000]
-            test_result = TestResult(command, TestStatus.FAILED, duration, exc.result.returncode, output)
-            return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.FAILED, output or "failed", test_result=test_result)
         duration = time.monotonic() - started
         output = (result.stdout + result.stderr).strip()[:4000]
-        test_result = TestResult(command, TestStatus.PASSED, duration, result.returncode, output)
-        return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.OK, output or "passed", test_result=test_result)
+        if result.returncode == 0:
+            test_result = TestResult(targets, TestStatus.PASSED, duration, result.returncode, output)
+            return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.OK, output or "passed", test_result=test_result)
+        else:
+            test_result = TestResult(targets, TestStatus.FAILED, duration, result.returncode, output)
+            return ToolExecutionResult(ToolName.RUN_TESTS, Outcome.FAILED, output or "failed", test_result=test_result)

@@ -1,12 +1,12 @@
-from coding_agent.agent import _detect_conflicts
-from coding_agent.model_backend import AgentAction, AgentActionType
+from coding_agent.agent import _ToolAction, _detect_conflicts
+from coding_agent.models import ToolName
 
 
 def test_all_non_conflicting_grouped_together():
     actions = [
-        AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "a.py"}),
-        AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "b.py"}),
-        AgentAction(action=AgentActionType.SEARCH_CODE, tool_input={"pattern": "x"}),
+        _ToolAction(tool_name=ToolName.READ_FILE, tool_input={"file_path": "a.py"}),
+        _ToolAction(tool_name=ToolName.READ_FILE, tool_input={"file_path": "b.py"}),
+        _ToolAction(tool_name=ToolName.SEARCH_CODE, tool_input={"pattern": "x"}),
     ]
     groups = _detect_conflicts(actions)
     # All in one parallel group
@@ -16,7 +16,7 @@ def test_all_non_conflicting_grouped_together():
 
 def test_single_action_one_group():
     actions = [
-        AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "a.py"}),
+        _ToolAction(tool_name=ToolName.READ_FILE, tool_input={"file_path": "a.py"}),
     ]
     groups = _detect_conflicts(actions)
     assert groups == [[0]]
@@ -24,11 +24,11 @@ def test_single_action_one_group():
 
 def test_read_write_same_file_conflicts():
     actions = [
-        AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "a.py"}),
-        AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={
+        _ToolAction(tool_name=ToolName.READ_FILE, tool_input={"file_path": "a.py"}),
+        _ToolAction(tool_name=ToolName.APPLY_PATCH, tool_input={
             "type": "write", "file_path": "a.py", "content": "x",
         }),
-        AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "b.py"}),
+        _ToolAction(tool_name=ToolName.READ_FILE, tool_input={"file_path": "b.py"}),
     ]
     groups = _detect_conflicts(actions)
     # a.py read (0) and write (1) conflict with each other.
@@ -43,10 +43,10 @@ def test_read_write_same_file_conflicts():
 
 def test_two_writes_same_file_conflicts():
     actions = [
-        AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={
+        _ToolAction(tool_name=ToolName.APPLY_PATCH, tool_input={
             "type": "write", "file_path": "a.py", "content": "x",
         }),
-        AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={
+        _ToolAction(tool_name=ToolName.APPLY_PATCH, tool_input={
             "type": "write", "file_path": "a.py", "content": "y",
         }),
     ]
@@ -58,10 +58,10 @@ def test_two_writes_same_file_conflicts():
 
 def test_write_different_files_no_conflict():
     actions = [
-        AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={
+        _ToolAction(tool_name=ToolName.APPLY_PATCH, tool_input={
             "type": "write", "file_path": "a.py", "content": "x",
         }),
-        AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={
+        _ToolAction(tool_name=ToolName.APPLY_PATCH, tool_input={
             "type": "write", "file_path": "b.py", "content": "y",
         }),
     ]
@@ -73,8 +73,8 @@ def test_write_different_files_no_conflict():
 
 def test_update_read_same_file_conflicts():
     actions = [
-        AgentAction(action=AgentActionType.READ_FILE, tool_input={"file_path": "a.py"}),
-        AgentAction(action=AgentActionType.APPLY_PATCH, tool_input={
+        _ToolAction(tool_name=ToolName.READ_FILE, tool_input={"file_path": "a.py"}),
+        _ToolAction(tool_name=ToolName.APPLY_PATCH, tool_input={
             "type": "update", "file_path": "a.py",
             "old_string": "old", "new_string": "new",
         }),

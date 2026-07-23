@@ -9,7 +9,6 @@ from swerex.runtime.abstract import Command
 
 from coding_agent.models import Outcome, TestResult, TestStatus, ToolName
 from coding_agent.tools.result import ToolExecutionResult
-from coding_agent.tools.test_command_policy import validate_self_test_command
 
 
 def _summarize_output(stdout: str, stderr: str, limit: int = 4000) -> str:
@@ -26,23 +25,20 @@ def run_tests(
     tool_input: dict[str, Any],
     timeout_seconds: float,
 ) -> ToolExecutionResult:
-    """Run a self-test command in the container via SWE-ReX runtime."""
-    command = str(tool_input.get("command", ""))
-    started = time.monotonic()
-
-    policy = validate_self_test_command(command)
-    if not policy.allowed:
+    """Run a pytest command in the container via SWE-ReX runtime."""
+    targets = str(tool_input.get("targets", "")).strip()
+    if not targets:
         test_result = TestResult(
-            command, TestStatus.REJECTED, 0.0,
-            output_summary=policy.reason,
+            "", TestStatus.REJECTED, 0.0,
+            output_summary="targets is required",
         )
         return ToolExecutionResult(
             ToolName.RUN_TESTS, Outcome.REJECTED,
-            policy.reason, test_result=test_result,
+            "targets must not be empty", test_result=test_result,
         )
 
-    argv = list(policy.argv)
-    cmd_str = " ".join(argv)
+    cmd_str = f"python -m pytest {targets} -x --tb=short"
+    started = time.monotonic()
     try:
         response = asyncio.run(runtime.execute(Command(
             command=cmd_str,
@@ -53,7 +49,7 @@ def run_tests(
     except asyncio.TimeoutError:
         duration = time.monotonic() - started
         test_result = TestResult(
-            command, TestStatus.TIMEOUT, duration,
+            targets, TestStatus.TIMEOUT, duration,
             output_summary="command timed out",
         )
         return ToolExecutionResult(
@@ -63,7 +59,7 @@ def run_tests(
     except Exception as exc:
         duration = time.monotonic() - started
         test_result = TestResult(
-            command, TestStatus.EXECUTION_ERROR, duration,
+            targets, TestStatus.EXECUTION_ERROR, duration,
             output_summary=str(exc),
         )
         return ToolExecutionResult(
@@ -76,7 +72,7 @@ def run_tests(
     outcome = Outcome.OK if response.exit_code == 0 else Outcome.FAILED
     summary = _summarize_output(response.stdout, response.stderr)
     test_result = TestResult(
-        command, status, duration, response.exit_code,
+        targets, status, duration, response.exit_code,
         output_summary=summary,
     )
     return ToolExecutionResult(

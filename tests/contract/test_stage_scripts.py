@@ -29,7 +29,7 @@ def test_stage2_script_targets_teacher_trajectory_workflow():
     assert "swebench prepare" not in text
 
 
-def test_legacy_sft_pipeline_script_is_stage2_wrapper_only():
+def test_sft_pipeline_script_is_stage2_wrapper_only():
     text = _read_script("run_sft_pipeline.sh")
 
     assert "run_stage2_teacher_trajectories.sh" in text

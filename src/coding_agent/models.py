@@ -349,6 +349,7 @@ class BenchmarkTask:
     workspace: Path
     problem_statement: str
     allowed_test_commands: tuple[str, ...]
+    fail_to_pass: tuple[str, ...] = ()
     repo: str | None = None
     base_commit: str | None = None
 
@@ -365,6 +366,7 @@ class BenchmarkTask:
             raise ValueError("allowed_test_commands must not be empty")
         object.__setattr__(self, "workspace", workspace.resolve())
         object.__setattr__(self, "allowed_test_commands", tuple(self.allowed_test_commands))
+        object.__setattr__(self, "fail_to_pass", tuple(str(item) for item in self.fail_to_pass if str(item)))
 
 
 @dataclass(frozen=True)

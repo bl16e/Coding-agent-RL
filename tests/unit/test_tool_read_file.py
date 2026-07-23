@@ -33,9 +33,9 @@ def test_read_file_returns_utf8_chinese_file_with_line_numbers(tmp_path: Path):
 
 
 def test_read_file_reads_gbk_file_without_reencoding(tmp_path: Path):
-    (tmp_path / "legacy.txt").write_bytes("中文\n".encode("gbk"))
+    (tmp_path / "encoded.txt").write_bytes("中文\n".encode("gbk"))
 
-    result = read_file(tmp_path, {"file_path": "legacy.txt"})
+    result = read_file(tmp_path, {"file_path": "encoded.txt"})
 
     assert result.status == "ok"
     assert "中文" in result.output["content"]

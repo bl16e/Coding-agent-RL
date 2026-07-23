@@ -95,6 +95,7 @@ def build_env_script_contract(
                     output_path="$HOME/requirements.txt",
                 )
             )
+            commands.append("sed -i '/types-pkg_resources/d' $HOME/requirements.txt")
             commands.append(f"conda activate {env_name} && python -m pip install -r $HOME/requirements.txt")
             commands.append("rm $HOME/requirements.txt")
     elif package_spec == "environment.yml":

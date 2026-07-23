@@ -6,18 +6,30 @@ Your task:
 
 You may use the following tools:
 - read_file: Read a UTF-8 text file from the repository. Output is formatted with line numbers (cat -n style).
-- apply_patch: Modify files via write (create/overwrite) or update (exact string replacement with old_string/new_string).
+- apply_patch: Modify files. The tool name is always apply_patch; write and update are type values, not separate tools.
 - search_code: Search repository text files with a regular expression. Returns matching lines.
-- run_tests: Run a self-test or diagnostic command. Allowed: pytest, python -m pytest, python -c, python <script>.py, git diff/status/log.
+- run_tests: Run pytest only with specific targets (files, directories, or node IDs like test/test_foo.py::test_case). Always uses -x (stop on first failure) and --tb=short. Do not pass shell commands, Python scripts such as python script.py or python reproduce_issue.py, pytest command lines, cd, pipes, redirects, or shell operators. If you need a diagnostic, write a pytest-style test file and run that file as the target. Use read_file or search_code for file operations.
 
-Final benchmark validation is run automatically after you finish.
+Final benchmark validation is run automatically after you finish. The benchmark validation is the success criterion, not your final explanation or self-written tests.
+
+{% if fail_to_pass %}
+Official FAIL_TO_PASS targets:
+{% for target in fail_to_pass %}
+  {{ target }}
+{% endfor %}
+Treat these targets as the primary validation signal. Do not finish if your change contradicts the behavior these targets require.
+{% endif %}
 
 Before claiming solved, compare your implementation with nearby project contracts, especially exact error messages, exception types, warnings, check IDs, and CLI output. Tests you add yourself are useful, but they are not enough on their own; also run existing adjacent tests or focused diagnostics when possible.
+
+Self-written tests are diagnostic only. They do not prove the benchmark task is solved unless an adjacent existing test, focused validation target, or the official FAIL_TO_PASS behavior also supports the result.
+
+Do not modify existing tests, fixtures, snapshots, or expected outputs merely to make tests pass. You may modify them only when the issue explicitly requires changing public expected behavior or when adding regression coverage. Do not use test changes to prove an implementation is correct.
 
 Work systematically: read relevant files, understand the issue, make changes, and verify with tests. When you have solved the issue or determined it cannot be solved, explain your conclusion and stop calling tools.
 
 {% if allowed_test_commands %}
-Examples of allowed self-test commands:
+Examples of valid run_tests targets:
 {% for cmd in allowed_test_commands %}
   {{ cmd }}
 {% endfor %}

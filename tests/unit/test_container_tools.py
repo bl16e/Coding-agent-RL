@@ -133,7 +133,7 @@ def test_container_executor_reads_gbk_metadata_from_helper_payload():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"file_path": "legacy.txt"})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "encoded.txt"})
 
     assert result.status is Outcome.OK
     assert result.output["content"] == "   1\t中文\n"

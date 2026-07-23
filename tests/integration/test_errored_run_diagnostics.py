@@ -1,51 +1,14 @@
 import json
 from pathlib import Path
 
-from coding_agent.agent import create_task_from_paths, run_task
 from coding_agent.models import RunBudget
-from coding_agent.model_backend import AgentAction, AgentActionType
-from coding_agent.legacy_mock_backend import MockBackend
+from coding_agent.models import ToolName
 from coding_agent.sandbox_manager import DockerResult
 from coding_agent.swebench import sandbox_run
 from coding_agent.swebench.sandbox_run import prepare_official_swebench_runtime
+from tests.helpers.query_backend import ScriptedQueryBackend, ToolCallSpec
 from tests.helpers.swebench_fixtures import write_swebench_parquet
 from tests.unit.fakes.test_swebench_runtime_fakes import FakeOfficialRuntimeDocker
-
-
-def test_errored_run_records_diagnostics(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    problem = tmp_path / "problem.txt"
-    problem.write_text("Fix it.", encoding="utf-8")
-    task = create_task_from_paths(
-        instance_id="example__repo-1",
-        workspace=workspace,
-        problem_statement_file=problem,
-        allowed_test_commands=("python -m pytest",),
-    )
-    backend = MockBackend(
-        [
-            AgentAction(
-                action=AgentActionType.FINAL,
-                reasoning_summary="Cannot continue",
-                next_intent="Stop",
-                final_status="errored",
-                final_message="model returned unrecoverable error",
-            )
-        ]
-    )
-
-    run_task(
-        task=task,
-        budget=RunBudget(max_steps=3, timeout_seconds=60, test_timeout_seconds=5),
-        backend=backend,
-        model_name="mock-model",
-        output_dir=tmp_path / "run",
-    )
-
-    summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
-    assert summary["status"] == "errored"
-    assert summary["error"] == "model returned unrecoverable error"
 
 
 class FailingToolDocker(FakeOfficialRuntimeDocker):
@@ -78,7 +41,9 @@ def test_official_runtime_failure_preserves_artifacts_and_cleanup_removes_active
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([AgentAction(action=AgentActionType.READ_FILE, tool_input={"path": "README.md"})]),
+        backend=ScriptedQueryBackend(
+            [ToolCallSpec(ToolName.READ_FILE, {"file_path": "README.md"})]
+        ),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",

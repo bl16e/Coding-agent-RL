@@ -20,105 +20,16 @@ from coding_agent.models import (
     RunStatus,
     RunSummary,
     ToolName,
+    _json_value,
 )
-from coding_agent.tools.executor import LocalToolExecutor, ToolExecutor
+from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.schemas import TOOL_SCHEMAS
 from coding_agent.trajectory_exporter import TrajectoryExporter
 
 logger = logging.getLogger(__name__)
 
-# -- Compatibility re-exports for old swebench/swesmith modules --
-
-
 class ArtifactPersistenceError(RuntimeError):
     """Raised when required run artifacts cannot be reliably written."""
-
-
-class _LegacyBackendAdapter:
-    """Adapt old ModelBackend.next_action() → new query() interface."""
-
-    def __init__(self, backend: Any):
-        self._backend = backend
-        self.model_name = getattr(backend, "model_name", "unknown")
-
-    def query(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
-        turn = self._backend.next_action(messages)
-        assistant_messages = turn.assistant_messages
-        raw_msg = assistant_messages[0] if assistant_messages else {"role": "assistant", "content": ""}
-
-        if not turn.actions:
-            # Model stopped naturally — return raw message as-is
-            result = dict(raw_msg)
-            result.setdefault("extra", {})
-            return result
-
-        # Build tool_calls from actions, using proper arguments
-        tool_calls = []
-        for action in turn.actions:
-            tool_calls.append({
-                "id": action.tool_call_id or str(uuid.uuid4()),
-                "type": "function",
-                "function": {
-                    "name": action.action.value,
-                    "arguments": json.dumps(action.tool_input),
-                },
-            })
-        return {
-            "role": "assistant",
-            "content": raw_msg.get("content"),
-            "tool_calls": tool_calls,
-            "extra": {},
-        }
-
-    @property
-    def cost(self) -> float:
-        return 0.0
-
-    @property
-    def n_calls(self) -> int:
-        return 0
-
-
-def run_task(
-    *,
-    task: BenchmarkTask,
-    budget: RunBudget,
-    backend: Any,
-    model_name: str,
-    output_dir: str | Path,
-    run_id: str | None = None,
-    tool_executor: ToolExecutor | None = None,
-) -> RunSummary:
-    """Compatibility bridge: old run_task interface → new ToolAgent.
-
-    Adapts the old ModelBackend (next_action) to the new model interface
-    (query), then delegates entirely to ToolAgent.run().
-    """
-    output_path = Path(output_dir)
-    template_dir = Path(__file__).resolve().parent / "config" / "templates"
-    system_template = (template_dir / "system.j2").read_text(encoding="utf-8")
-    instance_template = (template_dir / "instance.j2").read_text(encoding="utf-8")
-
-    config = AgentConfig(
-        system_template=system_template,
-        instance_template=instance_template,
-        step_limit=budget.max_steps,
-        time_limit_seconds=budget.timeout_seconds,
-        output_path=output_path,
-    )
-
-    adapted_model = _LegacyBackendAdapter(backend)
-    adapted_model.model_name = model_name
-
-    executor = tool_executor or LocalToolExecutor(
-        workspace=task.workspace,
-        test_timeout_seconds=budget.test_timeout_seconds,
-    )
-
-    agent = ToolAgent(model=adapted_model, executor=executor, config=config)
-    return agent.run(task=task)
-
-
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -147,6 +58,7 @@ class AgentConfig(BaseModel):
     step_limit: int = 30
     cost_limit: float = 5.0
     time_limit_seconds: int = 0
+    test_timeout_seconds: int = 120
     output_path: Path | None = None
     max_consecutive_format_errors: int = 3
 
@@ -231,6 +143,35 @@ def _parallel_execute(
     return results
 
 
+def _format_tool_result_content(payload: dict[str, Any]) -> str:
+    lines = [
+        f"tool_name: {payload.get('tool_name', '')}",
+        f"status: {payload.get('status', '')}",
+    ]
+    output_summary = payload.get("output_summary")
+    if output_summary:
+        lines.append(f"output_summary: {output_summary}")
+
+    output = payload.get("output")
+    if isinstance(output, dict):
+        content = output.get("content")
+        if isinstance(content, str):
+            lines.append("output.content:")
+            lines.append(content)
+        else:
+            lines.append("output:")
+            lines.append(json.dumps(output, ensure_ascii=False, default=str))
+    elif output is not None:
+        lines.append("output:")
+        lines.append(str(output))
+
+    test_result = payload.get("test_result")
+    if test_result:
+        lines.append("test_result:")
+        lines.append(json.dumps(test_result, ensure_ascii=False, default=str))
+    return "\n".join(lines)
+
+
 def _schema_to_openai(
     params: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -293,6 +234,7 @@ class ToolAgent:
             "allowed_test_commands": self._extra_template_vars.get(
                 "allowed_test_commands", []
             ),
+            "fail_to_pass": self._extra_template_vars.get("fail_to_pass", []),
             "n_model_calls": self.n_calls,
             "model_cost": self.cost,
             "elapsed_seconds": int(time.time() - self._start_time),
@@ -311,6 +253,7 @@ class ToolAgent:
             "task": task.problem_statement,
             "problem_statement": task.problem_statement,
             "allowed_test_commands": list(task.allowed_test_commands),
+            "fail_to_pass": list(task.fail_to_pass),
         }
         self.messages = []
         self.add_messages(
@@ -474,19 +417,23 @@ class ToolAgent:
         if isinstance(result, ToolExecutionResult):
             payload = {
                 "tool_name": result.tool_name.value,
+                "tool_input": action.tool_input,
                 "status": result.status.value,
                 "output_summary": result.output_summary,
                 "output": result.output,
+                "test_result": _json_value(result.test_result) if result.test_result else None,
             }
         else:
             payload = {
                 "tool_name": action.tool_name.value,
+                "tool_input": action.tool_input,
                 "status": "error",
             }
         return {
             "role": "tool",
             "tool_call_id": action.tool_call_id,
-            "content": json.dumps(payload, ensure_ascii=False, default=str),
+            "content": _format_tool_result_content(payload),
+            "extra": {"tool_result": payload},
         }
 
     # -- tool definitions --
@@ -537,7 +484,7 @@ class ToolAgent:
                 budget=RunBudget(
                     max_steps=self.config.step_limit,
                     timeout_seconds=self.config.time_limit_seconds or 600,
-                    test_timeout_seconds=120,
+                    test_timeout_seconds=self.config.test_timeout_seconds,
                 ),
                 final_patch=final_patch,
                 error=(
@@ -557,7 +504,7 @@ class ToolAgent:
             budget=RunBudget(
                 max_steps=self.config.step_limit,
                 timeout_seconds=self.config.time_limit_seconds or 600,
-                test_timeout_seconds=120,
+                test_timeout_seconds=self.config.test_timeout_seconds,
             ),
             changed_files=changed_files,
             test_summary=test_summary,

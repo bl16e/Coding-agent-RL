@@ -6,9 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from coding_agent.model_backend import AgentAction, AgentActionType
-from coding_agent.legacy_mock_backend import MockBackend
-from coding_agent.models import RunBudget
+from coding_agent.models import RunBudget, RunStatus, ToolName
 from coding_agent.sandbox_manager import DockerCommandError
 from coding_agent.sandbox_manager import DockerResult
 from coding_agent.swebench import sandbox_run
@@ -16,6 +14,7 @@ from coding_agent.swebench.sandbox_run import (
     SandboxedRunInputError,
     prepare_official_swebench_runtime,
 )
+from tests.helpers.query_backend import ScriptedQueryBackend, ToolCallSpec
 from tests.helpers.swebench_fixtures import write_swebench_parquet
 from tests.helpers.swebench_fixtures import swebench_row
 from tests.unit.fakes.test_swebench_runtime_fakes import FakeOfficialRuntimeDocker
@@ -147,7 +146,7 @@ def test_run_prepared_official_runtime_writes_artifacts_and_review_metadata(tmp_
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([]),
+        backend=ScriptedQueryBackend(),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -194,7 +193,7 @@ def test_run_fails_before_agent_when_container_is_not_running(tmp_path: Path):
             dataset_path=dataset,
             instance_id="django__django-11099",
             docker=docker,
-            backend=MockBackend([]),
+            backend=ScriptedQueryBackend(),
             budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
             model_name="mock-model",
             output_dir=tmp_path / "run",
@@ -231,6 +230,48 @@ class EvalRecordingDocker(FakeOfficialRuntimeDocker):
         self.calls.pop()
         self.stdin_by_call.pop()
         return super().exec(container, command, timeout_seconds=timeout_seconds, stdin=stdin)
+
+
+class QueryOnlyBackend:
+    model_name = "query-only"
+
+    def query(self, messages, tools=None):
+        return {"role": "assistant", "content": "done", "extra": {}}
+
+
+def test_run_prepared_official_runtime_accepts_query_backend_directly(tmp_path: Path):
+    dataset = write_swebench_parquet(tmp_path / "dataset.parquet")
+    docker = EvalRecordingDocker(
+        present_images=set(PRESENT_IMAGES),
+        diff_output="diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n",
+    )
+    index_path = tmp_path / ".coding-agent" / "active-sandboxes.json"
+    prepare_official_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        output_dir=tmp_path / "prepare",
+        active_index_path=index_path,
+    )
+
+    summary = sandbox_run.run_prepared_swebench_runtime(
+        dataset_path=dataset,
+        instance_id="django__django-11099",
+        docker=docker,
+        backend=QueryOnlyBackend(),
+        budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
+        model_name="query-only",
+        output_dir=tmp_path / "run",
+        active_index_path=index_path,
+    )
+
+    assert summary.status is RunStatus.SOLVED
+    trajectory = [
+        json.loads(line)
+        for line in (tmp_path / "run" / "trajectory.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert trajectory
 
 
 def test_run_executes_final_eval_and_excludes_validation_patch_from_final_diff(tmp_path: Path):
@@ -287,7 +328,7 @@ def test_run_executes_final_eval_and_excludes_validation_patch_from_final_diff(t
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([]),
+        backend=ScriptedQueryBackend(),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -323,10 +364,10 @@ class PromptCapturingBackend:
     def __init__(self) -> None:
         self.first_messages = None
 
-    def next_action(self, messages):
+    def query(self, messages, tools=None):
         if self.first_messages is None:
             self.first_messages = messages
-        return 
+        return {"role": "assistant", "content": "done", "extra": {}}
 
 
 def test_official_eval_script_is_not_visible_to_agent_prompt(tmp_path: Path):
@@ -357,7 +398,7 @@ def test_official_eval_script_is_not_visible_to_agent_prompt(tmp_path: Path):
     assert "git apply" not in prompt
     assert "EOF_" not in prompt
     assert "Final benchmark validation is run automatically" in prompt
-    assert "python -c" in prompt
+    assert "python -c" not in prompt
 
 
 def test_final_eval_does_not_apply_test_patch_outside_official_eval_script(tmp_path: Path):
@@ -412,7 +453,7 @@ def test_final_eval_does_not_apply_test_patch_outside_official_eval_script(tmp_p
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([]),
+        backend=ScriptedQueryBackend(),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -441,10 +482,12 @@ def test_official_eval_resolution_overrides_agent_incomplete_status(tmp_path: Pa
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend(
+        backend=ScriptedQueryBackend(
             [
-                AgentAction(action=AgentActionType.RUN_TESTS, tool_input={"command": "not allowed"}),
-                
+                ToolCallSpec(ToolName.RUN_TESTS, {"targets": "not_allowed && bad"}),
+                ToolCallSpec(ToolName.RUN_TESTS, {"targets": "not_allowed && bad"}),
+                ToolCallSpec(ToolName.RUN_TESTS, {"targets": "not_allowed && bad"}),
+                ToolCallSpec(ToolName.RUN_TESTS, {"targets": "not_allowed && bad"}),
             ]
         ),
         budget=RunBudget(max_steps=3, timeout_seconds=60, test_timeout_seconds=10),
@@ -457,7 +500,7 @@ def test_official_eval_resolution_overrides_agent_incomplete_status(tmp_path: Pa
     assert summary.status.value == "solved"
     assert summary_payload["status"] == "solved"
     assert summary_payload["agent_status"] == "incomplete"
-    assert "unresolved tool failure" in summary_payload["agent_error"]
+    assert summary_payload["agent_error"] == "LimitsExceeded"
     assert summary_payload["validation"]["eval_report"]["resolved"] is True
 
 
@@ -517,7 +560,7 @@ def test_agent_solved_does_not_override_failed_official_eval(tmp_path: Path):
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([]),
+        backend=ScriptedQueryBackend(),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -549,7 +592,7 @@ def test_official_eval_command_error_still_overrides_agent_solved_summary(tmp_pa
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([]),
+        backend=ScriptedQueryBackend(),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -582,7 +625,7 @@ def test_prepare_then_run_with_cleanup_removes_active_index_entry(tmp_path: Path
         dataset_path=dataset,
         instance_id="django__django-11099",
         docker=docker,
-        backend=MockBackend([]),
+        backend=ScriptedQueryBackend(),
         budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
         model_name="mock-model",
         output_dir=tmp_path / "run",
@@ -621,7 +664,7 @@ def test_run_rejects_non_ready_active_prepared_environment_before_agent_start(tm
             dataset_path=dataset,
             instance_id="django__django-11099",
             docker=docker,
-            backend=MockBackend([]),
+            backend=ScriptedQueryBackend(),
             budget=RunBudget(max_steps=2, timeout_seconds=60, test_timeout_seconds=10),
             model_name="mock-model",
             output_dir=tmp_path / "run",

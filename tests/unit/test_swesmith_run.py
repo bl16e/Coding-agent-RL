@@ -3,6 +3,7 @@ from pathlib import Path
 
 from coding_agent.models import RunBudget, RunStatus, RunSummary
 from coding_agent.swesmith.run import run_swesmith_instance, run_swesmith_subset
+from tests.helpers.query_backend import ScriptedQueryBackend
 
 
 class FakeDocker:
@@ -37,29 +38,12 @@ def test_run_swesmith_instance_uses_container_diff_for_prediction(tmp_path: Path
     def fake_create_official_container(row, *, reference_path):
         return Prepared()
 
-    def fake_run_task(**kwargs):
-        output_dir = Path(kwargs["output_dir"])
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "trajectory.jsonl").write_text(
-            json.dumps({"action_type": "model", "reasoning_summary": "inspect"}) + "\n",
-            encoding="utf-8",
-        )
-        return RunSummary(
-            run_id="run-1",
-            instance_id=instance["instance_id"],
-            model_name="mock-model",
-            status=RunStatus.SOLVED,
-            budget=kwargs["budget"],
-            artifacts={},
-        )
-
     monkeypatch.setattr("coding_agent.swesmith.run.create_official_container", fake_create_official_container)
-    monkeypatch.setattr("coding_agent.swesmith.run.run_task", fake_run_task)
 
     summary = run_swesmith_instance(
         instance,
         docker=FakeDocker(),
-        backend=object(),
+        backend=ScriptedQueryBackend(final="done"),
         budget=RunBudget(1, 60, 10),
         model_name="mock-model",
         output_dir=tmp_path / "run",

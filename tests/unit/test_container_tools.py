@@ -150,7 +150,7 @@ def test_container_executor_reads_requested_line_range():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md", "offset": 2, "limit": 2})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md", "offset": 2})
 
     assert result.status is Outcome.OK
     assert result.output["content"] == "   2\ttwo\n   3\tthree\n"
@@ -174,7 +174,7 @@ def test_container_read_file_script_limits_default_characters():
     assert "50000" in script
 
 
-def test_container_executor_treats_offset_limit_as_line_window():
+def test_container_executor_treats_offset_as_line_window():
     docker = FakeDocker()
     executor = ContainerToolExecutor(
         docker=docker,
@@ -184,7 +184,7 @@ def test_container_executor_treats_offset_limit_as_line_window():
         test_timeout_seconds=30,
     )
 
-    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md", "offset": 2, "limit": 2})
+    result = executor.execute(ToolName.READ_FILE, {"file_path": "README.md", "offset": 2})
 
     assert result.status is Outcome.OK
     assert result.output["content"] == "   2\ttwo\n   3\tthree\n"

@@ -14,17 +14,20 @@ MAX_CHARS = 50000
 
 
 def _parse_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
-    has_offset = "offset" in tool_input
-    has_limit = "limit" in tool_input
-    if not has_offset and not has_limit:
+    """Parse optional line offset.
+
+    Returns (start, end) as a 1-based inclusive interval, or None to read the
+    default page (first DEFAULT_PAGE_LINES lines).
+
+    - no offset: read first DEFAULT_PAGE_LINES lines
+    - offset=N: read DEFAULT_PAGE_LINES lines starting at line N
+    """
+    if "offset" not in tool_input:
         return None
     start = int(tool_input.get("offset", 1))
-    limit = int(tool_input.get("limit", DEFAULT_PAGE_LINES))
     if start < 1:
         raise ValueError("offset must be >= 1")
-    if limit < 1:
-        raise ValueError("limit must be >= 1")
-    return start, start + limit - 1
+    return start, start + DEFAULT_PAGE_LINES - 1
 
 
 def _format_with_line_numbers(content: str, start_line: int) -> str:

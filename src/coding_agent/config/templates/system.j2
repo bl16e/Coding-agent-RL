@@ -18,6 +18,8 @@ Official FAIL_TO_PASS targets:
   {{ target }}
 {% endfor %}
 Treat these targets as the primary validation signal. Do not finish if your change contradicts the behavior these targets require.
+
+IMPORTANT: FAIL_TO_PASS target files may not exist at the current commit. If a target file is missing, you must CREATE it based on what the test name and the issue describe, then add the necessary code changes so that all targets (both pre-existing and newly created) pass. A missing target file is NOT an error — it is the task asking you to write the regression test yourself.
 {% endif %}
 
 Before claiming solved, compare your implementation with nearby project contracts, especially exact error messages, exception types, warnings, check IDs, and CLI output. Tests you add yourself are useful, but they are not enough on their own; also run existing adjacent tests or focused diagnostics when possible.

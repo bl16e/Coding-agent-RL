@@ -27,20 +27,20 @@ def _docker_error(tool_name: ToolName, exc: Exception) -> ToolExecutionResult:
 
 
 def _parse_bounds(tool_input: dict[str, Any]) -> tuple[int, int] | None:
-    """Parse optional line range from offset.
+    """Parse optional line offset.
 
     Returns (start, end) as a 1-based inclusive interval, or None to read the
-    default page (first 100 lines).
+    default page (first 200 lines).
 
-    - no offset: read first 100 lines
-    - offset=N: read 100 lines starting at line N
+    - no offset: read first 200 lines
+    - offset=N: read 200 lines starting at line N
     """
     if "offset" not in tool_input:
         return None
     start = int(tool_input.get("offset", 1))
     if start < 1:
         raise ValueError("offset must be >= 1")
-    return start, start + 99
+    return start, start + 199
 
 
 def _container_textio_prelude() -> str:
@@ -146,7 +146,7 @@ def _container_helper_script() -> str:
         "        if method == 'read_file':\n"
         "            p=Path(params['path']); bounds=params.get('bounds')\n"
         "            text, enc, nl = read_text(p); lines=text.splitlines(keepends=True); total=len(text.splitlines())\n"
-        "            if bounds is None: start=1; end=min(100, max(total, 1))\n"
+        "            if bounds is None: start=1; end=min(200, max(total, 1))\n"
         "            else: start=int(bounds[0]); end=int(bounds[1])\n"
         "            actual_end=min(end, total) if total else 0\n"
         "            selected=''.join(lines[start-1:actual_end]); actual_end=min(end, total) if total else 0\n"
@@ -331,7 +331,7 @@ class ContainerToolExecutor:
                 "lines=text.splitlines(keepends=True)\n"
                 "total=len(text.splitlines())\n"
                 "if start is None:\n"
-                "    start=1; end=min(100, max(total, 1))\n"
+                "    start=1; end=min(200, max(total, 1))\n"
                 "actual_end=min(end, total) if total else 0\n"
                 "selected=''.join(lines[start-1:actual_end])\n"
                 "truncated=(False if total == 0 else start > 1 or actual_end < total)\n"

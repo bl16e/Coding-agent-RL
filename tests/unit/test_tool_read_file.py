@@ -80,7 +80,7 @@ def test_read_file_truncates_very_long_line_by_default(tmp_path: Path):
 def test_read_file_returns_requested_line_range(tmp_path: Path):
     (tmp_path / "README.md").write_bytes(b"one\ntwo\nthree\n")
 
-    result = read_file(tmp_path, {"file_path": "README.md", "offset": 2, "limit": 2})
+    result = read_file(tmp_path, {"file_path": "README.md", "offset": 2})
 
     assert result.status == "ok"
     assert "two" in result.output["content"]
@@ -123,14 +123,15 @@ def test_read_file_line_numbers_are_correctly_padded(tmp_path: Path):
     assert " 100\t" in result.output["content"]
 
 
-def test_read_file_offset_without_limit_reads_single_line(tmp_path: Path):
+def test_read_file_offset_reads_remaining_lines_with_default_page_size(tmp_path: Path):
     (tmp_path / "data.txt").write_bytes(b"one\ntwo\nthree\n")
 
     result = read_file(tmp_path, {"file_path": "data.txt", "offset": 2})
 
     assert result.status == "ok"
-    # offset=2 from a 3-line file: line 2 + truncation marker (not starting from 1)
+    # offset=2 with default 200 lines: reads lines 2-3 (start > 1 means truncated)
     assert "two" in result.output["content"]
+    assert "three" in result.output["content"]
     assert "truncated" in result.output["content"]
     assert result.output["line_start"] == 2
-    assert result.output["line_end"] == 2
+    assert result.output["line_end"] == 3

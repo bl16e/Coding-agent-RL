@@ -20,7 +20,8 @@ class ToolName(str, Enum):
     READ_FILE = "read_file"
     APPLY_PATCH = "apply_patch"
     SEARCH_CODE = "search_code"
-    RUN_TESTS = "run_tests"
+    EXECUTE_BASH = "execute_bash"
+    FINISH = "finish"
 
 
 class StepActionType(str, Enum):
@@ -464,8 +465,7 @@ class TrajectoryStep:
     action_type: StepActionType
     outcome: Outcome
     reasoning_summary: str | None = None
-    next_intent: str | None = None
-    tool_selection_reason: str | None = None
+    observation: str | None = None
     tool_call: ToolCall | None = None
     tool_result: dict[str, Any] | None = None
 

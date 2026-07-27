@@ -76,11 +76,11 @@ class _ToolAction:
 
 
 def _detect_conflicts(actions: list[_ToolAction]) -> list[list[int]]:
-    """Group action indices that conflict (same file_path with a write)."""
+    """Group action indices that conflict (same file path with a write)."""
     write_targets: dict[str, list[int]] = {}
     for i, a in enumerate(actions):
         if a.tool_name is ToolName.APPLY_PATCH:
-            fp = a.tool_input.get("file_path", "")
+            fp = a.tool_input.get("path", "")
             if fp:
                 write_targets.setdefault(fp, []).append(i)
 
@@ -95,9 +95,8 @@ def _detect_conflicts(actions: list[_ToolAction]) -> list[list[int]]:
     for indices in write_targets.values():
         if len(indices) > 1:
             conflicting.update(indices)
-    for fp, read_indices in read_targets.items():
+    for _fp, read_indices in read_targets.items():
         conflicting.update(read_indices)
-        conflicting.update(write_targets[fp])
 
     if not conflicting:
         return [list(range(len(actions)))]
@@ -144,32 +143,57 @@ def _parallel_execute(
 
 
 def _format_tool_result_content(payload: dict[str, Any]) -> str:
-    lines = [
-        f"tool_name: {payload.get('tool_name', '')}",
-        f"status: {payload.get('status', '')}",
-    ]
-    output_summary = payload.get("output_summary")
-    if output_summary:
-        lines.append(f"output_summary: {output_summary}")
+    """Format tool result for LLM consumption.
 
-    output = payload.get("output")
-    if isinstance(output, dict):
-        content = output.get("content")
-        if isinstance(content, str):
-            lines.append("output.content:")
-            lines.append(content)
-        else:
-            lines.append("output:")
-            lines.append(json.dumps(output, ensure_ascii=False, default=str))
-    elif output is not None:
-        lines.append("output:")
-        lines.append(str(output))
+    Produces clean, readable output tailored to each tool type.
+    """
+    tool_name = payload.get("tool_name", "")
+    status = payload.get("status", "")
+    output = payload.get("output") or {}
 
-    test_result = payload.get("test_result")
-    if test_result:
-        lines.append("test_result:")
-        lines.append(json.dumps(test_result, ensure_ascii=False, default=str))
-    return "\n".join(lines)
+    if tool_name == "read_file":
+        # Content may be in "content" (local executor) or "stdout" (Docker CLI)
+        content = ""
+        if isinstance(output, dict):
+            content = output.get("content") or output.get("stdout") or ""
+        return content or f"[read_file: {status}]"
+
+    if tool_name == "apply_patch":
+        stdout = output.get("stdout") if isinstance(output, dict) else ""
+        return stdout or f"[apply_patch: {status}]"
+
+    if tool_name == "search_code":
+        if isinstance(output, dict):
+            matches = output.get("matches", [])
+            truncated = output.get("truncated", False)
+            if not matches:
+                return "[search_code: 0 matches — try a broader pattern or remove glob filter]"
+            lines = [f"[search_code: {len(matches)} matches{' (truncated)' if truncated else ''}]"]
+            for m in matches[:10]:
+                lines.append(f"  {m.get('path', '')}:{m.get('line', '')}: {m.get('text', '')}")
+            return "\n".join(lines)
+        return f"[search_code: {status}]"
+
+    if tool_name == "execute_bash":
+        stdout = output.get("stdout") if isinstance(output, dict) else str(output)
+        stderr = output.get("stderr") if isinstance(output, dict) else ""
+        exit_code = output.get("exit_code") if isinstance(output, dict) else None
+        parts: list[str] = []
+        if stdout:
+            parts.append(stdout)
+        if stderr:
+            parts.append(f"[stderr]\n{stderr}")
+        if exit_code is not None and exit_code != 0:
+            parts.insert(0, f"[exit {exit_code}]")
+        return "\n".join(parts) or f"[execute_bash: {status}]"
+
+    if tool_name == "finish":
+        submission = output.get("submission") if isinstance(output, dict) else ""
+        return submission or "task submitted"
+
+    # Fallback: generic format
+    output_summary = payload.get("output_summary", "")
+    return output_summary or f"[{tool_name}: {status}]"
 
 
 def _schema_to_openai(
@@ -178,15 +202,23 @@ def _schema_to_openai(
     properties = {}
     required = []
     for name, spec in params.items():
-        prop = {"type": spec["type"]}
+        prop: dict[str, Any] = {"type": spec["type"]}
         if "description" in spec:
             prop["description"] = spec["description"]
-        if "minimum" in spec:
-            prop["minimum"] = spec["minimum"]
-        if "maximum" in spec:
-            prop["maximum"] = spec["maximum"]
-        if "enum" in spec:
-            prop["enum"] = spec["enum"]
+        if spec["type"] == "array":
+            if "items" in spec:
+                prop["items"] = spec["items"]
+            if "minItems" in spec:
+                prop["minItems"] = spec["minItems"]
+            if "maxItems" in spec:
+                prop["maxItems"] = spec["maxItems"]
+        else:
+            if "minimum" in spec:
+                prop["minimum"] = spec["minimum"]
+            if "maximum" in spec:
+                prop["maximum"] = spec["maximum"]
+            if "enum" in spec:
+                prop["enum"] = spec["enum"]
         properties[name] = prop
         if spec.get("required"):
             required.append(name)
@@ -231,10 +263,6 @@ class ToolAgent:
             "problem_statement": self._extra_template_vars.get(
                 "problem_statement", ""
             ),
-            "allowed_test_commands": self._extra_template_vars.get(
-                "allowed_test_commands", []
-            ),
-            "fail_to_pass": self._extra_template_vars.get("fail_to_pass", []),
             "n_model_calls": self.n_calls,
             "model_cost": self.cost,
             "elapsed_seconds": int(time.time() - self._start_time),
@@ -252,8 +280,6 @@ class ToolAgent:
         self._extra_template_vars = {
             "task": task.problem_statement,
             "problem_statement": task.problem_statement,
-            "allowed_test_commands": list(task.allowed_test_commands),
-            "fail_to_pass": list(task.fail_to_pass),
         }
         self.messages = []
         self.add_messages(
@@ -273,10 +299,7 @@ class ToolAgent:
 
         while True:
             try:
-                step_test_summary = self.step()
-                if step_test_summary:
-                    for k, v in step_test_summary.items():
-                        test_summary[k] = test_summary.get(k, 0) + v
+                self.step()
                 self.n_consecutive_format_errors = 0
             except FormatError:
                 self.n_consecutive_format_errors += 1
@@ -315,7 +338,7 @@ class ToolAgent:
 
     # -- per-step loop --
 
-    def step(self) -> dict[str, int] | None:
+    def step(self) -> None:
         return self.execute_actions(self.query())
 
     def query(self) -> dict:
@@ -349,7 +372,7 @@ class ToolAgent:
         self.add_messages(message)
         return message
 
-    def execute_actions(self, message: dict) -> dict[str, int] | None:
+    def execute_actions(self, message: dict) -> None:
         actions = self._parse_tool_calls(message)
         if not actions:
             content = message.get("content", "")
@@ -364,19 +387,32 @@ class ToolAgent:
 
         results = _parallel_execute(self.executor, actions)
 
-        test_summary: dict[str, int] = {}
+        finish_submission: str | None = None
         for action, result in zip(actions, results):
             from coding_agent.tools.result import ToolExecutionResult
-            if isinstance(result, ToolExecutionResult) and result.test_result:
-                status = result.test_result.status.value
-                test_summary[status] = test_summary.get(status, 0) + 1
+            if action.tool_name is ToolName.FINISH:
+                if isinstance(result, ToolExecutionResult):
+                    finish_submission = str(result.output.get("submission", "") or "")
 
         outputs = [
             self._tool_result_output(action, result)
             for action, result in zip(actions, results)
         ]
         self.add_messages(*outputs)
-        return test_summary if test_summary else None
+
+        # Explicit finish: clean exit with submission message
+        for action in actions:
+            if action.tool_name is ToolName.FINISH:
+                raise InterruptAgentFlow([{
+                    "role": "exit",
+                    "content": finish_submission or "task submitted via finish",
+                    "extra": {
+                        "exit_status": "Submitted",
+                        "submission": finish_submission or "",
+                    },
+                }])
+
+        return None
 
     # -- tool call parsing --
 

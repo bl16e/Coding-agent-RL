@@ -12,7 +12,7 @@ from typing import Any
 from coding_agent.agent import AgentConfig, ToolAgent
 from coding_agent.models import BenchmarkTask, Prediction, RunBudget, RunSummary
 from coding_agent.sandbox_manager import DockerCli
-from coding_agent.tools.container_executor import ContainerToolExecutor
+from coding_agent.tools.container_executor import ContainerToolExecutor, install_tool_scripts
 from coding_agent.swebench.prediction import prediction_to_dict
 from coding_agent.swesmith.dataset import _repo_key, load_subset
 from coding_agent.swesmith.runtime import SwesmithPreparedContainer, create_official_container, import_swesmith
@@ -90,9 +90,8 @@ def run_swesmith_instance(
         docker=docker,
         container_name=prepared.container_name,
         repo_path=prepared.repo_path,
-        allowed_test_commands=SELF_TEST_COMMANDS,
-        test_timeout_seconds=budget.test_timeout_seconds,
     )
+    install_tool_scripts(prepared.container_name, docker)
     template_dir = Path(__file__).resolve().parents[1] / "config" / "templates"
     agent = ToolAgent(
         model=backend,

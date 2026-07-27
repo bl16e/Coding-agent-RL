@@ -111,12 +111,12 @@ class TrajectoryExporter:
     def _messages_to_steps(self, messages: list[dict]) -> list[TrajectoryStep]:
         steps: list[TrajectoryStep] = []
         step_idx = 0
-        now = _utc_now()
 
         for msg in messages:
             role = msg.get("role", "")
             if role in ("system",):
                 continue
+            now = _utc_now()
             if role == "user":
                 steps.append(TrajectoryStep(
                     step_index=step_idx,
@@ -169,11 +169,15 @@ class TrajectoryExporter:
                     started_at=now,
                     ended_at=now,
                 )
+                # Build observation from the formatted tool result content
+                from coding_agent.agent import _format_tool_result_content
+                observation = _format_tool_result_content(data)
                 steps.append(TrajectoryStep(
                     step_index=step_idx,
                     timestamp=now,
                     action_type=StepActionType.TOOL_RESULT,
                     outcome=Outcome(data.get("status", "ok")),
+                    observation=observation,
                     tool_call=tool_call,
                     tool_result=data,
                 ))
@@ -276,28 +280,32 @@ def convert_trajectory_to_summary_format(*, trajectory_jsonl, task_id, issue, fi
 
 
 def _fmt_obs(tool_name, result, *, tool_status="", output_summary=""):
+    """Format observation from tool result for summary trajectory."""
+    output = result.get("output", {}) if isinstance(result, dict) else {}
+    if not isinstance(output, dict):
+        output = {}
+
     if tool_name == "read_file":
-        output = result.get("output", {})
-        return {"content": output.get("content", "")}
+        # Content may be in "content" (local executor) or "stdout" (Docker CLI)
+        return {"content": output.get("content") or output.get("stdout") or output_summary}
     elif tool_name == "apply_patch":
-        output = result.get("output", {})
-        patch = output.get("patch", "")
-        modifications = result.get("modifications", [])
-        if patch:
-            return {"patch": patch}
-        if modifications:
-            mod = modifications[0]
-            return {"status": "success" if mod.get("write_status") == "ok" else "failed", "path": mod.get("path", "")}
-        return {"status": tool_status or "unknown", "output": output_summary}
+        stdout = output.get("stdout", "")
+        return {"output": stdout or output_summary}
     elif tool_name == "search_code":
-        output = result.get("output", {})
         matches = output.get("matches", [])
+        if not matches:
+            return {"matches": 0, "hint": "0 matches — try a broader pattern or remove glob filter"}
         return {
             "matches": len(matches),
-            "results": matches,
+            "results": matches[:10],
             "truncated": output.get("truncated", False),
         }
-    elif tool_name == "run_tests":
-        test_result = result.get("test_result", {})
-        return {"status": test_result.get("status", ""), "passed": test_result.get("status") == "passed", "output": test_result.get("output_summary", "")}
+    elif tool_name == "execute_bash":
+        return {
+            "stdout": output.get("stdout", ""),
+            "stderr": output.get("stderr", ""),
+            "exit_code": output.get("exit_code"),
+        }
+    elif tool_name == "finish":
+        return {"submission": output.get("submission", output_summary)}
     return {"raw": result}

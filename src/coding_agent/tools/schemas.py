@@ -4,76 +4,65 @@ from typing import Any
 
 from coding_agent.models import ToolName
 
-# Common properties included in all tool calls for context tracking
-COMMON_PROPERTIES = {
-    "reasoning_summary": {
-        "type": "string",
-        "description": "Brief reason for this tool choice.",
-    },
-    "next_intent": {
-        "type": "string",
-        "description": "What you plan to do after this result.",
-    },
-    "tool_selection_reason": {
-        "type": "string",
-        "description": "Why this tool is appropriate now.",
-    },
-}
-
 # Tool schema registry - single source of truth for tool definitions
 TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
     ToolName.READ_FILE: {
-        "description": "Read a UTF-8 text file from the repository. Output is formatted with line numbers (cat -n style). Use offset to start at a specific line in large files.",
+        "description": """\
+Read a UTF-8 text file or list a directory. Output is formatted with line
+numbers (cat -n style). Shows the first 300 lines by default. Use view_range
+to zoom into specific lines. If file_path is a directory, lists non-hidden
+files and subdirectories up to 2 levels deep.""",
         "parameters": {
             "file_path": {
                 "type": "string",
                 "required": True,
-                "description": "Repository-relative file path.",
+                "description": "Absolute path to the file or directory.",
             },
-            "offset": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "1-based start line number (default 1).",
+            "view_range": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Show lines from START to END. Use -1 for END to read to end of file. Example: [400, 500] shows lines 400-500.",
             },
         },
         "examples": [
             '{"file_path": "src/main.py"}',
-            '{"file_path": "src/main.py", "offset": 100}',
+            '{"file_path": "src/main.py", "view_range": [400, 500]}',
+            '{"file_path": "tests/"}',
         ],
     },
     ToolName.APPLY_PATCH: {
-        "description": "Modify the repository. The tool name is apply_patch. Set type=\"write\" to create or overwrite a file, or type=\"update\" to replace old_string with new_string via exact match. Do not call separate write or update tools.",
+        "description": """\
+Modify or create files. To update an existing file, set old_string to the
+exact text to replace (copy it from read_file output to ensure exact
+whitespace match) and new_string to the replacement. old_string must be
+unique in the file — include enough surrounding context lines to make it
+unique. To create a new file or overwrite an existing one, omit old_string
+or set it to empty, and set new_string to the full file content.""",
         "parameters": {
-            "type": {
+            "path": {
                 "type": "string",
                 "required": True,
-                "enum": ["write", "update"],
-                "description": "Operation type: write (create or overwrite a file), update (exact string replacement).",
-            },
-            "file_path": {
-                "type": "string",
-                "description": "Repository-relative file path for write and update operations.",
-            },
-            "content": {
-                "type": "string",
-                "description": "Complete file content for write operation.",
+                "description": "Absolute path to the file.",
             },
             "old_string": {
                 "type": "string",
-                "description": "Exact text to replace for update operation. Must appear exactly once in the file. Include enough surrounding context (indentation, blank lines, neighbouring code) to make it unique.",
+                "description": "Exact text to replace. Copy from read_file output for exact whitespace. Must be unique in the file. Omit or leave empty to create/overwrite the file.",
             },
             "new_string": {
                 "type": "string",
-                "description": "Replacement text for update operation.",
+                "required": True,
+                "description": "Replacement text. If old_string is empty, this is the full file content.",
             },
         },
         "examples": [
-            '{"type": "write", "file_path": "tests/test_calc.py", "content": "import pytest\\n..."}',
-            '{"type": "update", "file_path": "src/main.py", "old_string": "def substract(a, b):", "new_string": "def subtract(a, b):"}',
+            '{"path": "/testbed/src/main.py", "old_string": "    return b - a", "new_string": "    return a - b"}',
+            '{"path": "/testbed/tests/test_new.py", "new_string": "import pytest\\n\\ndef test_foo():\\n    pass\\n"}',
         ],
     },
     ToolName.SEARCH_CODE: {
-        "description": "Search repository text files with a regular expression. Returns matching lines with optional context. Use glob to filter by file pattern (e.g. \"**/*.py\").",
+        "description": "Search repository text files with a regular expression. Returns matching file paths, line numbers, and line text. Use glob to filter by file pattern.",
         "parameters": {
             "pattern": {
                 "type": "string",
@@ -82,7 +71,7 @@ TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
             },
             "glob": {
                 "type": "string",
-                "description": "Glob pattern to filter files (e.g. \"**/*.py\", \"src/**/*.ts\"). Defaults to all text files.",
+                "description": 'Glob pattern to filter files (e.g. "**/*.py"). Defaults to all text files.',
             },
             "head_limit": {
                 "type": "integer",
@@ -90,62 +79,43 @@ TOOL_SCHEMAS: dict[ToolName, dict[str, Any]] = {
                 "maximum": 1000,
                 "description": "Maximum matches to return (default 250).",
             },
-            "ignore_case": {
-                "type": "boolean",
-                "description": "Set to true for case-insensitive search (default false).",
-            },
-            "context_before": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 10,
-                "description": "Lines to show before each match.",
-            },
-            "context_after": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 10,
-                "description": "Lines to show after each match.",
-            },
-            "context_around": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 10,
-                "description": "Lines to show before and after each match (shorthand for setting both).",
-            },
         },
         "examples": [
             '{"pattern": "^def calculate\\\\("}',
             '{"pattern": "class.*View", "glob": "**/*.py", "head_limit": 50}',
-            '{"pattern": "TODO", "ignore_case": true, "glob": "**/*.py"}',
-            '{"pattern": "def handle", "context_around": 3, "glob": "src/**/*.py"}',
+            '{"pattern": "TODO", "glob": "**/*.py"}',
         ],
     },
-    ToolName.RUN_TESTS: {
-        "description": (
-            "Run pytest only. Provide one or more pytest targets: file paths, "
-            "test names, or node IDs. The tool always runs with -x (stop on "
-            "first failure) and --tb=short. Do not pass shell commands, Python "
-            "scripts, pytest command lines, cd, pipes, redirects, or shell "
-            "operators."
-        ),
+    ToolName.EXECUTE_BASH: {
+        "description": """\
+Execute a bash command in the current working directory. Use this to run
+Python scripts, pytest, or other shell operations. Chain multiple commands
+with && or ;. A 30-second timeout applies. Note: some tools exit non-zero
+on success; if stdout has output, the command succeeded.""",
         "parameters": {
-            "targets": {
+            "command": {
                 "type": "string",
                 "required": True,
-                "description": (
-                    "Pytest target(s) only: a file path (test/test_foo.py), a "
-                    "node id (test/test_foo.py::test_case), or space-separated "
-                    "targets. Do not pass shell commands such as python "
-                    "script.py, python reproduce_issue.py, pytest test/foo.py, "
-                    "or cd repo && pytest. If you need a diagnostic, write a "
-                    "pytest-style test file and run that file as the target."
-                ),
+                "description": "The bash command to execute. Examples: 'python reproduce_issue.py', 'python -m pytest test/foo.py -x --tb=short', 'pip install requests'.",
             },
         },
         "examples": [
-            '{"targets": "test/cli/commands_test.py::test__cli__command_directed"}',
-            '{"targets": "test/rules/"}',
-            '{"targets": "test/rules/std_test.py test/rules/yaml_test_cases_test.py"}',
+            '{"command": "python reproduce_issue.py"}',
+            '{"command": "python -m pytest test/foo.py::test_bar -x --tb=short"}',
+            '{"command": "pip install requests"}',
+        ],
+    },
+    ToolName.FINISH: {
+        "description": "Signal that the task is complete and submit your solution. Call this when you have made all necessary changes and verified they work. Optionally include a brief summary of what was changed.",
+        "parameters": {
+            "result": {
+                "type": "string",
+                "description": "Optional. A brief summary of the changes made and why the task is resolved.",
+            },
+        },
+        "examples": [
+            '{"result": "Fixed the off-by-one error in src/calculator.py line 42"}',
+            "{}",
         ],
     },
 }

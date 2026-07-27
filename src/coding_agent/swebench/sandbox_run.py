@@ -27,7 +27,7 @@ from coding_agent.models import (
     utc_now,
 )
 from coding_agent.sandbox_manager import DockerCli, DockerCommandError, DockerCommandTimeout, TaskSandboxManager
-from coding_agent.tools.container_executor import ContainerToolExecutor
+from coding_agent.tools.container_executor import ContainerToolExecutor, install_tool_scripts
 from coding_agent.swebench.dataset import SwebenchTaskRecord, load_task_record, load_task_records, normalize_benchmark_task_record
 from coding_agent.swebench.grading import EvalOutputParseError, parse_eval_report
 from coding_agent.swebench.images import build_missing_images, inspect_image_graph
@@ -757,9 +757,8 @@ def run_prepared_swebench_runtime(
         docker=docker,
         container_name=prepared.container_name,
         repo_path=prepared.repo_path,
-        allowed_test_commands=validation.allowed_commands,
-        test_timeout_seconds=budget.test_timeout_seconds,
     )
+    install_tool_scripts(prepared.container_name, docker)
     run_id = str(uuid.uuid4())
     try:
         logger.info("agent run started: instance_id=%s run_id=%s model=%s", task_record.instance_id, run_id, model_name)

@@ -35,7 +35,7 @@ def test_agent_prompt_describes_tools_and_allowed_tests(tmp_path: Path):
 
     system_prompt = backend.messages_by_call[0][0]["content"]
     assert "coding agent" in system_prompt.lower()
-    assert "apply_patch" in system_prompt
+    assert "apply_diff" in system_prompt
     assert "test__cli__command_directed" in system_prompt
 
 

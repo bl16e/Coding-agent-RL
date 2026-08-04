@@ -28,6 +28,8 @@ from coding_agent.trajectory_exporter import TrajectoryExporter
 
 logger = logging.getLogger(__name__)
 
+TOOL_INTENT_FIELDS = {"reasoning_summary", "next_intent", "tool_selection_reason"}
+
 class ArtifactPersistenceError(RuntimeError):
     """Raised when required run artifacts cannot be reliably written."""
 
@@ -435,6 +437,7 @@ class ToolAgent:
                 raise FormatError(
                     f"tool call arguments must be object: {name}"
                 )
+            args = {key: value for key, value in args.items() if key not in TOOL_INTENT_FIELDS}
             try:
                 tool_name = ToolName(name)
             except ValueError:

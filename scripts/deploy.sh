@@ -86,6 +86,7 @@ API_KEY=EMPTY
 BASE_URL=http://127.0.0.1:8000/v1
 
 # Stage-specific aliases used by the config loader.
+STAGE1_PROVIDER=openai-compatible
 STAGE1_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct
 STAGE1_API_KEY=EMPTY
 STAGE1_BASE_URL=http://127.0.0.1:8000/v1
@@ -93,16 +94,17 @@ ENV_STAGE1
 
 cat > "$PROJECT_DIR/.env.stage2.example" <<'ENV_STAGE2'
 # Stage 2: teacher model API for high-quality SWE-smith trajectories.
-PROVIDER=openai-compatible
-MODEL=your-teacher-model
+PROVIDER=deepseek
+MODEL=deepseek-v4-pro
 API_KEY=your-api-key
-BASE_URL=https://api.openai.com/v1
+BASE_URL=https://api.deepseek.com
 
 # Stage-specific aliases used by the config loader and scripts.
-TEACHER_MODEL=your-teacher-model
-STAGE2_MODEL=your-teacher-model
+TEACHER_MODEL=deepseek-v4-pro
+STAGE2_PROVIDER=deepseek
+STAGE2_MODEL=deepseek-v4-pro
 STAGE2_API_KEY=your-api-key
-STAGE2_BASE_URL=https://api.openai.com/v1
+STAGE2_BASE_URL=https://api.deepseek.com
 ENV_STAGE2
 
 if [[ ! -f "$PROJECT_DIR/.env.stage1" ]]; then
@@ -128,7 +130,7 @@ echo "  2. Edit .env.stage1 if needed."
 echo "  3. DATASET=/path/to/swebench_lite.parquet ./scripts/run_stage1_qwen_vllm.sh"
 echo ""
 echo "Stage 2: teacher model API, SWE-smith trajectories"
-echo "  1. Edit .env.stage2 with STAGE2_API_KEY, STAGE2_BASE_URL, and TEACHER_MODEL."
+echo "  1. Edit .env.stage2 with STAGE2_API_KEY, STAGE2_PROVIDER, STAGE2_BASE_URL, and TEACHER_MODEL."
 echo "  2. ./scripts/run_stage2_teacher_trajectories.sh"
 echo ""
 echo "Compatibility wrapper:"

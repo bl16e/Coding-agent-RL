@@ -22,6 +22,22 @@ def test_import_swesmith_adds_reference_path(tmp_path: Path, monkeypatch):
     assert module.VALUE == 42
 
 
+def test_import_swesmith_adds_local_swebench_checkout(tmp_path: Path, monkeypatch):
+    swesmith_package = tmp_path / "Reference" / "SWE-smith" / "swesmith"
+    swesmith_package.mkdir(parents=True)
+    (swesmith_package / "__init__.py").write_text("VALUE = 42\n", encoding="utf-8")
+    swebench_root = tmp_path / "SWE-bench"
+    swebench_root.mkdir()
+    sys.modules.pop("swesmith", None)
+
+    import_swesmith(
+        reference_path=tmp_path / "Reference" / "SWE-smith",
+        swebench_path=swebench_root,
+    )
+
+    assert str(swebench_root.resolve()) in sys.path
+
+
 def test_import_swesmith_reports_missing_checkout(tmp_path: Path):
     with pytest.raises(SwesmithRuntimeError, match="SWE-smith checkout does not exist"):
         import_swesmith(reference_path=tmp_path / "missing")

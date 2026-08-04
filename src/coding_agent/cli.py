@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -15,6 +16,7 @@ from coding_agent.openai_compatible_backend import (
     MissingModelConfigError,
     OpenAICompatibleBackend,
     load_model_config,
+    parse_dotenv,
     load_stage_model_config,
 )
 from coding_agent.sandbox_manager import DockerCli, SandboxManager
@@ -38,8 +40,14 @@ from coding_agent.swebench.sandbox_run import (
 from coding_agent.swesmith.dataset import SwesmithDatasetError, create_subset_file, load_huggingface_swesmith
 from coding_agent.swesmith.evaluate import run_official_eval
 from coding_agent.swesmith.export_sft import export_sft
+from coding_agent.swesmith.quality_gate import run_quality_gate
 from coding_agent.swesmith.run import run_swesmith_subset
 from coding_agent.swesmith.runtime import SwesmithRuntimeError
+from coding_agent.swesmith.training_manifest import (
+    SwesmithTrainingManifestError,
+    create_training_manifest_from_input,
+    update_training_manifest,
+)
 from coding_agent.trajectory_exporter import load_summary, load_trajectory, render_inspect_report
 
 
@@ -173,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     stage2_generate_parser.add_argument("--run-id", required=True)
     stage2_generate_parser.add_argument("--sft-output", required=True)
     stage2_generate_parser.add_argument("--cleanup-images", action="store_true")
-    stage2_generate_parser.add_argument("--model")
+    stage2_generate_parser.add_argument("--model", nargs="?")
     stage2_generate_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
     swebench_parser = subparsers.add_parser("swebench", help="SWE-Bench commands")
     swebench_subparsers = swebench_parser.add_subparsers(dest="swebench_command")
@@ -255,6 +263,38 @@ def build_parser() -> argparse.ArgumentParser:
     swesmith_export_parser.add_argument("--eval-dir", required=True)
     swesmith_export_parser.add_argument("--out", required=True)
     swesmith_export_parser.add_argument("--style", choices=("xml",), default="xml")
+    swesmith_quality_parser = swesmith_subparsers.add_parser("quality-gate", help="write SWE-smith trajectory quality report and filtered SFT JSONL")
+    swesmith_quality_parser.add_argument("--runs", required=True)
+    swesmith_quality_parser.add_argument("--eval-dir", required=True)
+    swesmith_quality_parser.add_argument("--out", required=True, help="quality report JSON output")
+    swesmith_quality_parser.add_argument("--filtered-sft", required=True, help="filtered SFT JSONL output")
+    swesmith_manifest_parser = swesmith_subparsers.add_parser(
+        "create-training-manifest",
+        help="create SWE-smith SFT/RL training manifest and initial split files",
+    )
+    swesmith_manifest_parser.add_argument("--input", required=True, help="local SWE-smith .json, .jsonl, .parquet, or parquet directory")
+    swesmith_manifest_parser.add_argument("--out", required=True)
+    swesmith_manifest_parser.add_argument("--splits-dir", required=True)
+    swesmith_manifest_parser.add_argument("--languages", help="comma-separated language filter, e.g. python,cpp")
+    swesmith_manifest_parser.add_argument("--reference-path", help="path to SWE-smith checkout for language filtering")
+    swesmith_manifest_parser.add_argument("--sft-repos-file", help="newline-delimited repo ids allowed for SFT candidates")
+    swesmith_manifest_parser.add_argument("--easy-fail-to-pass-max", type=int, default=1)
+    swesmith_manifest_parser.add_argument("--medium-fail-to-pass-min", type=int, default=2)
+    swesmith_manifest_parser.add_argument("--medium-fail-to-pass-max", type=int, default=5)
+    swesmith_manifest_parser.add_argument("--sft-candidate-limit", type=int, default=3000)
+    swesmith_manifest_parser.add_argument("--grpo-dev-count", type=int, default=300)
+    swesmith_manifest_parser.add_argument("--heldout-count", type=int, default=500)
+    swesmith_manifest_parser.add_argument("--seed", type=int, default=42)
+    swesmith_update_manifest_parser = swesmith_subparsers.add_parser(
+        "update-training-manifest",
+        help="update SWE-smith training manifest from teacher quality outputs",
+    )
+    swesmith_update_manifest_parser.add_argument("--manifest", required=True)
+    swesmith_update_manifest_parser.add_argument("--runs")
+    swesmith_update_manifest_parser.add_argument("--eval-dir")
+    swesmith_update_manifest_parser.add_argument("--quality-report", required=True)
+    swesmith_update_manifest_parser.add_argument("--filtered-sft", required=True)
+    swesmith_update_manifest_parser.add_argument("--splits-dir", required=True)
     return parser
 
 
@@ -280,6 +320,12 @@ def _configure_logging(args: argparse.Namespace) -> None:
         file_handler._coding_agent_cli_handler = True  # type: ignore[attr-defined]
         root.addHandler(file_handler)
     root.setLevel(logging.DEBUG)
+
+
+def _load_dotenv_into_process(path: str | Path) -> None:
+    for key, value in parse_dotenv(Path(path)).items():
+        if value and not os.environ.get(key):
+            os.environ[key] = value
 
 
 def _run_command(args: argparse.Namespace) -> int:
@@ -534,6 +580,7 @@ def _stage1_run_qwen_vllm_command(args: argparse.Namespace) -> int:
 def _stage2_generate_teacher_trajectories_command(args: argparse.Namespace) -> int:
     """Run Stage 2 teacher SWE-smith trajectory generation pipeline."""
     try:
+        _load_dotenv_into_process(".env.stage2")
         output_dir = Path(args.output_dir)
         subset_path = Path(args.subset) if args.subset else output_dir / "subset.json"
         if args.subset is None and not args.create_subset:
@@ -563,7 +610,7 @@ def _stage2_generate_teacher_trajectories_command(args: argparse.Namespace) -> i
                 return MockBackend()
 
         else:
-            config = load_stage_model_config("stage2", model_override=args.model)
+            config = load_stage_model_config("stage2", dotenv_path=".env.stage2", model_override=args.model)
             model_name = config.model
 
             def backend_factory():
@@ -590,7 +637,28 @@ def _stage2_generate_teacher_trajectories_command(args: argparse.Namespace) -> i
         )
         eval_dir = Path("logs/run_evaluation") / args.run_id
         count = export_sft(runs_dir=str(output_dir), eval_dir=str(eval_dir), output=args.sft_output, style="xml")
-        print(json.dumps({"output": args.sft_output, "count": count}, indent=2))
+        sft_path = Path(args.sft_output)
+        quality_report = sft_path.with_suffix(".quality.json")
+        filtered_sft = sft_path.with_suffix(".filtered.jsonl")
+        quality = run_quality_gate(
+            runs_dir=str(output_dir),
+            eval_dir=str(eval_dir),
+            report_output=quality_report,
+            filtered_sft_output=filtered_sft,
+        )
+        print(
+            json.dumps(
+                {
+                    "output": args.sft_output,
+                    "count": count,
+                    "quality_report": str(quality.report_path),
+                    "filtered_sft": str(quality.filtered_sft_path),
+                    "accepted_count": quality.accepted_count,
+                    "rejected_count": quality.rejected_count,
+                },
+                indent=2,
+            )
+        )
         if eval_exit != 0:
             return eval_exit
         return run_exit
@@ -773,6 +841,89 @@ def _swesmith_export_sft_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _swesmith_quality_gate_command(args: argparse.Namespace) -> int:
+    try:
+        result = run_quality_gate(
+            runs_dir=args.runs,
+            eval_dir=args.eval_dir,
+            report_output=args.out,
+            filtered_sft_output=args.filtered_sft,
+        )
+        print(
+            json.dumps(
+                {
+                    "report": str(result.report_path),
+                    "filtered_sft": str(result.filtered_sft_path),
+                    "accepted_count": result.accepted_count,
+                    "rejected_count": result.rejected_count,
+                },
+                indent=2,
+            )
+        )
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def _swesmith_create_training_manifest_command(args: argparse.Namespace) -> int:
+    try:
+        languages = [lang.strip() for lang in (args.languages or "").split(",") if lang.strip()]
+        result = create_training_manifest_from_input(
+            input_path=args.input,
+            out=args.out,
+            splits_dir=args.splits_dir,
+            languages=languages,
+            reference_path=args.reference_path,
+            sft_repos_file=args.sft_repos_file,
+            easy_fail_to_pass_max=args.easy_fail_to_pass_max,
+            medium_fail_to_pass_min=args.medium_fail_to_pass_min,
+            medium_fail_to_pass_max=args.medium_fail_to_pass_max,
+            sft_candidate_limit=args.sft_candidate_limit,
+            grpo_dev_count=args.grpo_dev_count,
+            heldout_count=args.heldout_count,
+            seed=args.seed,
+        )
+        print(
+            json.dumps(
+                {
+                    "manifest": str(result.manifest_path),
+                    "splits_dir": str(result.splits_dir),
+                    "summary": result.summary,
+                },
+                indent=2,
+            )
+        )
+    except (SwesmithTrainingManifestError, SwesmithDatasetError, OSError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def _swesmith_update_training_manifest_command(args: argparse.Namespace) -> int:
+    try:
+        result = update_training_manifest(
+            manifest_path=args.manifest,
+            quality_report_path=args.quality_report,
+            filtered_sft_path=args.filtered_sft,
+            splits_dir=args.splits_dir,
+        )
+        print(
+            json.dumps(
+                {
+                    "manifest": str(result.manifest_path),
+                    "splits_dir": str(result.splits_dir),
+                    "summary": result.summary,
+                },
+                indent=2,
+            )
+        )
+    except (SwesmithTrainingManifestError, OSError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
 def _reject_legacy_swebench_operation(argv: Sequence[str] | None) -> int | None:
     args = tuple(sys.argv[1:] if argv is None else argv)
     if len(args) < 2 or args[0] != "swebench":
@@ -841,6 +992,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _swesmith_eval_command(args)
         if getattr(args, "swesmith_command", None) == "export-sft":
             return _swesmith_export_sft_command(args)
+        if getattr(args, "swesmith_command", None) == "quality-gate":
+            return _swesmith_quality_gate_command(args)
+        if getattr(args, "swesmith_command", None) == "create-training-manifest":
+            return _swesmith_create_training_manifest_command(args)
+        if getattr(args, "swesmith_command", None) == "update-training-manifest":
+            return _swesmith_update_training_manifest_command(args)
         parser.error("swesmith subcommand is required")
         return 2
     parser.error(f"command {args.command!r} is not implemented yet")

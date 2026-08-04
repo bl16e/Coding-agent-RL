@@ -1,68 +1,61 @@
 from pathlib import Path
 
 from coding_agent.agent import AgentConfig, ToolAgent
-from coding_agent.models import BenchmarkTask
-from coding_agent.models import ToolName
+from coding_agent.models import BenchmarkTask, ToolName
 from coding_agent.tools.schemas import TOOL_SCHEMAS
 
 
-def test_run_tests_schema_explicitly_rejects_python_scripts_and_shell_commands():
-    schema = TOOL_SCHEMAS[ToolName.RUN_TESTS]
+def test_execute_bash_schema_warns_against_blocked_shell_forms():
+    schema = TOOL_SCHEMAS[ToolName.EXECUTE_BASH]
     text = " ".join(
         [
             schema["description"],
-            schema["parameters"]["targets"]["description"],
+            schema["parameters"]["command"]["description"],
             " ".join(schema["examples"]),
         ]
     )
 
-    assert "pytest target" in text
-    assert "Do not pass shell commands" in text
-    assert "python script.py" in text
-    assert "python reproduce_issue.py" in text
-    assert "run_python" not in text
+    assert "Do not use pipes" in text
+    assert "redirection" in text
+    assert "cat" in text
+    assert "tail" in text
+    assert "git" in text
 
 
-def test_read_file_schema_does_not_expose_limit_parameter():
-    schema = TOOL_SCHEMAS[ToolName.READ_FILE]
-    text = " ".join(
-        [
-            schema["description"],
-            " ".join(schema["parameters"]),
-            " ".join(schema["examples"]),
-        ]
-    )
-
-    assert "limit" not in schema["parameters"]
-    assert '"limit"' not in text
-    assert "Use offset" in schema["description"]
-
-
-def test_system_prompt_run_tests_boundary_matches_schema():
+def test_system_prompt_warns_against_blocked_shell_forms():
     template = Path("src/coding_agent/config/templates/system.j2").read_text(
         encoding="utf-8"
     )
 
-    assert "run_tests: Run pytest only" in template
-    assert "Do not pass shell commands" in template
-    assert "python script.py" in template
-    assert "If you need a diagnostic" in template
-    assert "run_python" not in template
+    assert "Do not use pipes" in template
+    assert "redirection" in template
+    assert "cat" in template
+    assert "tail" in template
+    assert "git" in template
 
 
-def test_system_prompt_requires_official_validation_and_rejects_test_self_proof():
+def test_system_prompt_requires_finish_after_fix_and_diagnostic_validation():
     template = Path("src/coding_agent/config/templates/system.j2").read_text(
         encoding="utf-8"
     )
 
+    assert "Call finish" in template
     assert "benchmark validation is the success criterion" in template
-    assert "FAIL_TO_PASS" in template
     assert "Self-written tests are diagnostic only" in template
-    assert "Do not modify existing tests, fixtures, snapshots, or expected outputs" in template
-    assert "Do not use test changes to prove an implementation is correct" in template
+    assert "Do not modify existing tests" in template
+    assert "Do not add new tests to the repository patch" in template
 
 
-def test_tool_agent_renders_fail_to_pass_targets_in_system_prompt(tmp_path):
+def test_system_prompt_requires_brief_intent_before_tool_calls():
+    template = Path("src/coding_agent/config/templates/system.j2").read_text(
+        encoding="utf-8"
+    )
+
+    assert "brief intent" in template
+    assert "before every tool call" in template
+
+
+def test_tool_agent_renders_problem_statement_in_system_prompt(tmp_path):
     captured = {}
 
     class CapturingModel:
@@ -75,9 +68,8 @@ def test_tool_agent_renders_fail_to_pass_targets_in_system_prompt(tmp_path):
     task = BenchmarkTask(
         instance_id="repo__issue-1",
         workspace=tmp_path,
-        problem_statement="Fix it.",
-        allowed_test_commands=("test/test_issue.py::test_fix",),
-        fail_to_pass=("test/test_issue.py::test_fix",),
+        problem_statement="Fix the pyarrow indexing bug.",
+        allowed_test_commands=("python -m pytest test_issue.py",),
     )
     template = Path("src/coding_agent/config/templates/system.j2").read_text(
         encoding="utf-8"
@@ -94,5 +86,4 @@ def test_tool_agent_renders_fail_to_pass_targets_in_system_prompt(tmp_path):
 
     agent.run(task)
 
-    assert "Official FAIL_TO_PASS targets" in captured["system"]
-    assert "test/test_issue.py::test_fix" in captured["system"]
+    assert "Fix the pyarrow indexing bug." in captured["system"]

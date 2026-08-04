@@ -103,3 +103,155 @@ def test_exporter_includes_observation_field(tmp_path: Path):
     assert len(tool_steps) == 1
     assert "observation" in tool_steps[0]
     assert "hello" in tool_steps[0]["observation"]
+
+
+def test_exporter_does_not_record_user_prompt_as_model_step(tmp_path: Path):
+    exporter = TrajectoryExporter(tmp_path / "run3")
+
+    artifacts = exporter.export(
+        messages=[
+            {"role": "system", "content": "You are a coder."},
+            {"role": "user", "content": "Fix the bug."},
+            {"role": "assistant", "content": "I will inspect the code."},
+        ],
+        run_id="test-no-user-step",
+        instance_id="test-no-user-step",
+        model_name="m",
+        budget=RunBudget(5, 60, 30),
+        final_patch="",
+    )
+
+    steps = [json.loads(line) for line in artifacts["trajectory_jsonl"].read_text().splitlines() if line.strip()]
+
+    assert len(steps) == 1
+    assert steps[0]["action_type"] == "model"
+    assert steps[0]["reasoning_summary"] == "I will inspect the code."
+
+
+def test_exporter_uses_provider_reasoning_content_when_tool_call_content_is_empty(tmp_path: Path):
+    exporter = TrajectoryExporter(tmp_path / "run4")
+
+    artifacts = exporter.export(
+        messages=[
+            {"role": "system", "content": "You are a coder."},
+            {"role": "user", "content": "Fix the bug."},
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "I need to inspect the failing code before editing.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({"file_path": "/testbed/app.py"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "extra": {
+                    "tool_result": {
+                        "tool_name": "read_file",
+                        "tool_input": {"file_path": "/testbed/app.py"},
+                        "status": "ok",
+                        "output": {"content": "1  print('hello')"},
+                    },
+                },
+            },
+        ],
+        run_id="test-provider-reasoning",
+        instance_id="test-provider-reasoning",
+        model_name="m",
+        budget=RunBudget(5, 60, 30),
+        final_patch="",
+    )
+
+    steps = [json.loads(line) for line in artifacts["trajectory_jsonl"].read_text().splitlines() if line.strip()]
+
+    assert steps[0]["action_type"] == "model"
+    assert steps[0]["reasoning_summary"] == "I need to inspect the failing code before editing."
+
+
+def test_exporter_uses_tool_call_intent_fields_when_content_is_empty(tmp_path: Path):
+    exporter = TrajectoryExporter(tmp_path / "run5")
+
+    artifacts = exporter.export(
+        messages=[
+            {"role": "system", "content": "You are a coder."},
+            {"role": "user", "content": "Fix the bug."},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_code",
+                            "arguments": json.dumps(
+                                {
+                                    "pattern": "broken_func",
+                                    "reasoning_summary": "Search for the broken function first.",
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+        ],
+        run_id="test-tool-intent",
+        instance_id="test-tool-intent",
+        model_name="m",
+        budget=RunBudget(5, 60, 30),
+        final_patch="",
+    )
+
+    steps = [json.loads(line) for line in artifacts["trajectory_jsonl"].read_text().splitlines() if line.strip()]
+
+    assert steps[0]["reasoning_summary"] == "Search for the broken function first."
+
+
+def test_exporter_synthesizes_tool_call_summary_when_provider_omits_content(tmp_path: Path):
+    exporter = TrajectoryExporter(tmp_path / "run6")
+
+    artifacts = exporter.export(
+        messages=[
+            {"role": "system", "content": "You are a coder."},
+            {"role": "user", "content": "Fix the bug."},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps(
+                                {
+                                    "file_path": "/testbed/pandas/tests/indexing/test_loc.py",
+                                    "view_range": [2990, 3025],
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+        ],
+        run_id="test-tool-call-fallback",
+        instance_id="test-tool-call-fallback",
+        model_name="m",
+        budget=RunBudget(5, 60, 30),
+        final_patch="",
+    )
+
+    steps = [json.loads(line) for line in artifacts["trajectory_jsonl"].read_text().splitlines() if line.strip()]
+
+    assert steps[0]["reasoning_summary"] == (
+        "Call read_file with file_path=/testbed/pandas/tests/indexing/test_loc.py, "
+        "view_range=[2990, 3025]."
+    )

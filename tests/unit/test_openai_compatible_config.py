@@ -5,6 +5,7 @@ import pytest
 from coding_agent.openai_compatible_backend import (
     MissingModelConfigError,
     load_model_config,
+    load_stage_model_config,
 )
 
 
@@ -52,8 +53,6 @@ def test_model_override_only_replaces_model(tmp_path: Path):
 
 
 def test_load_stage_model_config_reads_stage1_values(tmp_path: Path):
-    from coding_agent.openai_compatible_backend import load_stage_model_config
-
     config = load_stage_model_config(
         "stage1",
         env={
@@ -76,8 +75,6 @@ def test_load_stage_model_config_reads_stage1_values(tmp_path: Path):
 
 
 def test_load_stage_model_config_does_not_fallback_to_generic_env(tmp_path: Path):
-    from coding_agent.openai_compatible_backend import load_stage_model_config
-
     with pytest.raises(MissingModelConfigError) as exc_info:
         load_stage_model_config(
             "stage1",
@@ -99,8 +96,6 @@ def test_load_stage_model_config_does_not_fallback_to_generic_env(tmp_path: Path
 
 
 def test_load_stage_model_config_model_override_only_replaces_stage_model(tmp_path: Path):
-    from coding_agent.openai_compatible_backend import load_stage_model_config
-
     config = load_stage_model_config(
         "stage2",
         env={
@@ -117,3 +112,21 @@ def test_load_stage_model_config_model_override_only_replaces_stage_model(tmp_pa
     assert config.model == "teacher-override"
     assert config.api_key == "teacher-key"
     assert config.base_url == "https://teacher.example/v1"
+
+
+def test_load_stage_model_config_supports_deepseek_teacher_config(tmp_path: Path):
+    config = load_stage_model_config(
+        "stage2",
+        env={
+            "STAGE2_PROVIDER": "deepseek",
+            "STAGE2_MODEL": "deepseek-v4-pro",
+            "STAGE2_API_KEY": "deepseek-key",
+            "STAGE2_BASE_URL": "https://api.deepseek.com",
+        },
+        dotenv_path=tmp_path / ".env",
+    )
+
+    assert config.provider == "deepseek"
+    assert config.model == "deepseek-v4-pro"
+    assert config.api_key == "deepseek-key"
+    assert config.base_url == "https://api.deepseek.com"

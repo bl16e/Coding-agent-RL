@@ -40,9 +40,11 @@ editable `.env.stage1` / `.env.stage2` files when missing.
 Edit `.env.stage2`:
 
 ```ini
-TEACHER_MODEL=your-teacher-model
-STAGE2_API_KEY=your-api-key
-STAGE2_BASE_URL=https://api.openai.com/v1
+TEACHER_MODEL=deepseek-v4-pro
+STAGE2_PROVIDER=deepseek
+STAGE2_MODEL=deepseek-v4-pro
+STAGE2_API_KEY=your-deepseek-api-key
+STAGE2_BASE_URL=https://api.deepseek.com
 ```
 
 Run:

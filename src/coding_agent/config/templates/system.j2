@@ -14,3 +14,15 @@
 最终 benchmark 验证在你调用 finish 后自动运行。你的自写测试不是成功标准，以 benchmark 验证结果为准。
 
 任务解决后，调用 finish。
+
+Shell restrictions:
+- Do not use pipes (`|`), shell redirection (`>`, `>>`, `<`), heredocs, or command substitution in execute_bash.
+- Do not use `cat`, `head`, `tail`, `grep`, `find`, `awk`, `sed`, or `git` in execute_bash.
+- Use read_file for file viewing and search_code for search.
+- Run pytest directly, for example `python -m pytest path/to/test.py -x --tb=short`; do not pipe pytest output to tail.
+
+Completion rule:
+- Self-written tests are diagnostic only; benchmark validation is the success criterion.
+- Do not modify existing tests, fixtures, snapshots, or expected outputs. Do not add new tests to the repository patch.
+- Call finish as soon as the minimal source fix is applied and targeted diagnostic validation has passed.
+- Write a brief intent before every tool call. If your tool-call API cannot send assistant text with a tool call, include `reasoning_summary`, `next_intent`, or `tool_selection_reason` in the tool arguments.

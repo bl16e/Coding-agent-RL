@@ -47,8 +47,8 @@ configuration files and scripts:
 
 Stage 1 reads local-vLLM settings from `.env.stage1` and should point
 `STAGE1_BASE_URL` at the vLLM server. Stage 2 reads teacher API credentials from
-`.env.stage2` and uses `STAGE2_API_KEY`, `STAGE2_BASE_URL`, and
-`TEACHER_MODEL`. Do not share one `.env` between the stages; that makes it too
+`.env.stage2` and uses `STAGE2_PROVIDER`, `STAGE2_API_KEY`, `STAGE2_BASE_URL`,
+and `TEACHER_MODEL`. Do not share one `.env` between the stages; that makes it too
 easy to run the Lite benchmark with the teacher model or generate SWE-smith data
 with the local Qwen endpoint.
 

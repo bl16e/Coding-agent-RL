@@ -91,12 +91,17 @@ or set it to empty, and set new_string to the full file content.""",
 Execute a bash command in the current working directory. Use this to run
 Python scripts, pytest, or other shell operations. Chain multiple commands
 with && or ;. A 30-second timeout applies. Note: some tools exit non-zero
-on success; if stdout has output, the command succeeded.""",
+on success; if stdout has output, the command succeeded.
+
+Do not use pipes, shell redirection, heredocs, or file-viewing/search commands
+inside execute_bash. In particular, do not use cat, head, tail, grep, find,
+awk, sed, or git. Use read_file for file viewing and search_code for search.
+Run pytest directly without piping to tail.""",
         "parameters": {
             "command": {
                 "type": "string",
                 "required": True,
-                "description": "The bash command to execute. Examples: 'python reproduce_issue.py', 'python -m pytest test/foo.py -x --tb=short', 'pip install requests'.",
+                "description": "The bash command to execute. Do not use pipes, redirection, cat, tail, or git. Examples: 'python reproduce_issue.py', 'python -m pytest test/foo.py -x --tb=short', 'pip install requests'.",
             },
         },
         "examples": [

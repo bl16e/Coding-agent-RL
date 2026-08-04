@@ -23,6 +23,69 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _assistant_reasoning_summary(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if content:
+        return str(content)
+
+    for key in ("reasoning_content", "reasoning_summary"):
+        value = message.get(key)
+        if value:
+            return str(value)
+
+    extra = message.get("extra")
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "reasoning_summary"):
+            value = extra.get(key)
+            if value:
+                return str(value)
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            arguments = function.get("arguments")
+            if not arguments:
+                continue
+            try:
+                parsed = json.loads(arguments)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            for key in ("reasoning_summary", "next_intent", "tool_selection_reason"):
+                value = parsed.get(key)
+                if value:
+                    return str(value)
+            name = function.get("name")
+            if name:
+                return _tool_call_fallback_summary(str(name), parsed)
+
+    return ""
+
+
+def _tool_call_fallback_summary(name: str, arguments: dict[str, Any]) -> str:
+    visible_args = [
+        f"{key}={_compact_argument(value)}"
+        for key, value in arguments.items()
+        if key not in {"old_string", "new_string", "command"}
+    ]
+    if not visible_args:
+        return f"Call {name}."
+    return f"Call {name} with {', '.join(visible_args[:3])}."
+
+
+def _compact_argument(value: Any) -> str:
+    text = str(value)
+    if len(text) <= 120:
+        return text
+    return text[:117] + "..."
+
+
 class TrajectoryExporter:
     """Derive all run artifacts from agent.messages at run end.
 
@@ -118,15 +181,8 @@ class TrajectoryExporter:
                 continue
             now = _utc_now()
             if role == "user":
-                steps.append(TrajectoryStep(
-                    step_index=step_idx,
-                    timestamp=now,
-                    action_type=StepActionType.MODEL,
-                    outcome=Outcome.OK,
-                ))
-                step_idx += 1
+                continue
             elif role == "assistant":
-                content = msg.get("content")
                 extra = msg.get("extra", {})
                 if extra.get("exit_status"):
                     steps.append(TrajectoryStep(
@@ -142,7 +198,7 @@ class TrajectoryExporter:
                         timestamp=now,
                         action_type=StepActionType.MODEL,
                         outcome=Outcome.OK,
-                        reasoning_summary=str(content or ""),
+                        reasoning_summary=_assistant_reasoning_summary(msg),
                     ))
                 step_idx += 1
             elif role == "tool":

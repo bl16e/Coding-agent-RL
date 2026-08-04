@@ -24,15 +24,33 @@ class SwesmithPreparedContainer:
     image_name: str | None = None
 
 
-def import_swesmith(reference_path: str | Path | None = None) -> Any:
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _default_swebench_path() -> Path:
+    return _project_root() / "SWE-bench"
+
+
+def _add_sys_path(path: str | Path) -> None:
+    path_text = str(Path(path).resolve())
+    if path_text not in sys.path:
+        sys.path.insert(0, path_text)
+
+
+def import_swesmith(
+    reference_path: str | Path | None = None,
+    swebench_path: str | Path | None = None,
+) -> Any:
     install_windows_resource_shim()
+    swebench_root = Path(swebench_path) if swebench_path is not None else _default_swebench_path()
+    if swebench_root.exists():
+        _add_sys_path(swebench_root)
     if reference_path is not None:
         root = Path(reference_path)
         if not root.exists():
             raise SwesmithRuntimeError(f"SWE-smith checkout does not exist: {root}")
-        root_text = str(root.resolve())
-        if root_text not in sys.path:
-            sys.path.insert(0, root_text)
+        _add_sys_path(root)
     try:
         return importlib.import_module("swesmith")
     except ImportError as exc:

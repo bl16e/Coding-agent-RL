@@ -10,6 +10,17 @@ from typing import Any, Callable
 from coding_agent.swesmith.compat import windows_official_eval_prelude
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _pythonpath_with(paths: list[Path], current: str) -> str:
+    parts = [str(path.resolve()) for path in paths]
+    if current:
+        parts.append(current)
+    return os.pathsep.join(parts)
+
+
 def run_official_eval(
     *,
     dataset_path: str | Path,
@@ -17,6 +28,7 @@ def run_official_eval(
     run_id: str,
     workers: int,
     reference_path: str | Path | None,
+    swebench_path: str | Path | None = None,
     log_dir: str | Path | None = None,
     runner: Callable[..., Any] = subprocess.run,
 ) -> int:
@@ -42,8 +54,12 @@ def run_official_eval(
     else:
         command = [sys.executable, "-m", "swesmith.harness.eval", *eval_args]
     env = dict(os.environ)
+    python_paths: list[Path] = []
     if reference_path is not None:
-        env["PYTHONPATH"] = str(Path(reference_path).resolve()) + os.pathsep + env.get("PYTHONPATH", "")
+        python_paths.append(Path(reference_path))
+    swebench_root = Path(swebench_path) if swebench_path is not None else _project_root() / "SWE-bench"
+    python_paths.append(swebench_root)
+    env["PYTHONPATH"] = _pythonpath_with(python_paths, env.get("PYTHONPATH", ""))
     completed = runner(command, text=True, check=False, env=env, capture_output=True)
     output_dir = Path(log_dir) if log_dir is not None else Path("logs") / "run_evaluation" / run_id
     output_dir.mkdir(parents=True, exist_ok=True)

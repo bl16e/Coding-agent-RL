@@ -42,6 +42,38 @@ def test_run_official_eval_invokes_swesmith_module(tmp_path: Path):
     assert (tmp_path / "logs" / "run_evaluation" / "run-1" / "wrapper.stderr.log").read_text(encoding="utf-8") == ""
 
 
+def test_run_official_eval_adds_reference_and_swebench_paths_to_pythonpath(tmp_path: Path):
+    calls = {}
+
+    def fake_runner(command, **kwargs):
+        calls["kwargs"] = kwargs
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    reference_path = tmp_path / "Reference" / "SWE-smith"
+    swebench_path = tmp_path / "SWE-bench"
+
+    run_official_eval(
+        dataset_path=tmp_path / "subset.json",
+        predictions_path=tmp_path / "preds.jsonl",
+        run_id="run-pythonpath",
+        workers=1,
+        reference_path=reference_path,
+        swebench_path=swebench_path,
+        log_dir=tmp_path / "logs",
+        runner=fake_runner,
+    )
+
+    pythonpath = calls["kwargs"]["env"]["PYTHONPATH"]
+    assert str(reference_path.resolve()) in pythonpath
+    assert str(swebench_path.resolve()) in pythonpath
+
+
 def test_run_official_eval_records_failed_wrapper_output(tmp_path: Path):
     def fake_runner(command, **kwargs):
         class Completed:

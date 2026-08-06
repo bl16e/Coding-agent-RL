@@ -5,9 +5,9 @@
 {{ task }}
 
 可用工具：
-- read_file：读取文件或列出目录。默认显示前 300 行，带行号（cat -n 风格）。用 view_range 聚焦特定行范围。禁止用 bash（cat/head/tail）读文件。
+- read_file：读取文件或列出目录。默认显示前 300 行，带行号（cat -n 风格）。用 view_range 聚焦特定行范围。禁止用 bash（cat）读文件；head/tail 只允许用于命令输出裁剪。
 - apply_patch：修改或创建文件。old_string 为空则用 new_string 内容创建文件。old_string 非空则精确替换——务必从 read_file 输出中直接复制 old_string，确保空格缩进完全一致。包含足够的上下文行使 old_string 唯一。
-- search_code：用正则表达式搜索代码。返回匹配的文件路径、行号、行内容。禁止用 bash（grep/find）搜索——必须用 search_code。
+- search：用正则表达式搜索代码文本和仓库相对路径。返回匹配的文件路径、行号、行内容，并用 match_type 标注 path/content。禁止用 bash（grep/find）搜索——必须用 search。
 - execute_bash：只用于执行命令——Python 脚本、pytest、pip install、sqlfluff fix/lint。禁止用 bash 看文件、改文件、搜代码。
 - finish：提交任务完成信号。可选填修改摘要。
 
@@ -16,10 +16,31 @@
 任务解决后，调用 finish。
 
 Shell restrictions:
-- Do not use pipes (`|`), shell redirection (`>`, `>>`, `<`), heredocs, or command substitution in execute_bash.
-- Do not use `cat`, `head`, `tail`, `grep`, `find`, `awk`, `sed`, or `git` in execute_bash.
-- Use read_file for file viewing and search_code for search.
-- Run pytest directly, for example `python -m pytest path/to/test.py -x --tb=short`; do not pipe pytest output to tail.
+- Do not use shell redirection except 2>&1 or stderr suppression to /dev/null. Do not use heredocs or command substitution in execute_bash.
+- Pipes are allowed only for output clipping: pipe only to head or tail.
+- Do not use `cat`, `grep`, `find`, `awk`, `sed`, or `git` in execute_bash.
+- Use read_file for file viewing and search for search.
+- Run pytest directly, for example `python -m pytest path/to/test.py -x --tb=short`; for long output, `python -m pytest path/to/test.py -q 2>&1 | tail -50` is allowed.
+
+Tool substitution rules:
+- To inspect a file, call read_file. Do not use cat. Use head/tail only to clip command output.
+- To inspect a directory, call read_file on the directory path. Do not use ls | head for file discovery.
+- To search code text, call search. Do not use grep.
+- To find files by filename, call search with the filename or path regex. Results mark path matches with `match_type="path"` and content matches with `match_type="content"`.
+- To inspect examples or expected output files, use read_file with view_range.
+- Do not use git status/log/show/diff. Work only from the current working tree.
+- Do not inspect pip cache, /root/.cache, /tmp, /opt, or site-packages to infer external answers.
+- For pytest output, run `python -m pytest ... -x --tb=short`; pipe only to head or tail when you need to clip long output.
+
+Examples:
+- Bad: grep -n "Token" pygments/lexers/*.py
+- Good: search({"pattern": "Token", "glob": "pygments/lexers/**/*.py"})
+- Bad: find / -name "graphics.py"
+- Good: search({"pattern": "graphics\\.py$"})
+- Bad: cat tests/examplefiles/foo.output | head
+- Good: read_file({"file_path": "tests/examplefiles/foo.output", "view_range": [1, 80]})
+- Bad: git log -- file.py
+- Good: Do not inspect git history. Use read_file/search on current files only.
 
 Completion rule:
 - Self-written tests are diagnostic only; benchmark validation is the success criterion.

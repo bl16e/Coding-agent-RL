@@ -1,7 +1,6 @@
 # src/coding_agent/tools/executor.py
 from __future__ import annotations
 
-import re
 import shlex
 import subprocess
 import time
@@ -10,6 +9,7 @@ from typing import Any, Protocol
 
 from coding_agent.models import Outcome, TestResult, TestStatus, ToolName
 from coding_agent.tools.result import ToolExecutionResult
+from coding_agent.tools.search_code import search_code
 
 
 class ToolExecutor(Protocol):
@@ -50,9 +50,9 @@ def to_cli_command(tool_name: ToolName, tool_input: dict[str, Any]) -> str:
             return f"apply_patch --path {fp} --old_string {old} --new_string {new}"
         return f"apply_patch --path {fp} --new_string {new}"
 
-    if tool_name is ToolName.SEARCH_CODE:
+    if tool_name in (ToolName.SEARCH, ToolName.SEARCH_CODE):
         pattern = shlex.quote(str(tool_input.get("pattern", "")))
-        cli = f"search_code --pattern {pattern}"
+        cli = f"search --pattern {pattern}"
         glob_pat = tool_input.get("glob")
         if glob_pat:
             cli += f" --glob {shlex.quote(str(glob_pat))}"
@@ -76,7 +76,7 @@ class LocalToolExecutor:
             return _local_read_file(self.workspace, tool_input)
         if tool_name is ToolName.APPLY_PATCH:
             return _local_apply_patch(self.workspace, tool_input)
-        if tool_name is ToolName.SEARCH_CODE:
+        if tool_name in (ToolName.SEARCH, ToolName.SEARCH_CODE):
             return _local_search_code(self.workspace, tool_input)
         if tool_name is ToolName.EXECUTE_BASH:
             return _local_execute_bash(self.workspace, tool_input)
@@ -178,32 +178,7 @@ def _local_apply_patch(workspace: Path, tool_input: dict) -> ToolExecutionResult
 
 
 def _local_search_code(workspace: Path, tool_input: dict) -> ToolExecutionResult:
-    pattern = str(tool_input.get("pattern", ""))
-    if not pattern:
-        return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, "pattern must not be empty")
-    try:
-        compiled = re.compile(pattern, re.IGNORECASE if tool_input.get("ignore_case") else 0)
-    except re.error as exc:
-        return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.REJECTED, f"invalid regex: {exc}")
-    matches = []
-    head_limit = int(tool_input.get("head_limit", 250))
-    exclude = {".git", ".venv", "venv", "node_modules", "build", "dist", ".tox", "__pycache__", ".pytest_cache"}
-    for f in sorted(workspace.rglob("*")):
-        if not f.is_file():
-            continue
-        if set(f.relative_to(workspace).parts) & exclude:
-            continue
-        try:
-            for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines()):
-                if compiled.search(line):
-                    matches.append({"path": f.relative_to(workspace).as_posix(), "line": i + 1, "text": line})
-                    if len(matches) >= head_limit:
-                        break
-        except Exception:
-            continue
-        if len(matches) >= head_limit:
-            break
-    return ToolExecutionResult(ToolName.SEARCH_CODE, Outcome.OK, f"found {len(matches)} matches", output={"matches": matches})
+    return search_code(workspace, tool_input)
 
 
 # -- execute_bash / finish local implementations --
@@ -228,7 +203,7 @@ def _local_execute_bash(workspace: Path, tool_input: dict) -> ToolExecutionResul
             if sub_first in _BLOCKED_BASH_COMMANDS:
                 return ToolExecutionResult(
                     ToolName.EXECUTE_BASH, Outcome.REJECTED,
-                    f"'{sub_first}' is blocked — use search_code or read_file instead",
+                    f"'{sub_first}' is blocked - use search or read_file instead",
                 )
     started = time.monotonic()
     try:
@@ -291,7 +266,7 @@ def _remote_execute_bash(runtime: Any, *, workspace_path: str, tool_input: dict)
             if sub_first in _BLOCKED_BASH_COMMANDS:
                 return ToolExecutionResult(
                     ToolName.EXECUTE_BASH, Outcome.REJECTED,
-                    f"'{sub_first}' is blocked — use search_code or read_file instead",
+                    f"'{sub_first}' is blocked - use search or read_file instead",
                 )
     try:
         output, error_code = runtime.run(

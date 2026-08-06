@@ -9,6 +9,8 @@ from tests.helpers.query_backend import ScriptedQueryBackend
 class FakeDocker:
     def __init__(self) -> None:
         self.exec_calls = []
+        self.stop_calls = []
+        self.remove_calls = []
 
     def exec(self, container_name, command):
         self.exec_calls.append((container_name, command))
@@ -19,6 +21,12 @@ class FakeDocker:
             returncode = 0
 
         return Result()
+
+    def stop_container(self, container_name):
+        self.stop_calls.append(container_name)
+
+    def remove_container(self, container_name):
+        self.remove_calls.append(container_name)
 
 
 def test_run_swesmith_instance_uses_container_diff_for_prediction(tmp_path: Path, monkeypatch):
@@ -39,6 +47,7 @@ def test_run_swesmith_instance_uses_container_diff_for_prediction(tmp_path: Path
         return Prepared()
 
     monkeypatch.setattr("coding_agent.swesmith.run.create_official_container", fake_create_official_container)
+    monkeypatch.setattr("coding_agent.swesmith.run.install_tool_scripts", lambda *args, **kwargs: [])
 
     summary = run_swesmith_instance(
         instance,
@@ -58,6 +67,82 @@ def test_run_swesmith_instance_uses_container_diff_for_prediction(tmp_path: Path
     assert sandbox["runtime"]["profile_key"] == "repo__name.abcdef12"
     assert sandbox["runtime"]["image_name"] == "swebench/swesmith.x86_64.repo__name.abcdef12:latest"
     assert sandbox["container_name"] == "container-1"
+
+
+def test_run_swesmith_instance_removes_container_after_success(tmp_path: Path, monkeypatch):
+    instance = {
+        "instance_id": "repo__name.abcdef12.pr_1",
+        "problem_statement": "Fix the issue",
+        "FAIL_TO_PASS": ["tests/test_app.py::test_bug"],
+    }
+
+    class Prepared:
+        instance_id = instance["instance_id"]
+        container_name = "container-1"
+        repo_path = "/testbed"
+        profile_key = "repo__name.abcdef12"
+        image_name = "swebench/swesmith.x86_64.repo__name.abcdef12:latest"
+
+    monkeypatch.setattr("coding_agent.swesmith.run.install_tool_scripts", lambda *args, **kwargs: [])
+    docker = FakeDocker()
+
+    summary = run_swesmith_instance(
+        instance,
+        docker=docker,
+        backend=ScriptedQueryBackend(final="done"),
+        budget=RunBudget(1, 60, 10),
+        model_name="mock-model",
+        output_dir=tmp_path / "run",
+        reference_path=None,
+        container_factory=lambda row: Prepared(),
+    )
+
+    assert summary.status is RunStatus.SOLVED
+    assert docker.stop_calls == ["container-1"]
+    assert docker.remove_calls == ["container-1"]
+
+
+def test_run_swesmith_instance_removes_container_after_agent_error(tmp_path: Path, monkeypatch):
+    instance = {
+        "instance_id": "repo__name.abcdef12.pr_1",
+        "problem_statement": "Fix the issue",
+        "FAIL_TO_PASS": ["tests/test_app.py::test_bug"],
+    }
+
+    class Prepared:
+        instance_id = instance["instance_id"]
+        container_name = "container-1"
+        repo_path = "/testbed"
+        profile_key = "repo__name.abcdef12"
+        image_name = "swebench/swesmith.x86_64.repo__name.abcdef12:latest"
+
+    class FailingBackend:
+        model_name = "mock-model"
+
+        def query(self, messages, tools=None):
+            raise RuntimeError("model failed")
+
+    monkeypatch.setattr("coding_agent.swesmith.run.install_tool_scripts", lambda *args, **kwargs: [])
+    docker = FakeDocker()
+
+    try:
+        run_swesmith_instance(
+            instance,
+            docker=docker,
+            backend=FailingBackend(),
+            budget=RunBudget(1, 60, 10),
+            model_name="mock-model",
+            output_dir=tmp_path / "run",
+            reference_path=None,
+            container_factory=lambda row: Prepared(),
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "agent execution failed"
+    else:
+        raise AssertionError("expected agent execution failure")
+
+    assert docker.stop_calls == ["container-1"]
+    assert docker.remove_calls == ["container-1"]
 
 
 def test_run_swesmith_subset_writes_ordered_predictions_and_summary(tmp_path: Path, monkeypatch):

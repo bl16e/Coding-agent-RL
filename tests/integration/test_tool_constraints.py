@@ -17,7 +17,7 @@ def test_agent_records_only_allowed_tool_types(tmp_path: Path):
                 ToolName.APPLY_PATCH,
                 {"path": "app.py", "old_string": "old", "new_string": "new"},
             ),
-            ToolCallSpec(ToolName.SEARCH_CODE, {"pattern": "new"}),
+            ToolCallSpec(ToolName.SEARCH, {"pattern": "new"}),
         ]
     )
 
@@ -34,4 +34,4 @@ def test_agent_records_only_allowed_tool_types(tmp_path: Path):
         if row["action_type"] == "tool_result":
             tool_names.append(row["tool_call"]["tool_name"])
 
-    assert tool_names == ["read_file", "apply_patch", "search_code", "execute_bash", "finish"]
+    assert tool_names == ["read_file", "apply_patch", "search"]

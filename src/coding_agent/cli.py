@@ -181,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     stage2_generate_parser.add_argument("--run-id", required=True)
     stage2_generate_parser.add_argument("--sft-output", required=True)
     stage2_generate_parser.add_argument("--cleanup-images", action="store_true")
+    stage2_generate_parser.add_argument("--cleanup-containers", action=argparse.BooleanOptionalAction, default=True)
     stage2_generate_parser.add_argument("--model", nargs="?")
     stage2_generate_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
     swebench_parser = subparsers.add_parser("swebench", help="SWE-Bench commands")
@@ -250,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     swesmith_run_parser.add_argument("--jobs", type=int, default=1)
     swesmith_run_parser.add_argument("--reference-path")
     swesmith_run_parser.add_argument("--cleanup-images", action="store_true", help="remove Docker images after run completes")
+    swesmith_run_parser.add_argument("--cleanup-containers", action=argparse.BooleanOptionalAction, default=True, help="remove each task container after its run completes")
     swesmith_run_parser.add_argument("--model")
     swesmith_run_parser.add_argument("--backend", choices=("openai-compatible", "mock"), default="openai-compatible")
     swesmith_eval_parser = swesmith_subparsers.add_parser("eval", help="run official SWE-smith evaluation")
@@ -626,6 +628,7 @@ def _stage2_generate_teacher_trajectories_command(args: argparse.Namespace) -> i
             reference_path=args.reference_path,
             jobs=args.jobs,
             cleanup_images=args.cleanup_images,
+            cleanup_containers=args.cleanup_containers,
         )
         predictions_path = output_dir / "preds.jsonl"
         eval_exit = run_official_eval(
@@ -809,6 +812,7 @@ def _swesmith_run_subset_command(args: argparse.Namespace) -> int:
             reference_path=args.reference_path,
             jobs=args.jobs,
             cleanup_images=args.cleanup_images,
+            cleanup_containers=args.cleanup_containers,
         )
     except (ValueError, SwesmithDatasetError, SwesmithRuntimeError, MissingModelConfigError) as exc:
         print(str(exc), file=sys.stderr)

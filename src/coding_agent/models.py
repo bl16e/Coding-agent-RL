@@ -19,6 +19,7 @@ class RunStatus(str, Enum):
 class ToolName(str, Enum):
     READ_FILE = "read_file"
     APPLY_PATCH = "apply_patch"
+    SEARCH = "search"
     SEARCH_CODE = "search_code"
     EXECUTE_BASH = "execute_bash"
     FINISH = "finish"

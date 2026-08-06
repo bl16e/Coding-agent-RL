@@ -152,6 +152,10 @@ def _format_tool_result_content(payload: dict[str, Any]) -> str:
     tool_name = payload.get("tool_name", "")
     status = payload.get("status", "")
     output = payload.get("output") or {}
+    output_summary = payload.get("output_summary", "")
+
+    if status == "rejected" and output_summary:
+        return output_summary
 
     if tool_name == "read_file":
         # Content may be in "content" (local executor) or "stdout" (Docker CLI)
@@ -164,17 +168,23 @@ def _format_tool_result_content(payload: dict[str, Any]) -> str:
         stdout = output.get("stdout") if isinstance(output, dict) else ""
         return stdout or f"[apply_patch: {status}]"
 
-    if tool_name == "search_code":
+    if tool_name in ("search", "search_code"):
         if isinstance(output, dict):
             matches = output.get("matches", [])
             truncated = output.get("truncated", False)
             if not matches:
-                return "[search_code: 0 matches — try a broader pattern or remove glob filter]"
-            lines = [f"[search_code: {len(matches)} matches{' (truncated)' if truncated else ''}]"]
+                return "[search: 0 matches - try a broader pattern or remove glob filter]"
+            lines = [f"[search: {len(matches)} matches{' (truncated)' if truncated else ''}]"]
             for m in matches[:10]:
-                lines.append(f"  {m.get('path', '')}:{m.get('line', '')}: {m.get('text', '')}")
+                match_type = m.get("match_type") or "content"
+                if match_type == "path":
+                    lines.append(f"  [path] {m.get('path', '')}")
+                else:
+                    lines.append(
+                        f"  [content] {m.get('path', '')}:{m.get('line', '')}: {m.get('text', '')}"
+                    )
             return "\n".join(lines)
-        return f"[search_code: {status}]"
+        return f"[search: {status}]"
 
     if tool_name == "execute_bash":
         stdout = output.get("stdout") if isinstance(output, dict) else str(output)
@@ -187,14 +197,13 @@ def _format_tool_result_content(payload: dict[str, Any]) -> str:
             parts.append(f"[stderr]\n{stderr}")
         if exit_code is not None and exit_code != 0:
             parts.insert(0, f"[exit {exit_code}]")
-        return "\n".join(parts) or f"[execute_bash: {status}]"
+        return "\n".join(parts) or output_summary or f"[execute_bash: {status}]"
 
     if tool_name == "finish":
         submission = output.get("submission") if isinstance(output, dict) else ""
         return submission or "task submitted"
 
     # Fallback: generic format
-    output_summary = payload.get("output_summary", "")
     return output_summary or f"[{tool_name}: {status}]"
 
 

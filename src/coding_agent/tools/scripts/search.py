@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Search repository text files with a regular expression. Returns matching
-lines in JSON format with optional context. Uses ripgrep (rg) if available,
-otherwise falls back to pure Python search.
+Search repository text files and repo-relative paths with a regular expression.
+Returns matching lines in JSON format with optional context. Uses ripgrep (rg)
+for content matches if available, otherwise falls back to pure Python search.
 
 Parameters:
   --pattern      (string, required): Python regex to search for.
@@ -43,7 +43,7 @@ def search_with_rg(
     ctx_after: int,
     ctx_around: int,
 ) -> dict | None:
-    """Try ripgrep. Returns None if rg is unavailable."""
+    """Try ripgrep for content matches. Returns None if rg is unavailable."""
     try:
         probe = subprocess.run(
             ["sh", "-lc", "command -v rg >/dev/null 2>&1"],
@@ -90,6 +90,7 @@ def search_with_rg(
             "path": path_text,
             "line": int(data.get("line_number") or 0),
             "text": line_text,
+            "match_type": "content",
         })
     return {"matches": matches, "truncated": len(matches) >= head_limit, "engine": "rg"}
 
@@ -138,6 +139,8 @@ def search_with_python(
 
     matches: list[dict] = []
     truncated = False
+    candidate_files: list[tuple[Path, str]] = []
+
     for filepath in sorted(p for p in root.rglob("*") if p.is_file()):
         parts = set(filepath.relative_to(root).parts)
         if parts & excluded:
@@ -146,6 +149,21 @@ def search_with_python(
             rel = filepath.relative_to(root).as_posix()
             if not _match_glob(rel, glob_pat):
                 continue
+        else:
+            rel = filepath.relative_to(root).as_posix()
+        candidate_files.append((filepath, rel))
+        if compiled.search(rel):
+            if len(matches) >= head_limit:
+                truncated = True
+                continue
+            matches.append({
+                "path": rel,
+                "line": None,
+                "text": "",
+                "match_type": "path",
+            })
+
+    for filepath, rel in candidate_files:
         try:
             data = filepath.read_bytes()
             if looks_binary(data):
@@ -168,9 +186,10 @@ def search_with_python(
                     truncated = True
                     break
                 entry = {
-                    "path": filepath.relative_to(root).as_posix(),
+                    "path": rel,
                     "line": idx,
                     "text": line,
+                    "match_type": "content",
                 }
                 if has_context:
                     bc = max(ctx_before, ctx_around)
@@ -190,6 +209,40 @@ def search_with_python(
     return {"matches": matches, "truncated": truncated, "engine": "python"}
 
 
+def path_matches(
+    pattern: str,
+    path: str,
+    head_limit: int,
+    ignore_case: bool,
+    glob_pat: str | None,
+) -> tuple[list[dict], bool]:
+    flags = re.IGNORECASE if ignore_case else 0
+    compiled = re.compile(pattern, flags)
+    excluded = {".git", ".venv", "venv", "node_modules", "build", "dist",
+                 ".tox", "__pycache__", ".pytest_cache"}
+    root = Path(path)
+    matches: list[dict] = []
+    truncated = False
+    for filepath in sorted(p for p in root.rglob("*") if p.is_file()):
+        rel = filepath.relative_to(root).as_posix()
+        if set(filepath.relative_to(root).parts) & excluded:
+            continue
+        if glob_pat and not _match_glob(rel, glob_pat):
+            continue
+        if not compiled.search(rel):
+            continue
+        if len(matches) >= head_limit:
+            truncated = True
+            break
+        matches.append({
+            "path": rel,
+            "line": None,
+            "text": "",
+            "match_type": "path",
+        })
+    return matches, truncated
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Search repository text files with a regular expression."
@@ -207,12 +260,26 @@ def main() -> None:
 
     search_path = os.getcwd()
 
-    # Try ripgrep first
+    path_match_list, paths_truncated = path_matches(
+        args.pattern, search_path, args.head_limit, args.ignore_case, args.glob,
+    )
+    remaining = max(0, args.head_limit - len(path_match_list))
+    if remaining == 0:
+        print(json.dumps({
+            "matches": path_match_list,
+            "truncated": True,
+            "engine": "python+rg",
+        }, ensure_ascii=False))
+        return
+
+    # Try ripgrep for content first
     rg_result = search_with_rg(
-        args.pattern, search_path, args.head_limit, args.ignore_case,
+        args.pattern, search_path, remaining, args.ignore_case,
         args.glob, args.context_before, args.context_after, args.context_around,
     )
     if rg_result is not None:
+        rg_result["matches"] = path_match_list + rg_result.get("matches", [])
+        rg_result["truncated"] = bool(paths_truncated or rg_result.get("truncated"))
         print(json.dumps(rg_result, ensure_ascii=False))
         return
 

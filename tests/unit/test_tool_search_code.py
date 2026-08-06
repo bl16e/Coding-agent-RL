@@ -3,6 +3,24 @@ from pathlib import Path
 from coding_agent.tools.search_code import search_code
 
 
+def test_search_code_returns_path_matches_before_content_matches(tmp_path: Path):
+    target_dir = tmp_path / "pygments" / "lexers"
+    target_dir.mkdir(parents=True)
+    (target_dir / "graphics.py").write_text("class GraphicsLexer:\n    pass\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("graphics.py\n", encoding="utf-8")
+
+    result = search_code(tmp_path, {"pattern": r"graphics\.py$"})
+
+    assert result.status == "ok"
+    assert result.output["matches"][0] == {
+        "path": "pygments/lexers/graphics.py",
+        "line": None,
+        "text": "",
+        "match_type": "path",
+    }
+    assert any(match.get("match_type") == "content" for match in result.output["matches"])
+
+
 def test_search_code_finds_utf8_text_and_reports_file_metadata(tmp_path: Path):
     (tmp_path / "notes.md").write_bytes("标题\n正文 needle\n".encode("utf-8"))
 
@@ -10,7 +28,7 @@ def test_search_code_finds_utf8_text_and_reports_file_metadata(tmp_path: Path):
 
     assert result.status == "ok"
     assert result.output["matches"] == [
-        {"path": "notes.md", "line": 2, "text": "正文 needle", "encoding": "utf-8", "newline": "lf"}
+        {"path": "notes.md", "line": 2, "text": "正文 needle", "encoding": "utf-8", "newline": "lf", "match_type": "content"}
     ]
 
 
@@ -21,7 +39,7 @@ def test_search_code_finds_gbk_text_without_reencoding(tmp_path: Path):
 
     assert result.status == "ok"
     assert result.output["matches"] == [
-        {"path": "encoded.txt", "line": 2, "text": "中文 needle", "encoding": "gbk", "newline": "crlf"}
+        {"path": "encoded.txt", "line": 2, "text": "中文 needle", "encoding": "gbk", "newline": "crlf", "match_type": "content"}
     ]
 
 
@@ -62,7 +80,7 @@ def test_search_code_treats_pattern_as_regular_expression(tmp_path: Path):
 
     assert result.status == "ok"
     assert result.output["matches"] == [
-        {"path": "models.py", "line": 1, "text": "class CharField(Field):", "encoding": "utf-8", "newline": "lf"}
+        {"path": "models.py", "line": 1, "text": "class CharField(Field):", "encoding": "utf-8", "newline": "lf", "match_type": "content"}
     ]
 
 

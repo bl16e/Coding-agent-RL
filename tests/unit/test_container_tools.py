@@ -76,9 +76,9 @@ def test_to_cli_command_apply_patch_create():
 
 def test_to_cli_command_search_code_basic():
     cmd = ContainerToolExecutor._to_cli_command(
-        ToolName.SEARCH_CODE, {"pattern": "def foo", "head_limit": 20},
+        ToolName.SEARCH, {"pattern": "def foo", "head_limit": 20},
     )
-    assert "search_code --pattern" in cmd
+    assert "search --pattern" in cmd
     assert "--head_limit 20" in cmd
     assert "--ignore_case" not in cmd  # removed
 
@@ -101,6 +101,86 @@ def test_execute_bash_blocks_dangerous_commands():
     for cmd in ("git status", "ipython", "jupyter notebook", "nohup sleep 100"):
         result = ex.execute(ToolName.EXECUTE_BASH, {"command": cmd})
         assert result.status is Outcome.REJECTED, f"should block: {cmd}"
+
+
+def test_execute_bash_rejects_shell_syntax_before_execution():
+    docker = FakeDocker()
+    ex = _make_executor(docker=docker)
+
+    for cmd in (
+        "python -m pytest tests | tee output.txt",
+        "python -m pytest tests > output.txt",
+        "python - <<'PY'\nprint(1)\nPY",
+        "python -c `pwd`",
+        "echo $(pwd)",
+        "echo a`pwd`b",
+    ):
+        result = ex.execute(ToolName.EXECUTE_BASH, {"command": cmd})
+        assert result.status is Outcome.REJECTED, f"should reject: {cmd}"
+
+    assert docker.calls == []
+
+
+def test_execute_bash_allows_shell_metacharacters_inside_quoted_python_code():
+    docker = FakeDocker()
+    docker.next_stdout = "True"
+    ex = _make_executor(docker=docker)
+
+    commands = (
+        "python -c 'import re; re.compile(r\"(?P<can_data>([0-9A-Fa-f]{2})*?)\")'",
+        "python -c 'print(1 < 2 and 3 > 2)'",
+        "python -c 'print(\"a|b\")'",
+    )
+
+    for cmd in commands:
+        result = ex.execute(ToolName.EXECUTE_BASH, {"command": cmd})
+        assert result.status is Outcome.OK, f"should allow quoted metacharacters: {cmd}"
+
+    assert len(docker.calls) == len(commands)
+
+
+def test_execute_bash_allows_head_tail_and_output_clipping_pipes():
+    docker = FakeDocker()
+    docker.next_stdout = "clipped output"
+    ex = _make_executor(docker=docker)
+
+    for cmd in (
+        "python -m pytest tests -q 2>&1 | tail -20",
+        "python -m pytest tests -q | head -50",
+    ):
+        result = ex.execute(ToolName.EXECUTE_BASH, {"command": cmd})
+        assert result.status is Outcome.OK, f"should allow: {cmd}"
+
+    assert len(docker.calls) == 2
+
+
+def test_execute_bash_rejects_head_tail_as_file_reading_commands():
+    docker = FakeDocker()
+    ex = _make_executor(docker=docker)
+
+    for cmd in ("head -20 output.log", "tail -20 output.log"):
+        result = ex.execute(ToolName.EXECUTE_BASH, {"command": cmd})
+        assert result.status is Outcome.REJECTED, f"should reject: {cmd}"
+        assert "read_file" in result.output_summary
+
+    assert docker.calls == []
+
+
+def test_execute_bash_blocked_command_message_gives_tool_substitution():
+    ex = _make_executor()
+
+    grep_result = ex.execute(ToolName.EXECUTE_BASH, {"command": "grep -n Token file.py"})
+    find_result = ex.execute(ToolName.EXECUTE_BASH, {"command": "find / -name graphics.py"})
+    git_result = ex.execute(ToolName.EXECUTE_BASH, {"command": "git log --oneline"})
+
+    assert grep_result.status is Outcome.REJECTED
+    assert "Rejected: `grep` is not allowed" in grep_result.output_summary
+    assert 'match_type="content"' in grep_result.output_summary
+    assert "SFT" in grep_result.output_summary
+    assert "search" in find_result.output_summary
+    assert 'match_type="path"' in find_result.output_summary
+    assert "current working tree" in git_result.output_summary
+    assert all(ord(char) < 128 for char in grep_result.output_summary)
 
 
 def test_execute_bash_rejects_empty_command():
@@ -183,7 +263,7 @@ def test_run_tool_script_search_code_json_output():
     docker.next_stdout = '{"matches": [{"path": "a.py", "line": 1, "text": "hello"}], "truncated": false, "engine": "rg"}'
     ex = _make_executor(docker=docker)
 
-    result = ex.execute(ToolName.SEARCH_CODE, {"pattern": "hello"})
+    result = ex.execute(ToolName.SEARCH, {"pattern": "hello"})
 
     assert result.status is Outcome.OK
     assert len(result.output["matches"]) == 1
@@ -227,4 +307,4 @@ def test_install_tool_scripts_finds_scripts_dir():
     assert scripts_dir.is_dir(), f"scripts dir not found at {scripts_dir}"
     scripts = list(scripts_dir.glob("*.py"))
     names = {s.stem for s in scripts if s.stem != "__init__"}
-    assert names >= {"read_file", "apply_patch", "search_code", "finish"}, f"missing scripts: {names}"
+    assert names >= {"read_file", "apply_patch", "search", "finish"}, f"missing scripts: {names}"

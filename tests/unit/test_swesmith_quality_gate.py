@@ -23,6 +23,7 @@ def _write_run(
     command: str = "python -m pytest tests/test_app.py -x --tb=short",
     patch_path: str = "app.py",
     patch: str | None = None,
+    issue: str = "Fix the original bug.",
 ) -> None:
     run_dir = runs_dir / instance_id
     run_dir.mkdir(parents=True)
@@ -64,6 +65,10 @@ def _write_run(
         "".join(json.dumps(event) + "\n" for event in events),
         encoding="utf-8",
     )
+    run_dir.joinpath("trajectory.json").write_text(
+        json.dumps({"task_id": instance_id, "issue": issue, "trajectory": events}),
+        encoding="utf-8",
+    )
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -90,6 +95,7 @@ def test_quality_gate_writes_report_and_filtered_sft_for_accepted_run(tmp_path: 
     assert rows[0]["instance_id"] == "inst-1"
     assert rows[0]["resolved"] is True
     assert rows[0]["messages"][0]["role"] == "system"
+    assert rows[0]["messages"][1] == {"role": "user", "content": "Fix the original bug."}
 
 
 def test_quality_gate_rejects_common_bad_trajectories(tmp_path: Path):
@@ -135,6 +141,12 @@ def test_quality_gate_only_blocks_shell_syntax_not_python_string_contents(tmp_pa
         command="python -c 'print(1 > 0); print(2 < 3); print(\"a|b\")'",
     )
     _write_eval(eval_dir, "python-comparison", resolved=True)
+    _write_run(
+        runs,
+        "python-regex-named-group",
+        command='python -c \'import re; re.compile(r"(?P<can_data>([0-9A-Fa-f]{2})*?)")\'',
+    )
+    _write_eval(eval_dir, "python-regex-named-group", resolved=True)
     _write_run(runs, "real-grep", command="python -m pytest tests | grep FAILED")
     _write_eval(eval_dir, "real-grep", resolved=True)
     report = tmp_path / "quality.json"
@@ -143,9 +155,11 @@ def test_quality_gate_only_blocks_shell_syntax_not_python_string_contents(tmp_pa
     result = run_quality_gate(runs_dir=runs, eval_dir=eval_dir, report_output=report, filtered_sft_output=filtered)
 
     items = {item["instance_id"]: item for item in json.loads(report.read_text(encoding="utf-8"))["items"]}
-    assert result.accepted_count == 1
+    assert result.accepted_count == 2
     assert items["python-comparison"]["accepted"] is True
     assert "blocked_execute_bash" not in items["python-comparison"]["reasons"]
+    assert items["python-regex-named-group"]["accepted"] is True
+    assert "blocked_execute_bash" not in items["python-regex-named-group"]["reasons"]
     assert "blocked_execute_bash" in items["real-grep"]["reasons"]
 
 
@@ -173,3 +187,46 @@ def test_quality_gate_allows_head_tail_stderr_merge_and_step_limit_warning(tmp_p
     assert items["tail-output"]["metrics"]["step_limit_near_exhausted"] is True
     assert "step_limit_near_exhausted" not in items["tail-output"]["reasons"]
     assert items["head-output"]["accepted"] is True
+
+
+def test_quality_gate_rejects_head_tail_as_file_reading_commands(tmp_path: Path):
+    runs = tmp_path / "runs"
+    eval_dir = tmp_path / "eval"
+    _write_run(runs, "standalone-head", command="head -20 output.log")
+    _write_eval(eval_dir, "standalone-head", resolved=True)
+    _write_run(runs, "standalone-tail", command="tail -20 output.log")
+    _write_eval(eval_dir, "standalone-tail", resolved=True)
+    report = tmp_path / "quality.json"
+    filtered = tmp_path / "filtered.jsonl"
+
+    result = run_quality_gate(runs_dir=runs, eval_dir=eval_dir, report_output=report, filtered_sft_output=filtered)
+
+    items = {item["instance_id"]: item for item in json.loads(report.read_text(encoding="utf-8"))["items"]}
+    assert result.accepted_count == 0
+    assert "blocked_execute_bash" in items["standalone-head"]["reasons"]
+    assert "blocked_execute_bash" in items["standalone-tail"]["reasons"]
+
+
+def test_quality_gate_allows_stderr_null_and_fallback_but_still_blocks_search_and_git(tmp_path: Path):
+    runs = tmp_path / "runs"
+    eval_dir = tmp_path / "eval"
+    _write_run(
+        runs,
+        "stderr-null-fallback",
+        command="python -m pytest tests/test_a.py -q 2>/dev/null || python -m pytest tests/test_b.py -q",
+    )
+    _write_eval(eval_dir, "stderr-null-fallback", resolved=True)
+    _write_run(runs, "blocked-find", command="find / -name app.py 2>/dev/null")
+    _write_eval(eval_dir, "blocked-find", resolved=True)
+    _write_run(runs, "blocked-git", command="cd /testbed && git status")
+    _write_eval(eval_dir, "blocked-git", resolved=True)
+    report = tmp_path / "quality.json"
+    filtered = tmp_path / "filtered.jsonl"
+
+    result = run_quality_gate(runs_dir=runs, eval_dir=eval_dir, report_output=report, filtered_sft_output=filtered)
+
+    items = {item["instance_id"]: item for item in json.loads(report.read_text(encoding="utf-8"))["items"]}
+    assert result.accepted_count == 1
+    assert items["stderr-null-fallback"]["accepted"] is True
+    assert "blocked_execute_bash" in items["blocked-find"]["reasons"]
+    assert "blocked_execute_bash" in items["blocked-git"]["reasons"]

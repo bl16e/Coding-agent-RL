@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from coding_agent.agent import _format_tool_result_content
 from coding_agent.models import RunBudget, RunStatus, ToolName
 from tests.helpers.query_backend import ScriptedQueryBackend, ToolCallSpec, make_task, run_agent_for_test
 
@@ -81,6 +82,53 @@ def test_read_file_history_shows_source_text_without_json_escaping(tmp_path: Pat
     observation = backend.messages_by_call[1][-1]["content"]
     assert "regex = r'^[\\w.@+-]+$'" in observation
     assert "regex = r'^[\\\\w.@+-]+$'" not in observation
+
+
+def test_search_code_history_labels_path_and_content_matches():
+    content = _format_tool_result_content(
+        {
+            "tool_name": "search",
+            "status": "ok",
+            "output": {
+                "matches": [
+                    {
+                        "path": "pygments/lexers/graphics.py",
+                        "line": None,
+                        "text": "",
+                        "match_type": "path",
+                    },
+                    {
+                        "path": "README.md",
+                        "line": 12,
+                        "text": "graphics.py",
+                        "match_type": "content",
+                    },
+                ],
+                "truncated": False,
+            },
+        }
+    )
+
+    assert "[path] pygments/lexers/graphics.py" in content
+    assert "[content] README.md:12: graphics.py" in content
+
+
+def test_rejected_tool_history_shows_output_summary():
+    content = _format_tool_result_content(
+        {
+            "tool_name": "execute_bash",
+            "status": "rejected",
+            "output_summary": (
+                "Rejected: `grep` is not allowed in execute_bash.\n"
+                "Use: search({\"pattern\": \"<regex>\"})."
+            ),
+            "output": {},
+        }
+    )
+
+    assert "Rejected: `grep` is not allowed" in content
+    assert "Use: search" in content
+    assert content != "[execute_bash: rejected]"
 
 
 def test_agent_sends_native_tool_call_and_tool_result_history(tmp_path: Path):

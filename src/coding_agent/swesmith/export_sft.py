@@ -15,6 +15,18 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _load_issue(trajectory_jsonl_path: Path) -> str:
+    trajectory_json_path = trajectory_jsonl_path.with_suffix(".json")
+    if not trajectory_json_path.is_file():
+        return ""
+    try:
+        payload = json.loads(trajectory_json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return ""
+    issue = payload.get("issue") if isinstance(payload, dict) else ""
+    return str(issue or "").strip()
+
+
 def _tool_xml(tool_name: str, arguments: dict[str, Any]) -> str:
     lines = [f"<function={tool_name}>"]
     for key, value in arguments.items():
@@ -29,6 +41,9 @@ def _tool_xml(tool_name: str, arguments: dict[str, Any]) -> str:
 def _messages_from_trajectory(path: Path) -> list[dict[str, str]]:
     events = _load_jsonl(path)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    issue = _load_issue(path)
+    if issue:
+        messages.append({"role": "user", "content": issue})
     pending_reasoning = ""
     for event in events:
         if event.get("action_type") == "model":

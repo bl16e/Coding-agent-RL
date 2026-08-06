@@ -15,11 +15,30 @@ def test_execute_bash_schema_warns_against_blocked_shell_forms():
         ]
     )
 
-    assert "Do not use pipes" in text
+    assert "Pipes are allowed only" in text
     assert "redirection" in text
     assert "cat" in text
-    assert "tail" in text
     assert "git" in text
+    assert "pipe only to head or tail" in text
+    assert "except 2>&1" in text
+
+
+def test_tool_schema_routes_filename_search_through_search():
+    search_schema = TOOL_SCHEMAS[ToolName.SEARCH]
+    execute_schema = TOOL_SCHEMAS[ToolName.EXECUTE_BASH]
+    text = " ".join(
+        [
+            search_schema["description"],
+            " ".join(param.get("description", "") for param in search_schema["parameters"].values()),
+            " ".join(search_schema["examples"]),
+            execute_schema["description"],
+        ]
+    )
+
+    assert "filename/path search" in text
+    assert "search_code" not in text
+    assert 'match_type="path"' in text
+    assert 'match_type="content"' in text
 
 
 def test_system_prompt_warns_against_blocked_shell_forms():
@@ -27,11 +46,24 @@ def test_system_prompt_warns_against_blocked_shell_forms():
         encoding="utf-8"
     )
 
-    assert "Do not use pipes" in template
+    assert "Pipes are allowed only" in template
     assert "redirection" in template
     assert "cat" in template
-    assert "tail" in template
     assert "git" in template
+    assert "pipe only to head or tail" in template
+    assert "except 2>&1" in template
+
+
+def test_system_prompt_includes_tool_substitution_rules():
+    template = Path("src/coding_agent/config/templates/system.j2").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Tool substitution rules" in template
+    assert "To find files by filename" in template
+    assert 'match_type="path"' in template
+    assert "search_code" not in template
+    assert "Do not use git status/log/show/diff" in template
 
 
 def test_system_prompt_requires_finish_after_fix_and_diagnostic_validation():

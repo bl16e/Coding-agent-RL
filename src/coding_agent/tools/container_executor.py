@@ -2,6 +2,7 @@
 
 import json
 import posixpath
+import re
 import shlex
 import time
 from typing import Any
@@ -26,6 +27,157 @@ def _docker_error(tool_name: ToolName, exc: Exception) -> ToolExecutionResult:
     return ToolExecutionResult(tool_name, Outcome.ERROR, str(exc))
 
 
+def _blocked_command_message(command_name: str) -> str:
+    if command_name in ("grep", "awk", "sed"):
+        reason = "code/content search must use the structured repository search tool."
+        use = 'search({"pattern": "<regex>"}) and read results with match_type="content".'
+    elif command_name == "find":
+        reason = "file discovery must use repo-scoped tools, not shell find."
+        use = 'search({"pattern": "<filename_or_path_regex>"}) and read results with match_type="path".'
+    elif command_name in ("cat", "head", "tail", "less", "more"):
+        reason = "file inspection must use the structured file reader."
+        use = 'read_file({"file_path": "<path>", "view_range": [start, end]}).'
+    elif command_name == "git":
+        reason = "git history/status inspection is not allowed for teacher trajectories."
+        use = "work only from the current working tree with read_file/search."
+    else:
+        reason = "this executable is not allowed in execute_bash."
+        use = "use the structured repository tools or a direct test command."
+    return (
+        f"Rejected: `{command_name}` is not allowed in execute_bash.\n"
+        f"Reason: {reason}\n"
+        f"Use: {use}\n"
+        "This rejected attempt may disqualify the trajectory from SFT."
+    )
+
+
+def _blocked_syntax_message(reason: str) -> str:
+    return (
+        "Rejected: this shell syntax is not allowed in execute_bash.\n"
+        f"Reason: {reason}\n"
+        "Use: call read_file/search for inspection and run pytest or python commands directly.\n"
+        "This rejected attempt may disqualify the trajectory from SFT."
+    )
+
+
+SHELL_REDIRECTION_TOKENS = {">", ">>", "<", "<<", "<<<", ">&", "<&", "2>", "2>>"}
+REDIRECTION_TOKEN_PATTERN = re.compile(r"^\d*(?:>>?|<<?|>&|<&).*$")
+
+
+def _shell_tokens(command: str) -> list[str]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return [command]
+
+
+def _has_command_substitution(command: str) -> bool:
+    in_single_quote = False
+    escaped = False
+    for index, char in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "'":
+            in_single_quote = not in_single_quote
+            continue
+        if in_single_quote:
+            continue
+        if char == "`":
+            return True
+        if char == "$" and command[index : index + 2] == "$(":
+            return True
+    return False
+
+
+def _is_allowed_stderr_redirect(tokens: list[str], index: int) -> int:
+    token = tokens[index]
+    if token == "2>&1":
+        return index + 1
+    if token == "2" and tokens[index : index + 3] == ["2", ">&", "1"]:
+        return index + 3
+    if token in {"2>/dev/null", "2>>/dev/null"}:
+        return index + 1
+    if tokens[index : index + 2] in (["2>", "/dev/null"], ["2>>", "/dev/null"]):
+        return index + 2
+    if tokens[index : index + 3] in (["2", ">", "/dev/null"], ["2", ">>", "/dev/null"]):
+        return index + 3
+    return index
+
+
+def _blocked_redirection_reason(tokens: list[str]) -> str | None:
+    index = 0
+    while index < len(tokens):
+        next_index = _is_allowed_stderr_redirect(tokens, index)
+        if next_index != index:
+            index = next_index
+            continue
+        token = tokens[index]
+        if token in {"<<", "<<<"}:
+            return "heredocs are not allowed."
+        if token in SHELL_REDIRECTION_TOKENS or REDIRECTION_TOKEN_PATTERN.match(token):
+            return "redirection is not allowed except stderr suppression to /dev/null or 2>&1."
+        index += 1
+    return None
+
+
+def _preflight_execute_bash(command: str, blocked_commands: set[str]) -> str | None:
+    tokens = _shell_tokens(command)
+    if _has_command_substitution(command):
+        return _blocked_syntax_message("command substitution hides commands from the harness.")
+    if not _pipes_only_clip_with_head_tail(command):
+        return _blocked_syntax_message("pipes are allowed only when piping output to head or tail.")
+    if redirection_reason := _blocked_redirection_reason(tokens):
+        return _blocked_syntax_message(redirection_reason)
+
+    subcommands = re.split(r"&&|;|\|\|", command)
+    for subcmd in subcommands:
+        try:
+            parts = shlex.split(subcmd.strip())
+        except ValueError:
+            parts = subcmd.strip().split()
+        if not parts:
+            continue
+        sub_first = parts[0]
+        if sub_first in blocked_commands:
+            return _blocked_command_message(sub_first)
+    return None
+
+
+def _pipes_only_clip_with_head_tail(command: str) -> bool:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return "|" not in command.replace("||", "")
+
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token not in {"|", "|&"}:
+            index += 1
+            continue
+        if token == "|" and index + 1 < len(tokens) and tokens[index + 1] == "|":
+            index += 2
+            continue
+        target_index = index + 1
+        while target_index < len(tokens) and tokens[target_index] in {"env", "time", "timeout"}:
+            target_index += 1
+        if target_index >= len(tokens):
+            return False
+        executable = posixpath.basename(tokens[target_index]).lower()
+        if executable not in {"head", "tail"}:
+            return False
+        index = target_index + 1
+    return True
+
+
 class ContainerToolExecutor:
     """Execute tools as standalone scripts inside a Docker container.
 
@@ -34,7 +186,7 @@ class ContainerToolExecutor:
 
         read_file --file_path /testbed/src/main.py --offset 10
         apply_patch update --path /testbed/src/main.py --old_string ... --new_string ...
-        search_code --pattern "def foo" --glob "**/*.py"
+        search --pattern "def foo" --glob "**/*.py"
         bash -lc "<command>"
         finish --result "done"
 
@@ -47,7 +199,7 @@ class ContainerToolExecutor:
         "git", "ipython", "jupyter", "nohup",
         # File reading — use read_file instead
         "cat", "head", "tail", "less", "more",
-        # Code search — use search_code instead
+        # Code search — use search instead
         "grep", "find", "awk", "sed",
     }
     _BASH_TIMEOUT = 30.0
@@ -72,7 +224,7 @@ class ContainerToolExecutor:
             return self._execute_bash(tool_input)
         if tool_name is ToolName.FINISH:
             return self._finish(tool_input)
-        if tool_name in (ToolName.READ_FILE, ToolName.APPLY_PATCH, ToolName.SEARCH_CODE):
+        if tool_name in (ToolName.READ_FILE, ToolName.APPLY_PATCH, ToolName.SEARCH, ToolName.SEARCH_CODE):
             return self._run_tool_script(tool_name, tool_input)
         raise ValueError(f"unsupported tool: {tool_name}")
 
@@ -98,9 +250,9 @@ class ContainerToolExecutor:
                 return f"apply_patch --path {fp} --old_string {old} --new_string {new}"
             return f"apply_patch --path {fp} --new_string {new}"
 
-        if tool_name is ToolName.SEARCH_CODE:
+        if tool_name in (ToolName.SEARCH, ToolName.SEARCH_CODE):
             pattern = shlex.quote(str(tool_input.get("pattern", "")))
-            cmd = f"search_code --pattern {pattern}"
+            cmd = f"search --pattern {pattern}"
             glob_pat = tool_input.get("glob")
             if glob_pat:
                 cmd += f" --glob {shlex.quote(str(glob_pat))}"
@@ -163,10 +315,10 @@ class ContainerToolExecutor:
                 },
             )
 
-        # Parse JSON output for search_code
+        # Parse JSON output for search.
         output_data: dict[str, Any] = {"stdout": stdout, "stderr": stderr,
                                          "exit_code": 0, "duration_seconds": duration}
-        if tool_name is ToolName.SEARCH_CODE:
+        if tool_name in (ToolName.SEARCH, ToolName.SEARCH_CODE):
             try:
                 parsed = json.loads(stdout) if stdout else {}
                 if isinstance(parsed, dict):
@@ -186,21 +338,10 @@ class ContainerToolExecutor:
                 ToolName.EXECUTE_BASH, Outcome.REJECTED,
                 "command must not be empty",
             )
-        # Check every subcommand (split by &&, ;, |) for blocked commands
-        import re
-        subcommands = re.split(r"[;&|]+", command)
-        for subcmd in subcommands:
-            sub_first = subcmd.strip().split()[0] if subcmd.strip().split() else ""
-            if sub_first in self._BLOCKED_BASH_COMMANDS:
-                hint = ""
-                if sub_first in ("grep", "find", "awk", "sed"):
-                    hint = " — use search_code instead"
-                elif sub_first in ("cat", "head", "tail", "less", "more"):
-                    hint = " — use read_file instead"
-                return ToolExecutionResult(
-                    ToolName.EXECUTE_BASH, Outcome.REJECTED,
-                    f"'{sub_first}' is blocked{hint}",
-                )
+        if rejection := _preflight_execute_bash(command, self._BLOCKED_BASH_COMMANDS):
+            return ToolExecutionResult(
+                ToolName.EXECUTE_BASH, Outcome.REJECTED, rejection,
+            )
         started = time.monotonic()
         try:
             result = self._docker.exec(
@@ -310,4 +451,3 @@ def install_tool_scripts(container_name: str, docker: DockerCli) -> list[str]:
             ) from exc
 
     return installed
-

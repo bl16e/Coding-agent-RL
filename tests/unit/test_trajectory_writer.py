@@ -191,7 +191,7 @@ def test_exporter_uses_tool_call_intent_fields_when_content_is_empty(tmp_path: P
                         "id": "call_1",
                         "type": "function",
                         "function": {
-                            "name": "search_code",
+                            "name": "search",
                             "arguments": json.dumps(
                                 {
                                     "pattern": "broken_func",

@@ -63,6 +63,18 @@ def _export_container_diff(docker: DockerCli, prepared: SwesmithPreparedContaine
     ).stdout
 
 
+def _cleanup_container(docker: DockerCli, prepared: SwesmithPreparedContainer) -> None:
+    """Stop and remove a SWE-smith task container, best-effort."""
+    try:
+        docker.stop_container(prepared.container_name)
+    except Exception as exc:
+        logger.warning("failed to stop SWE-smith container %s: %s", prepared.container_name, exc)
+    try:
+        docker.remove_container(prepared.container_name)
+    except Exception as exc:
+        logger.warning("failed to remove SWE-smith container %s: %s", prepared.container_name, exc)
+
+
 def run_swesmith_instance(
     instance: dict[str, Any],
     *,
@@ -73,48 +85,55 @@ def run_swesmith_instance(
     output_dir: str | Path,
     reference_path: str | Path | None,
     container_factory: Callable[[dict[str, Any]], SwesmithPreparedContainer] | None = None,
+    cleanup_container: bool = True,
 ) -> RunSummary:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    if container_factory is None:
-        prepared = create_official_container(instance, reference_path=reference_path)
-    else:
-        prepared = container_factory(instance)
-    task = BenchmarkTask(
-        instance_id=str(instance["instance_id"]),
-        workspace=output_path,
-        problem_statement=str(instance["problem_statement"]),
-        allowed_test_commands=SELF_TEST_COMMANDS,
-    )
-    executor = ContainerToolExecutor(
-        docker=docker,
-        container_name=prepared.container_name,
-        repo_path=prepared.repo_path,
-    )
-    install_tool_scripts(prepared.container_name, docker)
-    template_dir = Path(__file__).resolve().parents[1] / "config" / "templates"
-    agent = ToolAgent(
-        model=backend,
-        executor=executor,
-        config=AgentConfig(
-            system_template=(template_dir / "system.j2").read_text(encoding="utf-8"),
-            instance_template=(template_dir / "instance.j2").read_text(encoding="utf-8"),
-            step_limit=budget.max_steps,
-            time_limit_seconds=budget.timeout_seconds,
-            test_timeout_seconds=budget.test_timeout_seconds,
-            output_path=output_path,
-        ),
-    )
-    if not getattr(agent.model, "model_name", ""):
-        agent.model.model_name = model_name
-    summary = agent.run(task)
-    if summary.error == "AgentException":
-        raise RuntimeError("agent execution failed")
-    patch = _export_container_diff(docker, prepared)
-    (output_path / "final.patch").write_text(patch, encoding="utf-8")
-    _write_prediction(output_path / "prediction.jsonl", Prediction(prepared.instance_id, model_name, patch))
-    _write_sandbox_json(output_path / "sandbox.json", prepared)
-    return summary
+    prepared: SwesmithPreparedContainer | None = None
+    try:
+        if container_factory is None:
+            prepared = create_official_container(instance, reference_path=reference_path)
+        else:
+            prepared = container_factory(instance)
+        task = BenchmarkTask(
+            instance_id=str(instance["instance_id"]),
+            workspace=output_path,
+            problem_statement=str(instance["problem_statement"]),
+            allowed_test_commands=SELF_TEST_COMMANDS,
+        )
+        executor = ContainerToolExecutor(
+            docker=docker,
+            container_name=prepared.container_name,
+            repo_path=prepared.repo_path,
+        )
+        install_tool_scripts(prepared.container_name, docker)
+        template_dir = Path(__file__).resolve().parents[1] / "config" / "templates"
+        agent = ToolAgent(
+            model=backend,
+            executor=executor,
+            config=AgentConfig(
+                system_template=(template_dir / "system.j2").read_text(encoding="utf-8"),
+                instance_template=(template_dir / "instance.j2").read_text(encoding="utf-8"),
+                step_limit=budget.max_steps,
+                time_limit_seconds=budget.timeout_seconds,
+                test_timeout_seconds=budget.test_timeout_seconds,
+                output_path=output_path,
+            ),
+        )
+        if not getattr(agent.model, "model_name", ""):
+            agent.model.model_name = model_name
+        summary = agent.run(task)
+        if summary.error == "AgentException":
+            raise RuntimeError("agent execution failed")
+        patch = _export_container_diff(docker, prepared)
+        (output_path / "final.patch").write_text(patch, encoding="utf-8")
+        _write_prediction(output_path / "prediction.jsonl", Prediction(prepared.instance_id, model_name, patch))
+        _write_sandbox_json(output_path / "sandbox.json", prepared)
+        return summary
+    finally:
+        if cleanup_container and prepared is not None:
+            _cleanup_container(docker, prepared)
+
 
 
 def _safe_instance_dir(instance_id: str) -> str:
@@ -145,6 +164,7 @@ def _run_instance_and_collect(
     model_name: str,
     root: Path,
     reference_path: str | Path | None,
+    cleanup_container: bool,
 ) -> tuple[str, str, str | None, str, Prediction]:
     """Run one SWE-smith instance and return (instance_id, status, error, run_dir, prediction)."""
     instance_id = str(instance["instance_id"])
@@ -158,6 +178,7 @@ def _run_instance_and_collect(
             model_name=model_name,
             output_dir=run_dir,
             reference_path=reference_path,
+            cleanup_container=cleanup_container,
         )
         status = summary.status.value
         error = summary.error
@@ -265,6 +286,7 @@ def run_swesmith_subset(
     reference_path: str | Path | None,
     jobs: int = 1,
     cleanup_images: bool = False,
+    cleanup_containers: bool = True,
 ) -> int:
     if jobs < 1:
         raise ValueError("jobs must be a positive integer")
@@ -302,6 +324,7 @@ def run_swesmith_subset(
                 instance, docker=docker, backend_factory=backend_factory,
                 budget=budget, model_name=model_name, root=root,
                 reference_path=reference_path,
+                cleanup_container=cleanup_containers,
             )
             _update_batch_state_task(
                 state_path,
@@ -337,6 +360,7 @@ def run_swesmith_subset(
                 inst, docker=docker, backend_factory=backend_factory,
                 budget=budget, model_name=model_name, root=root,
                 reference_path=reference_path,
+                cleanup_container=cleanup_containers,
             )
             _update_batch_state_task(
                 state_path,

@@ -6,7 +6,7 @@ def test_all_non_conflicting_grouped_together():
     actions = [
         _ToolAction(tool_name=ToolName.READ_FILE, tool_input={"file_path": "a.py"}),
         _ToolAction(tool_name=ToolName.READ_FILE, tool_input={"file_path": "b.py"}),
-        _ToolAction(tool_name=ToolName.SEARCH_CODE, tool_input={"pattern": "x"}),
+        _ToolAction(tool_name=ToolName.SEARCH, tool_input={"pattern": "x"}),
     ]
     groups = _detect_conflicts(actions)
     assert sorted(sum(groups, [])) == [0, 1, 2]

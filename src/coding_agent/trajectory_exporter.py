@@ -347,7 +347,7 @@ def _fmt_obs(tool_name, result, *, tool_status="", output_summary=""):
     elif tool_name == "apply_patch":
         stdout = output.get("stdout", "")
         return {"output": stdout or output_summary}
-    elif tool_name == "search_code":
+    elif tool_name in ("search", "search_code"):
         matches = output.get("matches", [])
         if not matches:
             return {"matches": 0, "hint": "0 matches — try a broader pattern or remove glob filter"}

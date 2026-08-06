@@ -61,13 +61,17 @@ or set it to empty, and set new_string to the full file content.""",
             '{"path": "/testbed/tests/test_new.py", "new_string": "import pytest\\n\\ndef test_foo():\\n    pass\\n"}',
         ],
     },
-    ToolName.SEARCH_CODE: {
-        "description": "Search repository text files with a regular expression. Returns matching file paths, line numbers, and line text. Use glob to filter by file pattern.",
+    ToolName.SEARCH: {
+        "description": """\
+Search repository text and repo-relative paths with a regular expression.
+Use this for both content search and filename/path search. Results are
+annotated with match_type="path" for path matches and match_type="content"
+for line-content matches. Use glob to filter by file pattern.""",
         "parameters": {
             "pattern": {
                 "type": "string",
                 "required": True,
-                "description": "Python regular expression to search for in each line.",
+                "description": "Python regular expression for line content or filename/path search.",
             },
             "glob": {
                 "type": "string",
@@ -83,30 +87,34 @@ or set it to empty, and set new_string to the full file content.""",
         "examples": [
             '{"pattern": "^def calculate\\\\("}',
             '{"pattern": "class.*View", "glob": "**/*.py", "head_limit": 50}',
+            '{"pattern": "graphics\\\\.py$"}',
             '{"pattern": "TODO", "glob": "**/*.py"}',
         ],
     },
     ToolName.EXECUTE_BASH: {
         "description": """\
-Execute a bash command in the current working directory. Use this to run
-Python scripts, pytest, or other shell operations. Chain multiple commands
-with && or ;. A 30-second timeout applies. Note: some tools exit non-zero
-on success; if stdout has output, the command succeeded.
+Use execute_bash only for python scripts, pytest, pip install, and
+project-specific test or lint commands. Chain multiple commands with && or ;.
+A 30-second timeout applies. Note: some tools exit non-zero on success; if
+stdout has output, the command succeeded.
 
-Do not use pipes, shell redirection, heredocs, or file-viewing/search commands
-inside execute_bash. In particular, do not use cat, head, tail, grep, find,
-awk, sed, or git. Use read_file for file viewing and search_code for search.
-Run pytest directly without piping to tail.""",
+Do not use execute_bash for reading files, listing many files, searching code,
+or inspecting git history/status. Do not use shell redirection except 2>&1 or
+stderr suppression to /dev/null. Do not use heredocs, command substitution, cat,
+grep, find, awk, sed, or git. Pipes are allowed only for output clipping: pipe
+only to head or tail. Use read_file for file/directory inspection and search
+for text search plus filename/path search.""",
         "parameters": {
             "command": {
                 "type": "string",
                 "required": True,
-                "description": "The bash command to execute. Do not use pipes, redirection, cat, tail, or git. Examples: 'python reproduce_issue.py', 'python -m pytest test/foo.py -x --tb=short', 'pip install requests'.",
+                "description": "The bash command to execute. Do not use redirection except 2>&1 or stderr suppression to /dev/null. Do not use cat, grep, find, or git. You may pipe only to head or tail for output clipping. Examples: 'python reproduce_issue.py', 'python -m pytest test/foo.py -x --tb=short', 'python -m pytest tests -q 2>&1 | tail -50', 'pip install requests'.",
             },
         },
         "examples": [
             '{"command": "python reproduce_issue.py"}',
             '{"command": "python -m pytest test/foo.py::test_bar -x --tb=short"}',
+            '{"command": "python -m pytest tests -q 2>&1 | tail -50"}',
             '{"command": "pip install requests"}',
         ],
     },

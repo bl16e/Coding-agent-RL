@@ -11,8 +11,9 @@ from coding_agent.swesmith.evaluate import read_eval_reports
 from coding_agent.swesmith.export_sft import _messages_from_trajectory, _traj_id
 
 
-BLOCKED_SHELL_COMMANDS = {"cat", "grep", "find", "awk", "sed", "git"}
-SHELL_CONTROL_TOKENS = {"||", ">", ">>", "<", "<<", "<<<", ">&", "<&", "2>", "2>>"}
+BLOCKED_SHELL_COMMANDS = {"cat", "head", "tail", "grep", "find", "awk", "sed", "git"}
+PIPE_CLIP_COMMANDS = {"head", "tail"}
+SHELL_CONTROL_TOKENS = {">", ">>", "<", "<<", "<<<", ">&", "<&", "2>", "2>>"}
 SHELL_COMMAND_SEPARATORS = {";", "&&", "||", "|", "|&"}
 REDIRECTION_TOKEN_PATTERN = re.compile(r"^\d*(?:>>?|<<?|>&|<&).*$")
 TEST_PATH_MARKERS = (
@@ -73,6 +74,7 @@ def _shell_tokens(command: str) -> list[str]:
 def _is_blocked_shell_command(command: str) -> bool:
     tokens = _shell_tokens(command)
     expect_command = True
+    after_pipe = False
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -82,10 +84,20 @@ def _is_blocked_shell_command(command: str) -> bool:
         if token == "2" and tokens[index : index + 3] == ["2", ">&", "1"]:
             index += 3
             continue
+        if token in {"2>/dev/null", "2>>/dev/null"}:
+            index += 1
+            continue
+        if tokens[index : index + 2] in (["2>", "/dev/null"], ["2>>", "/dev/null"]):
+            index += 2
+            continue
+        if tokens[index : index + 3] in (["2", ">", "/dev/null"], ["2", ">>", "/dev/null"]):
+            index += 3
+            continue
         if token in SHELL_CONTROL_TOKENS or REDIRECTION_TOKEN_PATTERN.match(token):
             return True
         if token in SHELL_COMMAND_SEPARATORS:
             expect_command = True
+            after_pipe = token in {"|", "|&"}
             index += 1
             continue
         if token in {"cd", "env", "time", "timeout", "python", "python3", "python.exe"}:
@@ -94,9 +106,15 @@ def _is_blocked_shell_command(command: str) -> bool:
             continue
         if expect_command:
             executable = Path(token).name.lower()
+            if after_pipe and executable in PIPE_CLIP_COMMANDS:
+                expect_command = False
+                after_pipe = False
+                index += 1
+                continue
             if executable in BLOCKED_SHELL_COMMANDS:
                 return True
             expect_command = False
+            after_pipe = False
         index += 1
     return False
 

@@ -4,7 +4,7 @@ from pathlib import Path
 from coding_agent.swesmith.export_sft import export_sft
 
 
-def _write_run(root: Path, instance_id: str, resolved: bool) -> None:
+def _write_run(root: Path, instance_id: str, resolved: bool, *, issue: str = "Fix the original bug.") -> None:
     run_dir = root / instance_id
     run_dir.mkdir(parents=True)
     (run_dir / "summary.json").write_text(
@@ -22,6 +22,10 @@ def _write_run(root: Path, instance_id: str, resolved: bool) -> None:
             }
         )
         + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "trajectory.json").write_text(
+        json.dumps({"task_id": instance_id, "issue": issue, "trajectory": []}),
         encoding="utf-8",
     )
     report_dir = root.parent / "eval" / instance_id
@@ -42,4 +46,5 @@ def test_export_sft_includes_only_resolved_runs(tmp_path: Path):
     assert rows[0]["instance_id"] == "inst-1"
     assert rows[0]["resolved"] is True
     assert rows[0]["messages"][0]["role"] == "system"
+    assert rows[0]["messages"][1] == {"role": "user", "content": "Fix the original bug."}
     assert any("<function=read_file>" in message["content"] for message in rows[0]["messages"])
